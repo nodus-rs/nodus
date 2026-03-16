@@ -11,8 +11,6 @@ use crate::manifest::{
 };
 use crate::resolver::sync_in_dir;
 
-pub const DEPS_ROOT: &str = ".agen/deps";
-
 #[derive(Debug, Clone)]
 pub struct GitCheckout {
     pub path: PathBuf,
@@ -34,8 +32,7 @@ pub fn add_dependency_in_dir(
 ) -> Result<()> {
     let normalized_url = normalize_git_url(url);
     let alias = normalize_alias_from_url(&normalized_url)?;
-    let checkout =
-        ensure_git_dependency(project_root, cache_root, &alias, &normalized_url, tag, true)?;
+    let checkout = ensure_git_dependency(cache_root, &normalized_url, tag, true)?;
     load_dependency_from_dir(&checkout.path)
         .with_context(|| format!("dependency `{alias}` does not match the Agen package layout"))?;
 
@@ -60,9 +57,7 @@ pub fn add_dependency_in_dir(
 }
 
 pub fn ensure_git_dependency(
-    project_root: &Path,
     cache_root: &Path,
-    alias: &str,
     url: &str,
     tag: Option<&str>,
     allow_network: bool,
@@ -71,19 +66,14 @@ pub fn ensure_git_dependency(
     let mirror_path = shared_repository_path(cache_root, &normalized_url)?;
     ensure_shared_repository(&mirror_path, &normalized_url, allow_network)?;
 
-    let deps_root = project_root.join(DEPS_ROOT);
-    fs::create_dir_all(&deps_root)
-        .with_context(|| format!("failed to create {}", deps_root.display()))?;
-    let checkout_path = deps_root.join(alias);
-
     let resolved_tag = match tag {
         Some(value) => value.to_string(),
         None => latest_tag(&mirror_path)?,
     };
     let rev = resolve_tag_to_rev(&mirror_path, &resolved_tag)?;
+    let checkout_path = shared_checkout_path(cache_root, &normalized_url, &rev)?;
 
-    ensure_checkout_worktree(
-        project_root,
+    ensure_shared_checkout(
         &checkout_path,
         &mirror_path,
         &normalized_url,
@@ -105,6 +95,14 @@ pub fn shared_repository_path(cache_root: &Path, url: &str) -> Result<PathBuf> {
     let repo_name = normalize_repository_name_from_url(&normalized_url)?;
     let hash = short_hash(&normalized_url);
     Ok(repositories_root.join(format!("{repo_name}-{hash}.git")))
+}
+
+pub fn shared_checkout_path(cache_root: &Path, url: &str, rev: &str) -> Result<PathBuf> {
+    let normalized_url = normalize_git_url(url);
+    let checkouts_root = cache_root.join("checkouts");
+    let repo_name = normalize_repository_name_from_url(&normalized_url)?;
+    let hash = short_hash(&normalized_url);
+    Ok(checkouts_root.join(format!("{repo_name}-{hash}")).join(rev))
 }
 
 pub fn current_rev(path: &Path) -> Result<String> {
@@ -264,8 +262,7 @@ fn ensure_shared_repository(
     )
 }
 
-fn ensure_checkout_worktree(
-    project_root: &Path,
+fn ensure_shared_checkout(
     checkout_path: &Path,
     mirror_path: &Path,
     normalized_url: &str,
@@ -273,18 +270,25 @@ fn ensure_checkout_worktree(
     allow_network: bool,
 ) -> Result<()> {
     if checkout_path.exists() {
-        validate_checkout_worktree(checkout_path, mirror_path, normalized_url)?;
+        validate_shared_checkout(checkout_path, mirror_path, normalized_url)?;
         git_run(checkout_path, ["checkout", "--detach", rev])?;
         return Ok(());
     }
 
     if !allow_network {
         bail!(
-            "missing git dependency checkout at {}",
+            "missing shared checkout for `{normalized_url}` at {}",
             checkout_path.display()
         );
     }
 
+    let parent = checkout_path.parent().ok_or_else(|| {
+        anyhow!(
+            "cannot determine parent directory for shared checkout {}",
+            checkout_path.display()
+        )
+    })?;
+    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
     git_run(
         mirror_path,
         [
@@ -297,15 +301,14 @@ fn ensure_checkout_worktree(
     )
     .with_context(|| {
         format!(
-            "failed to materialize dependency worktree {} from shared cache {} for project {}",
+            "failed to materialize shared checkout {} from shared cache {}",
             checkout_path.display(),
             mirror_path.display(),
-            project_root.display()
         )
     })
 }
 
-pub fn validate_checkout_worktree(
+pub fn validate_shared_checkout(
     checkout_path: &Path,
     mirror_path: &Path,
     normalized_url: &str,
@@ -330,14 +333,14 @@ pub fn validate_checkout_worktree(
         .with_context(|| format!("failed to access shared cache {}", mirror_path.display()))?;
     let actual_common_dir = common_dir.canonicalize().with_context(|| {
         format!(
-            "failed to resolve git common dir for dependency checkout {}",
+            "failed to resolve git common dir for shared checkout {}",
             checkout_path.display()
         )
     })?;
 
     if actual_common_dir != expected_common_dir {
         bail!(
-            "dependency checkout at {} is not backed by shared cache {}",
+            "shared checkout at {} is not backed by shared cache {}",
             checkout_path.display(),
             mirror_path.display()
         );
@@ -484,6 +487,26 @@ mod tests {
                 .path()
                 .join("repositories")
                 .join("playbook-ios-3fbb5d0f.git")
+        );
+    }
+
+    #[test]
+    fn computes_shared_checkout_path_from_the_normalized_url_and_revision() {
+        let cache_root = TempDir::new().unwrap();
+        let path = shared_checkout_path(
+            cache_root.path(),
+            "wenext-limited/playbook-ios",
+            "abc123def456",
+        )
+        .unwrap();
+
+        assert_eq!(
+            path,
+            cache_root
+                .path()
+                .join("checkouts")
+                .join("playbook-ios-3fbb5d0f")
+                .join("abc123def456")
         );
     }
 }

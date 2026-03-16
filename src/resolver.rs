@@ -8,7 +8,8 @@ use sha2::{Digest, Sha256};
 
 use crate::adapters::{ManagedFile, build_managed_files};
 use crate::git::{
-    current_rev, ensure_git_dependency, shared_repository_path, validate_checkout_worktree,
+    current_rev, ensure_git_dependency, shared_checkout_path, shared_repository_path,
+    validate_shared_checkout,
 };
 use crate::lockfile::{LOCKFILE_NAME, LockedPackage, LockedSource, Lockfile};
 use crate::manifest::{
@@ -61,7 +62,6 @@ struct ResolverState {
 
 #[derive(Debug, Clone, Copy)]
 struct ResolveContext<'a> {
-    project_root: &'a Path,
     cache_root: &'a Path,
     mode: ResolveMode,
 }
@@ -172,6 +172,15 @@ pub fn doctor_in_dir(cwd: &Path, cache_root: &Path) -> Result<()> {
 
     for package in &resolution.packages {
         if let PackageSource::Git { url, rev, .. } = &package.source {
+            let checkout_path = shared_checkout_path(cache_root, url, rev)?;
+            if package.root != checkout_path {
+                bail!(
+                    "git dependency `{}` resolved to {} instead of shared checkout {}",
+                    package.alias,
+                    package.root.display(),
+                    checkout_path.display()
+                );
+            }
             let current = current_rev(&package.root)?;
             if current.trim() != rev {
                 bail!(
@@ -183,7 +192,7 @@ pub fn doctor_in_dir(cwd: &Path, cache_root: &Path) -> Result<()> {
             }
 
             let mirror_path = shared_repository_path(cache_root, url)?;
-            validate_checkout_worktree(&package.root, &mirror_path, url)?;
+            validate_shared_checkout(&package.root, &mirror_path, url)?;
         }
     }
 
@@ -198,11 +207,7 @@ fn resolve_project(root: &Path, cache_root: &Path, mode: ResolveMode) -> Result<
     let project_root = root
         .canonicalize()
         .with_context(|| format!("failed to access {}", root.display()))?;
-    let context = ResolveContext {
-        project_root: &project_root,
-        cache_root,
-        mode,
-    };
+    let context = ResolveContext { cache_root, mode };
     let mut state = ResolverState::default();
     resolve_package(
         &context,
@@ -322,9 +327,7 @@ fn resolve_dependency(
             let url = dependency.url.as_deref().unwrap_or_default();
             let tag = dependency.tag.as_deref().unwrap_or_default();
             let checkout = ensure_git_dependency(
-                context.project_root,
                 context.cache_root,
-                alias,
                 url,
                 Some(tag),
                 context.mode == ResolveMode::Sync,
@@ -622,7 +625,7 @@ mod tests {
 
     use super::*;
     use crate::adapters::namespaced_skill_id;
-    use crate::git::{add_dependency_in_dir, normalize_alias_from_url, shared_repository_path};
+    use crate::git::{add_dependency_in_dir, shared_checkout_path, shared_repository_path};
     use crate::manifest::{MANIFEST_FILE, load_root_from_dir};
 
     fn write_file(path: &Path, contents: &str) {
@@ -737,21 +740,22 @@ shared = { path = "vendor/shared" }
         let temp = TempDir::new().unwrap();
         let cache = cache_dir();
         let (_repo, url) = create_git_dependency();
-        let alias = normalize_alias_from_url(&url).unwrap();
 
         add_dependency_in_dir(temp.path(), cache.path(), &url, Some("v0.1.0")).unwrap();
 
-        assert!(temp.path().join(".agen/deps").exists());
         let mirror_path = shared_repository_path(cache.path(), &url).unwrap();
+        let rev = git_output(&mirror_path, &["rev-parse", "v0.1.0^{commit}"]);
+        let checkout_path = shared_checkout_path(cache.path(), &url, &rev).unwrap();
         assert!(mirror_path.exists());
+        assert!(checkout_path.exists());
         assert_eq!(
             git_output(&mirror_path, &["rev-parse", "--is-bare-repository"]),
             "true"
         );
         assert_eq!(
             git_output(
-                &temp.path().join(format!(".agen/deps/{alias}")),
-                &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+                &checkout_path,
+                &["rev-parse", "--path-format=absolute", "--git-common-dir"]
             ),
             mirror_path.canonicalize().unwrap().to_string_lossy()
         );
@@ -982,26 +986,43 @@ sensitivity = "high"
         let project_one = TempDir::new().unwrap();
         let project_two = TempDir::new().unwrap();
         let (_repo, url) = create_git_dependency();
-        let alias = normalize_alias_from_url(&url).unwrap();
 
         add_dependency_in_dir(project_one.path(), cache.path(), &url, Some("v0.1.0")).unwrap();
         add_dependency_in_dir(project_two.path(), cache.path(), &url, Some("v0.1.0")).unwrap();
 
         let mirror_path = shared_repository_path(cache.path(), &url).unwrap();
+        let rev = git_output(&mirror_path, &["rev-parse", "v0.1.0^{commit}"]);
+        let checkout_path = shared_checkout_path(cache.path(), &url, &rev).unwrap();
         assert!(mirror_path.exists());
+        assert!(checkout_path.exists());
         assert_eq!(
             git_output(
-                &project_one.path().join(format!(".agen/deps/{alias}")),
-                &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+                &checkout_path,
+                &["rev-parse", "--path-format=absolute", "--git-common-dir"]
             ),
             mirror_path.canonicalize().unwrap().to_string_lossy()
         );
+        let resolution_one =
+            resolve_project(project_one.path(), cache.path(), ResolveMode::Sync).unwrap();
+        let resolution_two =
+            resolve_project(project_two.path(), cache.path(), ResolveMode::Sync).unwrap();
         assert_eq!(
-            git_output(
-                &project_two.path().join(format!(".agen/deps/{alias}")),
-                &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-            ),
-            mirror_path.canonicalize().unwrap().to_string_lossy()
+            resolution_one
+                .packages
+                .iter()
+                .find(|package| matches!(package.source, PackageSource::Git { .. }))
+                .unwrap()
+                .root,
+            checkout_path
+        );
+        assert_eq!(
+            resolution_two
+                .packages
+                .iter()
+                .find(|package| matches!(package.source, PackageSource::Git { .. }))
+                .unwrap()
+                .root,
+            checkout_path
         );
     }
 
@@ -1017,7 +1038,7 @@ sensitivity = "high"
     }
 
     #[test]
-    fn doctor_accepts_shared_mirror_backed_worktrees() {
+    fn doctor_accepts_shared_mirror_backed_checkouts() {
         let temp = TempDir::new().unwrap();
         let cache = cache_dir();
         let (_repo, url) = create_git_dependency();
