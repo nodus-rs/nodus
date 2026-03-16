@@ -484,13 +484,58 @@ fn parse_skill_frontmatter(contents: &str) -> Result<SkillFrontmatter> {
     for line in lines {
         if line == "---" {
             let yaml = yaml.join("\n");
-            return serde_yaml::from_str(&yaml)
-                .context("failed to parse SKILL.md frontmatter as YAML");
+            return match serde_yaml::from_str(&yaml) {
+                Ok(frontmatter) => Ok(frontmatter),
+                Err(error) => parse_simple_frontmatter(&yaml).with_context(|| {
+                    format!("failed to parse SKILL.md frontmatter as YAML: {error}")
+                }),
+            };
         }
         yaml.push(line);
     }
 
     bail!("`SKILL.md` frontmatter is missing a closing `---`");
+}
+
+fn parse_simple_frontmatter(yaml: &str) -> Result<SkillFrontmatter> {
+    let mut name = None;
+    let mut description = None;
+
+    for line in yaml.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        let Some((key, value)) = trimmed.split_once(':') else {
+            bail!("frontmatter line `{trimmed}` is not a simple `key: value` entry");
+        };
+        let key = key.trim();
+        let value = unquote_frontmatter_value(value.trim());
+
+        match key {
+            "name" => name = Some(value),
+            "description" => description = Some(value),
+            _ => {}
+        }
+    }
+
+    Ok(SkillFrontmatter {
+        name: name.ok_or_else(|| anyhow!("missing `name` in frontmatter"))?,
+        description: description.ok_or_else(|| anyhow!("missing `description` in frontmatter"))?,
+    })
+}
+
+fn unquote_frontmatter_value(value: &str) -> String {
+    if value.len() >= 2 {
+        let bytes = value.as_bytes();
+        let first = bytes[0] as char;
+        let last = bytes[value.len() - 1] as char;
+        if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+            return value[1..value.len() - 1].to_string();
+        }
+    }
+    value.to_string()
 }
 
 fn collect_ignored_field_warnings(table: &Table) -> Vec<String> {
@@ -652,6 +697,19 @@ playbook_ios = { url = "https://github.com/wenext-limited/playbook-ios" }
 
         let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
         assert!(error.contains("skill `review` is invalid"));
+    }
+
+    #[test]
+    fn accepts_unquoted_description_with_colon() {
+        let temp = TempDir::new().unwrap();
+        write_file(
+            &temp.path().join("skills/ios-websocket/SKILL.md"),
+            "---\nname: ios-websocket\ndescription: Use when a task involves WebSocket push-notification subscriptions. Trigger this skill for any of: subscribing to a new server push URI.\n---\n# iOS WebSocket\n",
+        );
+
+        let loaded = load_root_from_dir(temp.path()).unwrap();
+
+        assert_eq!(loaded.discovered.skills[0].id, "ios-websocket");
     }
 
     #[test]
