@@ -63,6 +63,8 @@ pub struct DependencySpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub components: Option<Vec<DependencyComponent>>,
 }
 
@@ -155,6 +157,8 @@ struct ClaudeMarketplace {
 struct ClaudeMarketplacePlugin {
     name: String,
     source: String,
+    #[serde(default)]
+    version: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -315,6 +319,9 @@ pub fn serialize_manifest(manifest: &Manifest) -> Result<String> {
             if let Some(tag) = &dependency.tag {
                 fields.push(format!("tag = {}", quote(tag)));
             }
+            if let Some(branch) = &dependency.branch {
+                fields.push(format!("branch = {}", quote(branch)));
+            }
             if let Some(components) = dependency.explicit_components_sorted() {
                 let encoded = components
                     .into_iter()
@@ -379,9 +386,22 @@ impl LoadedManifest {
                     if url.trim().is_empty() {
                         bail!("dependency `{alias}` has an empty git source");
                     }
-                    let tag = dependency.tag.as_deref().unwrap_or_default();
-                    if tag.trim().is_empty() {
-                        bail!("dependency `{alias}` must declare `tag` for git sources");
+                    let tag = dependency.tag.as_deref().map(str::trim).unwrap_or_default();
+                    let branch = dependency
+                        .branch
+                        .as_deref()
+                        .map(str::trim)
+                        .unwrap_or_default();
+                    match (tag.is_empty(), branch.is_empty()) {
+                        (false, false) => {
+                            bail!("dependency `{alias}` must not declare both `tag` and `branch`")
+                        }
+                        (true, true) => {
+                            bail!(
+                                "dependency `{alias}` must declare `tag` or `branch` for git sources"
+                            )
+                        }
+                        _ => {}
                     }
                 }
                 DependencySourceKind::Path => {
@@ -534,6 +554,29 @@ impl DependencySpec {
 
         bail!("dependency source must declare either `github` or `url` for git dependencies")
     }
+
+    pub fn requested_git_ref(&self) -> Result<RequestedGitRef<'_>> {
+        match (
+            self.tag
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty()),
+            self.branch
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty()),
+        ) {
+            (Some(tag), None) => Ok(RequestedGitRef::Tag(tag)),
+            (None, Some(branch)) => Ok(RequestedGitRef::Branch(branch)),
+            (Some(_), Some(_)) => bail!("git dependency must not declare both `tag` and `branch`"),
+            (None, None) => bail!("git dependency must declare `tag` or `branch`"),
+        }
+    }
+}
+
+pub enum RequestedGitRef<'a> {
+    Tag(&'a str),
+    Branch(&'a str),
 }
 
 impl PackageContents {
@@ -597,7 +640,9 @@ fn load_claude_marketplace_wrapper(loaded: &LoadedManifest) -> Result<Option<Loa
     }
 
     let mut manifest = loaded.manifest.clone();
+    let mut single_plugin_version = None;
     let mut aliases = HashSet::new();
+    let plugin_count = marketplace.plugins.len();
     for plugin in marketplace.plugins {
         let name = plugin.name.trim();
         if name.is_empty() {
@@ -614,6 +659,21 @@ fn load_claude_marketplace_wrapper(loaded: &LoadedManifest) -> Result<Option<Loa
                 marketplace_path.display()
             );
         }
+
+        let declared_version = plugin
+            .version
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                Version::parse(value).with_context(|| {
+                    format!(
+                        "failed to parse plugin `{name}` version `{value}` in {}",
+                        marketplace_path.display()
+                    )
+                })
+            })
+            .transpose()?;
 
         let alias = normalize_dependency_alias(name)?;
         if !aliases.insert(alias.clone()) {
@@ -647,12 +707,23 @@ fn load_claude_marketplace_wrapper(loaded: &LoadedManifest) -> Result<Option<Loa
                 github: None,
                 url: None,
                 path: Some(source_path),
-                tag: plugin_manifest
-                    .effective_version()
+                tag: declared_version
+                    .clone()
+                    .or_else(|| plugin_manifest.effective_version())
                     .map(|version| version.to_string()),
+                branch: None,
                 components: None,
             },
         );
+
+        if plugin_count == 1 {
+            single_plugin_version =
+                declared_version.or_else(|| plugin_manifest.effective_version());
+        }
+    }
+
+    if manifest.version.is_none() {
+        manifest.version = single_plugin_version;
     }
 
     Ok(Some(LoadedManifest {
@@ -1104,6 +1175,7 @@ playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.1.0" }
   "plugins": [
     {
       "name": "Axiom",
+      "version": "2.34.0",
       "source": "./.claude-plugin/plugins/axiom"
     }
   ]
@@ -1138,6 +1210,10 @@ playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.1.0" }
             Some(Path::new("./.claude-plugin/plugins/axiom"))
         );
         assert_eq!(dependency.tag.as_deref(), Some("2.34.0"));
+        assert_eq!(
+            loaded.manifest.version,
+            Some(Version::parse("2.34.0").unwrap())
+        );
 
         let package_files = loaded.package_files().unwrap();
         assert!(
@@ -1560,6 +1636,7 @@ playbook_ios = { github = "wenext-limited", tag = "v0.1.0" }
                 url: None,
                 path: None,
                 tag: Some("v0.1.0".into()),
+                branch: None,
                 components: Some(vec![
                     DependencyComponent::Rules,
                     DependencyComponent::Skills,
@@ -1646,6 +1723,7 @@ enabled = ["unknown"]
             url: Some("https://github.com/wenext-limited/playbook-ios".into()),
             path: None,
             tag: Some("v0.1.0".into()),
+            branch: None,
             components: None,
         };
 

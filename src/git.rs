@@ -14,18 +14,25 @@ use crate::report::Reporter;
 use crate::resolver::{sync_in_dir, sync_in_dir_with_adapters};
 use crate::selection::{resolve_adapter_selection, should_prompt_for_adapter};
 
+#[derive(Debug, Clone, Copy)]
+enum RequestedGitRef<'a> {
+    Tag(&'a str),
+    Branch(&'a str),
+}
+
 #[derive(Debug, Clone)]
 pub struct GitCheckout {
     pub path: PathBuf,
     pub url: String,
-    pub tag: String,
+    pub tag: Option<String>,
+    pub branch: Option<String>,
     pub rev: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct AddSummary {
     pub alias: String,
-    pub tag: String,
+    pub reference: String,
     pub adapters: Vec<Adapter>,
     pub managed_file_count: usize,
 }
@@ -34,6 +41,15 @@ pub struct AddSummary {
 pub struct RemoveSummary {
     pub alias: String,
     pub managed_file_count: usize,
+}
+
+impl GitCheckout {
+    fn reference_display(&self) -> String {
+        self.tag
+            .clone()
+            .or_else(|| self.branch.clone())
+            .unwrap_or_else(|| self.rev.clone())
+    }
 }
 
 #[allow(dead_code)]
@@ -70,7 +86,7 @@ pub fn add_dependency_in_dir_with_adapters(
 ) -> Result<AddSummary> {
     let normalized_url = normalize_git_url(url);
     let alias = normalize_alias_from_url(&normalized_url)?;
-    let checkout = ensure_git_dependency(cache_root, &normalized_url, tag, true, reporter)?;
+    let checkout = ensure_git_dependency(cache_root, &normalized_url, tag, None, true, reporter)?;
     let github = github_slug_from_url(&checkout.url);
     load_dependency_from_dir(&checkout.path)
         .with_context(|| format!("dependency `{alias}` does not match the Nodus package layout"))?;
@@ -86,7 +102,7 @@ pub fn add_dependency_in_dir_with_adapters(
         "Adding",
         format!(
             "{alias} {} to {}",
-            checkout.tag,
+            checkout.reference_display(),
             project_root.join(MANIFEST_FILE).display()
         ),
     )?;
@@ -96,7 +112,8 @@ pub fn add_dependency_in_dir_with_adapters(
             github: github.clone(),
             url: github.is_none().then_some(checkout.url.clone()),
             path: None,
-            tag: Some(checkout.tag.clone()),
+            tag: checkout.tag.clone(),
+            branch: checkout.branch.clone(),
             components: (!components.is_empty()).then(|| {
                 let mut sorted = components.to_vec();
                 sorted.sort();
@@ -122,7 +139,7 @@ pub fn add_dependency_in_dir_with_adapters(
 
     Ok(AddSummary {
         alias,
-        tag: checkout.tag,
+        reference: checkout.reference_display(),
         adapters: sync_summary.adapters,
         managed_file_count: sync_summary.managed_file_count,
     })
@@ -159,6 +176,7 @@ pub fn ensure_git_dependency(
     cache_root: &Path,
     url: &str,
     tag: Option<&str>,
+    branch: Option<&str>,
     allow_network: bool,
     reporter: &Reporter,
 ) -> Result<GitCheckout> {
@@ -166,23 +184,35 @@ pub fn ensure_git_dependency(
     let mirror_path = shared_repository_path(cache_root, &normalized_url)?;
     ensure_shared_repository(&mirror_path, &normalized_url, allow_network, reporter)?;
 
-    let resolved_tag = match tag {
-        Some(value) => value.to_string(),
-        None => {
-            reporter.status("Resolving", format!("latest tag for {normalized_url}"))?;
-            match latest_tag_name(&mirror_path)? {
-                Some(tag) => tag,
-                None => {
-                    let branch = default_branch(&mirror_path)?;
-                    reporter.note(format!(
-                        "no git tags found for {normalized_url}; using default branch {branch}"
-                    ))?;
-                    branch
-                }
+    let requested_ref = match (tag, branch) {
+        (Some(tag), None) => Some(RequestedGitRef::Tag(tag)),
+        (None, Some(branch)) => Some(RequestedGitRef::Branch(branch)),
+        (Some(_), Some(_)) => bail!("git dependency must not request both `tag` and `branch`"),
+        (None, None) => None,
+    };
+    let (resolved_tag, resolved_branch) = if let Some(requested_ref) = requested_ref {
+        match requested_ref {
+            RequestedGitRef::Tag(value) => (Some(value.to_string()), None),
+            RequestedGitRef::Branch(value) => (None, Some(value.to_string())),
+        }
+    } else {
+        reporter.status("Resolving", format!("latest tag for {normalized_url}"))?;
+        match latest_tag_name(&mirror_path)? {
+            Some(tag) => (Some(tag), None),
+            None => {
+                let branch = default_branch(&mirror_path)?;
+                reporter.note(format!(
+                    "no git tags found for {normalized_url}; using default branch {branch}"
+                ))?;
+                (None, Some(branch))
             }
         }
     };
-    let rev = resolve_tag_to_rev(&mirror_path, &resolved_tag)?;
+    let resolved_ref = resolved_tag
+        .as_deref()
+        .or(resolved_branch.as_deref())
+        .ok_or_else(|| anyhow!("failed to resolve git reference for {normalized_url}"))?;
+    let rev = resolve_ref_to_rev(&mirror_path, resolved_ref)?;
     let checkout_path = shared_checkout_path(cache_root, &normalized_url, &rev)?;
 
     ensure_shared_checkout(
@@ -198,6 +228,7 @@ pub fn ensure_git_dependency(
         path: checkout_path,
         url: normalized_url,
         tag: resolved_tag,
+        branch: resolved_branch,
         rev,
     })
 }
@@ -222,8 +253,8 @@ pub fn current_rev(path: &Path) -> Result<String> {
     git_output(path, ["rev-parse", "HEAD"])
 }
 
-pub fn resolve_tag_to_rev(path: &Path, tag: &str) -> Result<String> {
-    git_output(path, ["rev-parse", &format!("{tag}^{{commit}}")])
+pub fn resolve_ref_to_rev(path: &Path, git_ref: &str) -> Result<String> {
+    git_output(path, ["rev-parse", &format!("{git_ref}^{{commit}}")])
 }
 
 #[allow(dead_code)]
@@ -653,6 +684,7 @@ mod tests {
                 url: Some("https://github.com/wenext-limited/playbook-ios".into()),
                 path: None,
                 tag: Some("v0.1.0".into()),
+                branch: None,
                 components: None,
             },
         );
@@ -673,6 +705,7 @@ mod tests {
                 url: Some("https://github.com/wenext-limited/playbook-ios".into()),
                 path: None,
                 tag: Some("v0.1.0".into()),
+                branch: None,
                 components: None,
             },
         );
@@ -721,12 +754,14 @@ mod tests {
             cache_root.path(),
             &repo.path().to_string_lossy(),
             None,
+            None,
             true,
             &reporter,
         )
         .unwrap();
 
-        assert_eq!(checkout.tag, "main");
+        assert_eq!(checkout.tag, None);
+        assert_eq!(checkout.branch.as_deref(), Some("main"));
         assert_eq!(checkout.rev, current_rev(repo.path()).unwrap());
     }
 

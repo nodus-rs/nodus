@@ -9,7 +9,7 @@ use crate::manifest::{Capability, DependencyComponent};
 use crate::store::write_atomic;
 
 pub const LOCKFILE_NAME: &str = "nodus.lock";
-const LOCKFILE_VERSION: u32 = 5;
+const LOCKFILE_VERSION: u32 = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lockfile {
@@ -53,6 +53,8 @@ pub struct LockedSource {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rev: Option<String>,
 }
 
@@ -66,6 +68,7 @@ impl Lockfile {
                 .then(left.source.path.cmp(&right.source.path))
                 .then(left.source.url.cmp(&right.source.url))
                 .then(left.source.tag.cmp(&right.source.tag))
+                .then(left.source.branch.cmp(&right.source.branch))
                 .then(left.source.rev.cmp(&right.source.rev))
         });
         managed_files.sort();
@@ -239,6 +242,7 @@ mod tests {
                     path: None,
                     url: Some("https://github.com/wenext-limited/playbook-ios".into()),
                     tag: Some("v0.1.0".into()),
+                    branch: None,
                     rev: Some("abc123".into()),
                 },
                 digest: "sha256:abc".into(),
@@ -278,6 +282,7 @@ mod tests {
                     path: None,
                     url: Some("https://github.com/example/iframe-ad".into()),
                     tag: Some("v0.1.0".into()),
+                    branch: None,
                     rev: Some("01f556abcdef".into()),
                 },
                 digest: "sha256:abc".into(),
@@ -321,6 +326,7 @@ mod tests {
                     path: None,
                     url: Some("https://github.com/example/shared".into()),
                     tag: Some("v0.1.0".into()),
+                    branch: None,
                     rev: Some("01f556abcdef".into()),
                 },
                 digest: "sha256:abc".into(),

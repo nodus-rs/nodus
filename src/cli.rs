@@ -126,7 +126,7 @@ fn run_command_in_dir(
             reporter.finish(format!(
                 "added {} {} with adapters [{}]; wrote {} managed files",
                 summary.alias,
-                summary.tag,
+                summary.reference,
                 format_adapters(&summary.adapters),
                 summary.managed_file_count,
             ))?;

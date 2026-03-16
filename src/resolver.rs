@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use semver::Version;
 use sha2::{Digest, Sha256};
 
 use crate::adapters::{Adapter, Adapters, ManagedFile, build_output_plan};
@@ -14,7 +15,7 @@ use crate::git::{
 use crate::lockfile::{LOCKFILE_NAME, LockedPackage, LockedSource, Lockfile};
 use crate::manifest::{
     DependencyComponent, DependencySourceKind, DependencySpec, LoadedManifest, PackageRole,
-    load_dependency_from_dir, load_root_from_dir, write_manifest,
+    RequestedGitRef, load_dependency_from_dir, load_root_from_dir, write_manifest,
 };
 use crate::report::Reporter;
 use crate::selection::{resolve_adapter_selection, should_prompt_for_adapter};
@@ -58,7 +59,8 @@ pub enum PackageSource {
     },
     Git {
         url: String,
-        tag: String,
+        tag: Option<String>,
+        branch: Option<String>,
         rev: String,
     },
 }
@@ -449,17 +451,22 @@ fn resolve_dependency(
         }
         DependencySourceKind::Git => {
             let url = dependency.resolved_git_url()?;
-            let tag = dependency.tag.as_deref().unwrap_or_default();
+            let (tag, branch) = match dependency.requested_git_ref()? {
+                RequestedGitRef::Tag(tag) => (Some(tag), None),
+                RequestedGitRef::Branch(branch) => (None, Some(branch)),
+            };
             let checkout = ensure_git_dependency(
                 context.cache_root,
                 &url,
-                Some(tag),
+                tag,
+                branch,
                 context.mode == ResolveMode::Sync,
                 context.reporter,
             )?;
             let source = PackageSource::Git {
                 url: checkout.url,
                 tag: checkout.tag,
+                branch: checkout.branch,
                 rev: checkout.rev,
             };
             resolve_package(
@@ -522,6 +529,7 @@ impl Resolution {
                     path: Some(".".into()),
                     url: None,
                     tag: None,
+                    branch: None,
                     rev: None,
                 },
                 PackageSource::Path { path, tag } => LockedSource {
@@ -529,13 +537,20 @@ impl Resolution {
                     path: Some(display_path(path)),
                     url: None,
                     tag: tag.clone(),
+                    branch: None,
                     rev: None,
                 },
-                PackageSource::Git { url, tag, rev } => LockedSource {
+                PackageSource::Git {
+                    url,
+                    tag,
+                    branch,
+                    rev,
+                } => LockedSource {
                     kind: "git".into(),
                     path: None,
                     url: Some(url.clone()),
-                    tag: Some(tag.clone()),
+                    tag: tag.clone(),
+                    branch: branch.clone(),
                     rev: Some(rev.clone()),
                 },
             };
@@ -553,8 +568,16 @@ impl Resolution {
                 alias: package.alias.clone(),
                 name: package.manifest.effective_name(),
                 version_tag: match &package.source {
-                    PackageSource::Git { tag, .. } => Some(tag.clone()),
-                    PackageSource::Path { tag, .. } => tag.clone(),
+                    PackageSource::Git { tag, .. } => package
+                        .manifest
+                        .effective_version()
+                        .map(|v| v.to_string())
+                        .or_else(|| tag.as_deref().map(normalize_version_tag)),
+                    PackageSource::Path { tag, .. } => package
+                        .manifest
+                        .effective_version()
+                        .map(|v| v.to_string())
+                        .or_else(|| tag.as_deref().map(normalize_version_tag)),
                     PackageSource::Root => {
                         package.manifest.effective_version().map(|v| v.to_string())
                     }
@@ -628,6 +651,23 @@ fn sorted_ids<'a>(ids: impl Iterator<Item = &'a String>) -> Vec<String> {
     let mut ids: Vec<_> = ids.cloned().collect();
     ids.sort();
     ids
+}
+
+fn normalize_version_tag(value: &str) -> String {
+    let trimmed = value.trim();
+    if let Some(normalized) = parse_semver_like(trimmed) {
+        normalized.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn parse_semver_like(value: &str) -> Option<Version> {
+    Version::parse(value).ok().or_else(|| {
+        value
+            .strip_prefix('v')
+            .and_then(|rest| Version::parse(rest).ok())
+    })
 }
 
 impl ResolvedPackage {
@@ -1077,6 +1117,12 @@ shared = { path = "vendor/shared" }
         assert!(manifest.contains("url = "));
         let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
         assert!(!lockfile.managed_files.is_empty());
+        let dependency_package = lockfile
+            .packages
+            .iter()
+            .find(|package| package.alias != "root")
+            .unwrap();
+        assert_eq!(dependency_package.version_tag.as_deref(), Some("0.1.0"));
 
         let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
         let dependency = resolution
@@ -1167,7 +1213,7 @@ shared = { path = "vendor/shared" }
         .unwrap();
 
         let manifest = fs::read_to_string(temp.path().join(MANIFEST_FILE)).unwrap();
-        assert!(manifest.contains("tag = \"main\""));
+        assert!(manifest.contains("branch = \"main\""));
     }
 
     #[test]
@@ -1280,6 +1326,7 @@ leaf = {{ url = "{}", tag = "v0.1.0" }}
   "plugins": [
     {
       "name": "Axiom",
+      "version": "2.34.0",
       "source": "./.claude-plugin/plugins/axiom"
     }
   ]
@@ -1327,6 +1374,7 @@ leaf = {{ url = "{}", tag = "v0.1.0" }}
             .iter()
             .find(|package| package.alias == wrapper_alias)
             .unwrap();
+        assert_eq!(wrapper_package.version_tag.as_deref(), Some("2.34.0"));
         assert!(wrapper_package.skills.is_empty());
         assert_eq!(wrapper_package.dependencies, vec!["axiom"]);
 
