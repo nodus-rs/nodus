@@ -51,20 +51,13 @@ pub fn rule_file(
     project_root: &Path,
     snapshot_root: &Path,
     rule: &FileEntry,
-) -> Result<(ManagedFile, String)> {
-    let relative = format!(".claude/rules/{}.md", rule.id);
-    Ok((
-        copy_file(project_root.join(&relative), snapshot_root.join(&rule.path))?,
-        relative,
-    ))
-}
-
-pub fn render_memory_file(imports: impl IntoIterator<Item = impl AsRef<str>>) -> Vec<u8> {
-    let mut contents = String::from("# Managed by Nodus\n");
-    for import in imports {
-        contents.push_str(&format!("@{}\n", import.as_ref()));
-    }
-    contents.into_bytes()
+) -> Result<ManagedFile> {
+    copy_file(
+        project_root
+            .join(".claude/rules")
+            .join(format!("{}.md", rule.id)),
+        snapshot_root.join(&rule.path),
+    )
 }
 
 fn copy_directory(

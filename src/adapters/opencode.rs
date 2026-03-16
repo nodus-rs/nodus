@@ -2,16 +2,9 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use serde::{Deserialize, Serialize};
 
 use crate::adapters::ManagedFile;
 use crate::manifest::{FileEntry, SkillEntry};
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct OpenCodeConfig {
-    #[serde(default)]
-    instructions: Vec<String>,
-}
 
 pub fn skill_files(
     project_root: &Path,
@@ -52,15 +45,13 @@ pub fn agent_file(
     project_root: &Path,
     snapshot_root: &Path,
     agent: &FileEntry,
-) -> Result<(ManagedFile, String)> {
-    let relative = format!(".opencode/agents/{}.md", agent.id);
-    Ok((
-        copy_file(
-            project_root.join(&relative),
-            snapshot_root.join(&agent.path),
-        )?,
-        relative,
-    ))
+) -> Result<ManagedFile> {
+    copy_file(
+        project_root
+            .join(".opencode/agents")
+            .join(format!("{}.md", agent.id)),
+        snapshot_root.join(&agent.path),
+    )
 }
 
 pub fn command_file(
@@ -80,22 +71,13 @@ pub fn rule_file(
     project_root: &Path,
     snapshot_root: &Path,
     rule: &FileEntry,
-) -> Result<(ManagedFile, String)> {
-    let relative = format!(".opencode/rules/{}.md", rule.id);
-    Ok((
-        copy_file(project_root.join(&relative), snapshot_root.join(&rule.path))?,
-        relative,
-    ))
-}
-
-pub fn render_config(instructions: impl IntoIterator<Item = impl AsRef<str>>) -> Result<Vec<u8>> {
-    let config = OpenCodeConfig {
-        instructions: instructions
-            .into_iter()
-            .map(|instruction| instruction.as_ref().to_string())
-            .collect(),
-    };
-    serde_json::to_vec_pretty(&config).context("failed to serialize OpenCode config")
+) -> Result<ManagedFile> {
+    copy_file(
+        project_root
+            .join(".opencode/rules")
+            .join(format!("{}.md", rule.id)),
+        snapshot_root.join(&rule.path),
+    )
 }
 
 fn copy_file(target_path: impl AsRef<Path>, source_path: impl AsRef<Path>) -> Result<ManagedFile> {

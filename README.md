@@ -25,14 +25,12 @@ The current MVP supports:
   - `.claude/agents/<id>.md`
   - `.claude/commands/<id>.md`
   - `.claude/rules/<id>.md`
-  - `CLAUDE.md`
   - `.codex/skills/<id>_<source-id>/`
   - `.codex/rules/<id>.rules`
   - `.opencode/skills/<id>/`
   - `.opencode/agents/<id>.md`
   - `.opencode/commands/<id>.md`
   - `.opencode/rules/<id>.md`
-  - `opencode.json`
 - Ownership tracking in `nodus.lock`
 - Collision protection for unmanaged files
 - Capability gating for high-sensitivity packages
@@ -265,8 +263,6 @@ Managed files are tracked in `nodus.lock`. During sync, Nodus:
 - removes stale managed files that are no longer desired
 - refuses to overwrite existing unmanaged files
 
-This is especially important for generated root files. Nodus manages `CLAUDE.md` and `opencode.json` when it emits rules or OpenCode instructions, and it refuses to overwrite unmanaged copies of those files.
-
 ## Lockfile and Store
 
 `nodus.lock` records:
@@ -306,19 +302,19 @@ Current adapter behavior:
 - Claude: discovered skills are copied to `.claude/skills/<skill-id>_<source-id>/`
 - Claude: discovered agents are copied to `.claude/agents/<agent-id>.md`
 - Claude: discovered commands are copied to `.claude/commands/<command-id>.md`
-- Claude: discovered rules are copied to `.claude/rules/<rule-id>.md`, and `CLAUDE.md` imports them
+- Claude: discovered rules are copied to `.claude/rules/<rule-id>.md`
 - Codex: discovered skills are copied to `.codex/skills/<skill-id>_<source-id>/`
 - Codex: discovered rules are copied to `.codex/rules/<rule-id>.rules`
 - OpenCode: discovered skills are copied to `.opencode/skills/<skill-id>/`
 - OpenCode: discovered agents are copied to `.opencode/agents/<agent-id>.md`
 - OpenCode: discovered commands are copied to `.opencode/commands/<command-id>.md`
 - OpenCode: discovered rules are copied to `.opencode/rules/<rule-id>.md`
-- OpenCode: managed instruction paths for emitted agents and rules are written to `opencode.json`
 
 For skill folders, `<source-id>` is a short deterministic suffix:
 
 - Git dependencies use the first 6 characters of the locked commit SHA
 - Root and local-path packages use the first 6 characters of the package content digest
+
 In `nodus.lock`, the hashed Claude and Codex skill outputs are tracked by stable logical roots such as `.claude/skills/<skill-id>` and `.codex/skills/<skill-id>`. During sync and doctor, Nodus expands each logical root back to the concrete hashed directory using the locked package source. OpenCode skills are tracked directly at `.opencode/skills/<skill-id>`.
 
 ## Development

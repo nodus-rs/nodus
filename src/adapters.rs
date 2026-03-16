@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 
 use crate::resolver::{PackageSource, ResolvedPackage};
 
@@ -117,8 +117,6 @@ struct OutputAccumulator {
     files: BTreeMap<PathBuf, Vec<u8>>,
     managed_files: BTreeSet<String>,
     warnings: Vec<String>,
-    claude_rule_imports: BTreeSet<String>,
-    opencode_instructions: BTreeSet<String>,
     opencode_skill_owners: BTreeMap<String, String>,
 }
 
@@ -241,11 +239,12 @@ pub fn build_output_plan(
                 .supported_adapters()
                 .contains(Adapter::OpenCode)
             {
-                let (file, instruction) = opencode::agent_file(project_root, snapshot_root, agent)?;
-                merge_file(&mut plan.files, file)?;
+                merge_file(
+                    &mut plan.files,
+                    opencode::agent_file(project_root, snapshot_root, agent)?,
+                )?;
                 plan.managed_files
                     .insert(format!(".opencode/agents/{}.md", agent.id));
-                plan.opencode_instructions.insert(instruction);
             }
         }
 
@@ -254,11 +253,12 @@ pub fn build_output_plan(
                 .supported_adapters()
                 .contains(Adapter::Claude)
             {
-                let (file, import_path) = claude::rule_file(project_root, snapshot_root, rule)?;
-                merge_file(&mut plan.files, file)?;
+                merge_file(
+                    &mut plan.files,
+                    claude::rule_file(project_root, snapshot_root, rule)?,
+                )?;
                 plan.managed_files
                     .insert(format!(".claude/rules/{}.md", rule.id));
-                plan.claude_rule_imports.insert(import_path);
             }
 
             if ArtifactKind::Rule
@@ -277,11 +277,12 @@ pub fn build_output_plan(
                 .supported_adapters()
                 .contains(Adapter::OpenCode)
             {
-                let (file, instruction) = opencode::rule_file(project_root, snapshot_root, rule)?;
-                merge_file(&mut plan.files, file)?;
+                merge_file(
+                    &mut plan.files,
+                    opencode::rule_file(project_root, snapshot_root, rule)?,
+                )?;
                 plan.managed_files
                     .insert(format!(".opencode/rules/{}.md", rule.id));
-                plan.opencode_instructions.insert(instruction);
             }
         }
 
@@ -310,29 +311,6 @@ pub fn build_output_plan(
                     .insert(format!(".opencode/commands/{}.md", command.id));
             }
         }
-    }
-
-    if !plan.claude_rule_imports.is_empty() {
-        merge_file(
-            &mut plan.files,
-            ManagedFile {
-                path: project_root.join("CLAUDE.md"),
-                contents: claude::render_memory_file(&plan.claude_rule_imports),
-            },
-        )?;
-        plan.managed_files.insert("CLAUDE.md".into());
-    }
-
-    if !plan.opencode_instructions.is_empty() {
-        merge_file(
-            &mut plan.files,
-            ManagedFile {
-                path: project_root.join("opencode.json"),
-                contents: opencode::render_config(&plan.opencode_instructions)
-                    .context("failed to render OpenCode config")?,
-            },
-        )?;
-        plan.managed_files.insert("opencode.json".into());
     }
 
     Ok(OutputPlan {

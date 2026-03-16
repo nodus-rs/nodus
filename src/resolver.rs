@@ -969,7 +969,6 @@ shared = { path = "vendor/shared" }
         assert!(temp.path().join(".claude/agents/security.md").exists());
         assert!(temp.path().join(".claude/commands/build.md").exists());
         assert!(temp.path().join(".claude/rules/default.md").exists());
-        assert!(temp.path().join("CLAUDE.md").exists());
         assert!(temp.path().join(".codex/rules/default.rules").exists());
         assert!(
             temp.path()
@@ -979,20 +978,11 @@ shared = { path = "vendor/shared" }
         assert!(temp.path().join(".opencode/agents/security.md").exists());
         assert!(temp.path().join(".opencode/commands/build.md").exists());
         assert!(temp.path().join(".opencode/rules/default.md").exists());
-        assert!(temp.path().join("opencode.json").exists());
         assert!(
             fs::read_to_string(temp.path().join(".opencode/skills/review/SKILL.md"))
                 .unwrap()
                 .contains("name: review")
         );
-        assert!(
-            fs::read_to_string(temp.path().join("CLAUDE.md"))
-                .unwrap()
-                .contains("@.claude/rules/default.md")
-        );
-        let opencode_config = fs::read_to_string(temp.path().join("opencode.json")).unwrap();
-        assert!(opencode_config.contains(".opencode/agents/security.md"));
-        assert!(opencode_config.contains(".opencode/rules/default.md"));
         assert_eq!(
             fs::read_to_string(temp.path().join("AGENTS.md")).unwrap(),
             "user-owned instructions\n"
@@ -1109,8 +1099,6 @@ sensitivity = "high"
         assert!(temp.path().join(".opencode/agents/security.md").exists());
         assert!(temp.path().join(".opencode/rules/default.md").exists());
         assert!(temp.path().join(".opencode/commands/build.md").exists());
-        assert!(temp.path().join("CLAUDE.md").exists());
-        assert!(temp.path().join("opencode.json").exists());
 
         fs::remove_file(temp.path().join("agents/security.md")).unwrap();
         fs::remove_dir(temp.path().join("agents")).unwrap();
@@ -1123,26 +1111,30 @@ sensitivity = "high"
         assert!(!temp.path().join(".claude/agents/security.md").exists());
         assert!(!temp.path().join(".claude/commands/build.md").exists());
         assert!(!temp.path().join(".claude/rules/default.md").exists());
-        assert!(!temp.path().join("CLAUDE.md").exists());
         assert!(!temp.path().join(".opencode/agents/security.md").exists());
         assert!(!temp.path().join(".opencode/rules/default.md").exists());
         assert!(!temp.path().join(".opencode/commands/build.md").exists());
-        assert!(!temp.path().join("opencode.json").exists());
     }
 
     #[test]
-    fn sync_refuses_to_overwrite_unmanaged_claude_md() {
+    fn sync_preserves_user_owned_root_instruction_files() {
         let temp = TempDir::new().unwrap();
         let cache = cache_dir();
         write_file(&temp.path().join("rules/default.rules"), "allow = []\n");
         write_file(&temp.path().join("CLAUDE.md"), "user-owned memory\n");
+        write_file(&temp.path().join("AGENTS.md"), "user-owned agents\n");
 
-        let error = sync_in_dir(temp.path(), cache.path(), false, false)
-            .unwrap_err()
-            .to_string();
+        sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
 
-        assert!(error.contains("refusing to overwrite unmanaged file"));
-        assert!(error.contains("CLAUDE.md"));
+        assert_eq!(
+            fs::read_to_string(temp.path().join("CLAUDE.md")).unwrap(),
+            "user-owned memory\n"
+        );
+        assert_eq!(
+            fs::read_to_string(temp.path().join("AGENTS.md")).unwrap(),
+            "user-owned agents\n"
+        );
+        assert!(temp.path().join(".claude/rules/default.md").exists());
     }
 
     #[test]
