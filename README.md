@@ -14,13 +14,15 @@ The current MVP supports:
   - `rules/`
   - `commands/`
 - Minimal root `nodus.toml`
+- Persisted adapter selection in `nodus.toml`
 - Git dependencies pinned by `tag` in the manifest and exact `rev` in the lockfile
 - `nodus add <url>` with automatic latest-tag selection
 - `nodus add <url> --tag <tag>` for explicit pinning
+- `nodus add <url> --adapter <name>` / `nodus sync --adapter <name>` for explicit adapter installs
 - Shared Git repository cache with shared cached checkouts by revision
 - Shared content-addressed snapshots in the cache root
 - Deterministic `nodus.lock`
-- Managed output emission for:
+- Managed output emission for the selected adapters:
   - `.claude/skills/<id>_<source-id>/`
   - `.claude/agents/<id>.md`
   - `.claude/commands/<id>.md`
@@ -84,6 +86,12 @@ Add a Git dependency by tag:
 nodus add wenext-limited/playbook-ios
 ```
 
+If the repo does not already contain adapter roots such as `.codex/`, `.claude/`, `.opencode/`, or `AGENTS.md`, pass `--adapter` the first time so Nodus can persist the choice:
+
+```bash
+nodus add wenext-limited/playbook-ios --adapter codex
+```
+
 Sync discovered content into managed runtime outputs:
 
 ```bash
@@ -127,6 +135,9 @@ The root project does not need `api_version`, `name`, or `version` just to consu
 A minimal consumer manifest looks like:
 
 ```toml
+[adapters]
+enabled = ["codex"]
+
 [dependencies]
 playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.1.0" }
 ```
@@ -153,6 +164,8 @@ justification = "Run repository checks."
 - `name` (optional)
 - `version` (optional)
 - `capabilities`
+- `[adapters]`
+- `adapters.enabled`
 - `[dependencies]`
 - `dependencies.<alias>.github`
 - `dependencies.<alias>.url`
@@ -160,6 +173,21 @@ justification = "Run repository checks."
 - `dependencies.<alias>.tag`
 
 Unknown manifest fields are ignored with warnings.
+
+### Adapter Selection
+
+Nodus emits outputs only for the selected adapters. It resolves that selection in this order:
+
+1. Explicit `--adapter <claude|codex|opencode>` flags on `nodus add` or `nodus sync`
+2. Persisted `[adapters] enabled = [...]` in `nodus.toml`
+3. Detected repo roots:
+   - `.claude/` => Claude
+   - `.codex/` => Codex
+   - `.opencode/` or `AGENTS.md` => OpenCode
+4. Interactive prompt on a TTY
+5. Error with guidance in non-interactive environments
+
+When Nodus resolves adapters from flags, detection, or a prompt, it writes `[adapters] enabled = [...]` into `nodus.toml` so later `sync`, `doctor`, and CI runs stay deterministic.
 
 ## Discovery Rules
 
@@ -197,6 +225,13 @@ You can still pin a specific tag explicitly:
 nodus add <url> --tag <tag>
 ```
 
+You can explicitly choose one or more adapters:
+
+```bash
+nodus add <url> --adapter codex
+nodus add <url> --adapter claude --adapter opencode
+```
+
 You can also override the shared repository cache root for this command:
 
 ```bash
@@ -213,6 +248,7 @@ Behavior:
 - checks out the resolved tag
 - validates the discovered package layout
 - creates or updates `nodus.toml`
+- persists adapter selection when it is inferred or explicitly provided
 
 Example:
 
@@ -239,6 +275,7 @@ Options:
 - `--cache-path <path>`: override the shared Git repository cache root
 - `--locked`: fail if `nodus.lock` would change
 - `--allow-high-sensitivity`: allow packages that declare `high` sensitivity capabilities
+- `--adapter <claude|codex|opencode>`: override and persist adapter selection for this repo
 
 ### `nodus doctor`
 
@@ -298,6 +335,9 @@ This keeps fetched repositories, materialized checkouts, and package snapshots s
 ## Runtime Output Mapping
 
 Current adapter behavior:
+
+- Nodus emits only the selected adapters for the repo
+- If multiple adapter roots are already present, Nodus installs all detected adapters
 
 - Claude: discovered skills are copied to `.claude/skills/<skill-id>_<source-id>/`
 - Claude: discovered agents are copied to `.claude/agents/<agent-id>.md`
