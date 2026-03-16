@@ -833,6 +833,10 @@ mod tests {
         );
     }
 
+    fn write_marketplace(path: &Path, contents: &str) {
+        write_file(&path.join(".claude-plugin/marketplace.json"), contents);
+    }
+
     fn init_git_repo(path: &Path) {
         let run = |args: &[&str]| {
             let output = Command::new("git")
@@ -1219,6 +1223,99 @@ leaf = {{ url = "{}", tag = "v0.1.0" }}
         assert!(
             temp.path()
                 .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
+                .exists()
+        );
+    }
+
+    #[test]
+    fn add_dependency_accepts_claude_marketplace_wrapper_and_syncs_plugin_contents() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+
+        let wrapper = TempDir::new().unwrap();
+        write_marketplace(
+            wrapper.path(),
+            r#"{
+  "plugins": [
+    {
+      "name": "Axiom",
+      "source": "./.claude-plugin/plugins/axiom"
+    }
+  ]
+}"#,
+        );
+        write_skill(
+            &wrapper
+                .path()
+                .join(".claude-plugin/plugins/axiom/skills/review"),
+            "Review",
+        );
+        write_file(
+            &wrapper
+                .path()
+                .join(".claude-plugin/plugins/axiom/agents/security.md"),
+            "# Security\n",
+        );
+        write_file(
+            &wrapper
+                .path()
+                .join(".claude-plugin/plugins/axiom/commands/build.md"),
+            "# Build\n",
+        );
+        init_git_repo(wrapper.path());
+        tag_repo(wrapper.path(), "v0.4.0");
+        let wrapper_alias = normalize_alias_from_url(&wrapper.path().to_string_lossy()).unwrap();
+
+        add_dependency_in_dir_with_adapters(
+            temp.path(),
+            cache.path(),
+            &wrapper.path().to_string_lossy(),
+            Some("v0.4.0"),
+            &Adapter::ALL,
+            &[],
+        )
+        .unwrap();
+
+        let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+        let wrapper_package = lockfile
+            .packages
+            .iter()
+            .find(|package| package.alias == wrapper_alias)
+            .unwrap();
+        assert!(wrapper_package.skills.is_empty());
+        assert_eq!(wrapper_package.dependencies, vec!["axiom"]);
+
+        let plugin_package = lockfile
+            .packages
+            .iter()
+            .find(|package| package.alias == "axiom")
+            .unwrap();
+        assert_eq!(plugin_package.skills, vec!["review"]);
+        assert_eq!(plugin_package.agents, vec!["security"]);
+        assert_eq!(plugin_package.commands, vec!["build"]);
+
+        let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+        let plugin_package = resolution
+            .packages
+            .iter()
+            .find(|package| package.alias == "axiom")
+            .unwrap();
+        let managed_skill_id = namespaced_skill_id(plugin_package, "review");
+        let managed_agent_file = namespaced_file_name(plugin_package, "security", "md");
+        let managed_command_file = namespaced_file_name(plugin_package, "build", "md");
+        assert!(
+            temp.path()
+                .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".claude/agents/{managed_agent_file}"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".claude/commands/{managed_command_file}"))
                 .exists()
         );
     }

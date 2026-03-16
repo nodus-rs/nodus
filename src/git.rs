@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use crate::adapters::Adapter;
 use crate::manifest::{
     DependencyComponent, DependencySpec, MANIFEST_FILE, PackageRole, load_dependency_from_dir,
-    load_from_dir, write_manifest,
+    load_from_dir, normalize_dependency_alias, write_manifest,
 };
 use crate::report::Reporter;
 use crate::resolver::{sync_in_dir, sync_in_dir_with_adapters};
@@ -278,21 +278,8 @@ pub fn normalize_alias_from_url(url: &str) -> Result<String> {
         .next()
         .filter(|value| !value.is_empty())
         .ok_or_else(|| anyhow!("failed to infer a dependency alias from `{url}`"))?;
-
-    let mut alias = String::new();
-    for character in tail.chars() {
-        if character.is_ascii_alphanumeric() {
-            alias.push(character.to_ascii_lowercase());
-        } else if !alias.ends_with('_') {
-            alias.push('_');
-        }
-    }
-
-    let alias = alias.trim_matches('_').to_string();
-    if alias.is_empty() {
-        bail!("failed to derive a valid dependency alias from `{url}`");
-    }
-    Ok(alias)
+    normalize_dependency_alias(tail)
+        .with_context(|| format!("failed to infer a dependency alias from `{url}`"))
 }
 
 fn resolve_dependency_alias(

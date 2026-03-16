@@ -105,6 +105,8 @@ pub struct LoadedManifest {
     pub manifest: Manifest,
     pub discovered: PackageContents,
     pub warnings: Vec<String>,
+    extra_package_files: Vec<PathBuf>,
+    allows_empty_dependency_wrapper: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -142,6 +144,17 @@ pub enum PackageRole {
 struct SkillFrontmatter {
     name: String,
     description: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClaudeMarketplace {
+    plugins: Vec<ClaudeMarketplacePlugin>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClaudeMarketplacePlugin {
+    name: String,
+    source: String,
 }
 
 #[allow(dead_code)]
@@ -198,13 +211,22 @@ pub fn load_from_dir(root: &Path, role: PackageRole) -> Result<LoadedManifest> {
         (Manifest::default(), Vec::new(), None)
     };
 
-    let loaded = LoadedManifest {
+    let mut loaded = LoadedManifest {
         root: root.clone(),
         manifest_path,
         manifest,
         discovered: discover_package_contents(&root)?,
         warnings,
+        extra_package_files: Vec::new(),
+        allows_empty_dependency_wrapper: false,
     };
+
+    if should_try_claude_marketplace_fallback(&loaded) {
+        if let Some(marketplace_loaded) = load_claude_marketplace_wrapper(&loaded)? {
+            loaded = marketplace_loaded;
+        }
+    }
+
     loaded.validate(role)?;
     Ok(loaded)
 }
@@ -326,7 +348,8 @@ impl LoadedManifest {
         let allow_empty_package = match role {
             PackageRole::Root => true,
             PackageRole::Dependency => {
-                self.manifest_path.is_some() && !self.manifest.dependencies.is_empty()
+                (self.manifest_path.is_some() || self.allows_empty_dependency_wrapper)
+                    && !self.manifest.dependencies.is_empty()
             }
         };
         if self.discovered.is_empty() && !allow_empty_package {
@@ -388,6 +411,7 @@ impl LoadedManifest {
         if let Some(manifest_path) = &self.manifest_path {
             files.push(manifest_path.clone());
         }
+        files.extend(self.extra_package_files.iter().cloned());
         files.sort();
         files.dedup();
         Ok(files)
@@ -539,6 +563,95 @@ fn load_manifest_str(path: &Path, contents: &str) -> Result<(Manifest, Vec<Strin
         .ok_or_else(|| anyhow!("manifest root must be a TOML table"))?;
     let manifest: Manifest = raw_value.try_into()?;
     Ok((manifest, collect_ignored_field_warnings(&raw_table)))
+}
+
+fn should_try_claude_marketplace_fallback(loaded: &LoadedManifest) -> bool {
+    loaded.discovered.is_empty() && loaded.manifest.dependencies.is_empty()
+}
+
+fn load_claude_marketplace_wrapper(loaded: &LoadedManifest) -> Result<Option<LoadedManifest>> {
+    let marketplace_path = loaded.root.join(".claude-plugin").join("marketplace.json");
+    if !marketplace_path.exists() {
+        return Ok(None);
+    }
+
+    let contents = fs::read_to_string(&marketplace_path)
+        .with_context(|| format!("failed to read {}", marketplace_path.display()))?;
+    let marketplace: ClaudeMarketplace = serde_json::from_str(&contents)
+        .with_context(|| format!("failed to parse JSON in {}", marketplace_path.display()))?;
+    if marketplace.plugins.is_empty() {
+        bail!(
+            "{} must declare at least one plugin",
+            marketplace_path.display()
+        );
+    }
+
+    let mut manifest = loaded.manifest.clone();
+    let mut aliases = HashSet::new();
+    for plugin in marketplace.plugins {
+        let name = plugin.name.trim();
+        if name.is_empty() {
+            bail!(
+                "{} plugin names must not be empty",
+                marketplace_path.display()
+            );
+        }
+
+        let source = plugin.source.trim();
+        if source.is_empty() {
+            bail!(
+                "{} plugin `{name}` must declare a non-empty `source`",
+                marketplace_path.display()
+            );
+        }
+
+        let alias = normalize_dependency_alias(name)?;
+        if !aliases.insert(alias.clone()) {
+            bail!(
+                "{} contains duplicate plugin alias `{alias}` after normalization",
+                marketplace_path.display()
+            );
+        }
+
+        let source_path = PathBuf::from(source);
+        let plugin_root = loaded
+            .resolve_existing_path(&source_path)
+            .with_context(|| format!("plugin `{name}` has invalid source `{source}`"))?;
+        if !plugin_root.is_dir() {
+            bail!(
+                "plugin `{name}` source `{source}` must point to a directory, found {}",
+                plugin_root.display()
+            );
+        }
+        if plugin_root == loaded.root {
+            bail!("plugin `{name}` source `{source}` must not point at the package root");
+        }
+
+        load_dependency_from_dir(&plugin_root).with_context(|| {
+            format!("plugin `{name}` source `{source}` does not match the Nodus package layout")
+        })?;
+
+        manifest.dependencies.insert(
+            alias,
+            DependencySpec {
+                github: None,
+                url: None,
+                path: Some(source_path),
+                tag: None,
+                components: None,
+            },
+        );
+    }
+
+    Ok(Some(LoadedManifest {
+        root: loaded.root.clone(),
+        manifest_path: loaded.manifest_path.clone(),
+        manifest,
+        discovered: PackageContents::default(),
+        warnings: loaded.warnings.clone(),
+        extra_package_files: vec![marketplace_path],
+        allows_empty_dependency_wrapper: true,
+    }))
 }
 
 fn discover_package_contents(root: &Path) -> Result<PackageContents> {
@@ -786,6 +899,23 @@ fn collect_files(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+pub fn normalize_dependency_alias(value: &str) -> Result<String> {
+    let mut alias = String::new();
+    for character in value.chars() {
+        if character.is_ascii_alphanumeric() {
+            alias.push(character.to_ascii_lowercase());
+        } else if !alias.ends_with('_') {
+            alias.push('_');
+        }
+    }
+
+    let alias = alias.trim_matches('_').to_string();
+    if alias.is_empty() {
+        bail!("failed to derive a valid dependency alias from `{value}`");
+    }
+    Ok(alias)
+}
+
 fn canonicalize_existing_path(path: &Path) -> Result<PathBuf> {
     path.canonicalize()
         .with_context(|| format!("failed to canonicalize {}", path.display()))
@@ -841,6 +971,10 @@ mod tests {
             &root.join("skills/review/SKILL.md"),
             "---\nname: Review\ndescription: Review code safely.\n---\n# Review\n",
         );
+    }
+
+    fn write_marketplace(root: &Path, contents: &str) {
+        write_file(&root.join(".claude-plugin/marketplace.json"), contents);
     }
 
     #[test]
@@ -913,6 +1047,320 @@ playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.1.0" }
 
         assert!(loaded.discovered.is_empty());
         assert_eq!(loaded.manifest.dependencies.len(), 1);
+    }
+
+    #[test]
+    fn accepts_dependency_repo_with_claude_marketplace_wrapper() {
+        let temp = TempDir::new().unwrap();
+        write_marketplace(
+            temp.path(),
+            r#"{
+  "plugins": [
+    {
+      "name": "Axiom",
+      "source": "./.claude-plugin/plugins/axiom"
+    }
+  ]
+}"#,
+        );
+        write_file(
+            &temp
+                .path()
+                .join(".claude-plugin/plugins/axiom/agents/reviewer.md"),
+            "# Reviewer\n",
+        );
+        write_file(
+            &temp
+                .path()
+                .join(".claude-plugin/plugins/axiom/commands/build.md"),
+            "# Build\n",
+        );
+        write_file(
+            &temp
+                .path()
+                .join(".claude-plugin/plugins/axiom/skills/review/SKILL.md"),
+            "---\nname: Review\ndescription: Review code safely.\n---\n# Review\n",
+        );
+
+        let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+        assert!(loaded.discovered.is_empty());
+        let dependency = loaded.manifest.dependencies.get("axiom").unwrap();
+        assert_eq!(
+            dependency.path.as_deref(),
+            Some(Path::new("./.claude-plugin/plugins/axiom"))
+        );
+
+        let package_files = loaded.package_files().unwrap();
+        assert!(
+            package_files.contains(
+                &temp
+                    .path()
+                    .join(".claude-plugin/marketplace.json")
+                    .canonicalize()
+                    .unwrap()
+            )
+        );
+    }
+
+    #[test]
+    fn imports_all_marketplace_plugins_in_sorted_alias_order() {
+        let temp = TempDir::new().unwrap();
+        write_marketplace(
+            temp.path(),
+            r#"{
+  "plugins": [
+    {
+      "name": "Zeta Plugin",
+      "source": "./plugins/zeta"
+    },
+    {
+      "name": "Alpha Plugin",
+      "source": "./plugins/alpha"
+    }
+  ]
+}"#,
+        );
+        write_file(
+            &temp.path().join("plugins/zeta/skills/zeta/SKILL.md"),
+            "---\nname: Zeta\ndescription: Zeta skill.\n---\n# Zeta\n",
+        );
+        write_file(
+            &temp.path().join("plugins/alpha/skills/alpha/SKILL.md"),
+            "---\nname: Alpha\ndescription: Alpha skill.\n---\n# Alpha\n",
+        );
+
+        let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+        assert_eq!(
+            loaded
+                .manifest
+                .dependencies
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["alpha_plugin", "zeta_plugin"]
+        );
+    }
+
+    #[test]
+    fn marketplace_sources_are_resolved_from_repo_root() {
+        let temp = TempDir::new().unwrap();
+        write_marketplace(
+            temp.path(),
+            r#"{
+  "plugins": [
+    {
+      "name": "Axiom",
+      "source": "./plugins/axiom"
+    }
+  ]
+}"#,
+        );
+        write_file(
+            &temp.path().join("plugins/axiom/skills/review/SKILL.md"),
+            "---\nname: Review\ndescription: Review code safely.\n---\n# Review\n",
+        );
+
+        let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+        assert_eq!(
+            loaded
+                .manifest
+                .dependencies
+                .get("axiom")
+                .and_then(|dependency| dependency.path.as_deref()),
+            Some(Path::new("./plugins/axiom"))
+        );
+    }
+
+    #[test]
+    fn rejects_marketplace_with_invalid_json() {
+        let temp = TempDir::new().unwrap();
+        write_marketplace(temp.path(), "{");
+
+        let error = load_dependency_from_dir(temp.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("failed to parse JSON"));
+    }
+
+    #[test]
+    fn rejects_marketplace_without_plugins() {
+        let temp = TempDir::new().unwrap();
+        write_marketplace(temp.path(), r#"{ "plugins": [] }"#);
+
+        let error = load_dependency_from_dir(temp.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("must declare at least one plugin"));
+    }
+
+    #[test]
+    fn rejects_marketplace_with_duplicate_plugin_aliases() {
+        let temp = TempDir::new().unwrap();
+        write_marketplace(
+            temp.path(),
+            r#"{
+  "plugins": [
+    {
+      "name": "Axiom",
+      "source": "./plugins/one"
+    },
+    {
+      "name": "axiom",
+      "source": "./plugins/two"
+    }
+  ]
+}"#,
+        );
+        write_file(
+            &temp.path().join("plugins/one/skills/one/SKILL.md"),
+            "---\nname: One\ndescription: One skill.\n---\n# One\n",
+        );
+        write_file(
+            &temp.path().join("plugins/two/skills/two/SKILL.md"),
+            "---\nname: Two\ndescription: Two skill.\n---\n# Two\n",
+        );
+
+        let error = load_dependency_from_dir(temp.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("duplicate plugin alias `axiom`"));
+    }
+
+    #[test]
+    fn rejects_marketplace_with_escaping_source_path() {
+        let temp = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        write_file(
+            &outside.path().join("skills/review/SKILL.md"),
+            "---\nname: Review\ndescription: Review code safely.\n---\n# Review\n",
+        );
+        let escaping_source = format!(
+            "../{}",
+            outside.path().file_name().unwrap().to_string_lossy()
+        );
+        write_marketplace(
+            temp.path(),
+            &format!(
+                r#"{{
+  "plugins": [
+    {{
+      "name": "Axiom",
+      "source": "{escaping_source}"
+    }}
+  ]
+}}"#
+            ),
+        );
+
+        let error = load_dependency_from_dir(temp.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("plugin `Axiom` has invalid source"));
+    }
+
+    #[test]
+    fn rejects_marketplace_with_missing_source_directory() {
+        let temp = TempDir::new().unwrap();
+        write_marketplace(
+            temp.path(),
+            r#"{
+  "plugins": [
+    {
+      "name": "Axiom",
+      "source": "./plugins/missing"
+    }
+  ]
+}"#,
+        );
+
+        let error = load_dependency_from_dir(temp.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("has invalid source `./plugins/missing`"));
+    }
+
+    #[test]
+    fn rejects_marketplace_with_plugin_source_that_is_not_a_directory() {
+        let temp = TempDir::new().unwrap();
+        write_marketplace(
+            temp.path(),
+            r#"{
+  "plugins": [
+    {
+      "name": "Axiom",
+      "source": "./plugins/axiom"
+    }
+  ]
+}"#,
+        );
+        write_file(&temp.path().join("plugins/axiom"), "not a directory\n");
+
+        let error = load_dependency_from_dir(temp.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("must point to a directory"));
+    }
+
+    #[test]
+    fn rejects_marketplace_with_plugin_source_that_is_not_a_nodus_package() {
+        let temp = TempDir::new().unwrap();
+        write_marketplace(
+            temp.path(),
+            r#"{
+  "plugins": [
+    {
+      "name": "Axiom",
+      "source": "./plugins/axiom"
+    }
+  ]
+}"#,
+        );
+        write_file(
+            &temp.path().join("plugins/axiom/README.md"),
+            "# Not a package\n",
+        );
+
+        let error = load_dependency_from_dir(temp.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("does not match the Nodus package layout"));
+    }
+
+    #[test]
+    fn prefers_standard_layout_over_marketplace_fallback() {
+        let temp = TempDir::new().unwrap();
+        write_valid_skill(temp.path());
+        write_marketplace(
+            temp.path(),
+            r#"{
+  "plugins": [
+    {
+      "name": "Axiom",
+      "source": "./plugins/axiom"
+    }
+  ]
+}"#,
+        );
+        write_file(
+            &temp.path().join("plugins/axiom/skills/axiom/SKILL.md"),
+            "---\nname: Axiom\ndescription: Axiom skill.\n---\n# Axiom\n",
+        );
+
+        let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+        assert_eq!(
+            loaded
+                .discovered
+                .skills
+                .iter()
+                .map(|skill| skill.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["review"]
+        );
+        assert!(loaded.manifest.dependencies.is_empty());
     }
 
     #[test]
