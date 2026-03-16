@@ -34,16 +34,16 @@ Not implemented yet:
 
 ## Install
 
-Build the CLI with Cargo:
+Install the CLI with Cargo:
 
 ```bash
-cargo build
+cargo install --path .
 ```
 
-Run it with:
+Then run it directly:
 
 ```bash
-cargo run -- <command>
+agen <command>
 ```
 
 ## Quick Start
@@ -51,7 +51,7 @@ cargo run -- <command>
 Create a starter package in the current repository:
 
 ```bash
-cargo run -- init
+agen init
 ```
 
 That scaffolds:
@@ -62,25 +62,25 @@ That scaffolds:
 Then sync the package into managed runtime outputs:
 
 ```bash
-cargo run -- sync
+agen sync
 ```
 
 If your package declares any `high` sensitivity capabilities, sync requires explicit opt-in:
 
 ```bash
-cargo run -- sync --allow-high-sensitivity
+agen sync --allow-high-sensitivity
 ```
 
 Validate that the repo is consistent with the current manifest and lockfile:
 
 ```bash
-cargo run -- doctor
+agen doctor
 ```
 
 For CI or reproducible local checks, use:
 
 ```bash
-cargo run -- sync --locked
+agen sync --locked
 ```
 
 ## Manifest
