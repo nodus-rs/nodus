@@ -27,12 +27,15 @@ The current MVP supports:
   - `.claude/agents/<id>.md`
   - `.claude/commands/<id>.md`
   - `.claude/rules/<id>.md`
+  - `.claude/.gitignore`
   - `.codex/skills/<id>_<source-id>/`
   - `.codex/rules/<id>.rules`
+  - `.codex/.gitignore`
   - `.opencode/skills/<id>/`
   - `.opencode/agents/<id>.md`
   - `.opencode/commands/<id>.md`
   - `.opencode/rules/<id>.md`
+  - `.opencode/.gitignore`
 - Ownership tracking in `nodus.lock`
 - Collision protection for unmanaged files
 - Capability gating for high-sensitivity packages
@@ -338,7 +341,6 @@ Current adapter behavior:
 
 - Nodus emits only the selected adapters for the repo
 - If multiple adapter roots are already present, Nodus installs all detected adapters
-
 - Claude: discovered skills are copied to `.claude/skills/<skill-id>_<source-id>/`
 - Claude: discovered agents are copied to `.claude/agents/<agent-id>.md`
 - Claude: discovered commands are copied to `.claude/commands/<command-id>.md`
@@ -356,6 +358,8 @@ For skill folders, `<source-id>` is a short deterministic suffix:
 - Root and local-path packages use the first 6 characters of the package content digest
 
 In `nodus.lock`, the hashed Claude and Codex skill outputs are tracked by stable logical roots such as `.claude/skills/<skill-id>` and `.codex/skills/<skill-id>`. During sync and doctor, Nodus expands each logical root back to the concrete hashed directory using the locked package source. OpenCode skills are tracked directly at `.opencode/skills/<skill-id>`.
+
+For each selected runtime root, Nodus also writes a managed `.gitignore` file that ignores the generated runtime outputs inside that root.
 
 ## Development
 
