@@ -1,45 +1,44 @@
 # Nodus
 
-Nodus is a local-first Rust CLI for shipping project-scoped agent packages without the usual layout drift.
+Nodus is a local-first Rust CLI for adding project-scoped agent packages to your repo without layout drift.
 
-It gives a repository one package shape for `skills/`, `agents/`, `rules/`, and `commands/`, resolves dependencies from Git tags or local paths, locks exact revisions in `nodus.lock`, snapshots the result into a shared store, and emits managed runtime files for Claude, Codex, and OpenCode.
+Add a package from Git or a local path, pin the tag you want, lock the exact resolved revision in `nodus.lock`, snapshot the result into a shared store, and emit managed runtime files for Claude, Codex, and OpenCode.
 
-If you want agent setup to feel reproducible instead of hand-tuned, Nodus is built for that.
+If you want package installation to feel reproducible instead of hand-tuned, Nodus is built for that.
 
 ## Highlights
 
-- One package format, multiple runtimes: keep agent assets in one repository shape and emit only the adapter outputs your project actually uses
-- Deterministic sync: resolve from tags, lock exact revisions, snapshot package content, and regenerate managed outputs from stable state
-- Shared local store: reuse mirrors, checkouts, and content-addressed snapshots across projects instead of refetching everything per repo
+- Add packages in one command: `nodus add` records the dependency, resolves the tag, persists adapter selection when needed, and runs sync immediately
+- Deterministic installs: lock exact revisions, snapshot package content, and regenerate managed outputs from stable state
+- One dependency, multiple runtimes: install once and emit only the adapter outputs your repo actually uses
 - Safe file ownership: Nodus tracks what it wrote, prunes stale generated files, and refuses to overwrite unmanaged files
+- Shared local store: reuse mirrors, checkouts, and content-addressed snapshots across projects instead of refetching everything per repo
 - Explicit safety gates: packages that declare `high` sensitivity capabilities require an intentional opt-in before sync completes
 - CI-friendly by design: `nodus sync --locked` and `nodus doctor` make it straightforward to verify that a repo matches its expected state
 
 ## Why Nodus
 
-Agent customization tends to drift because every runtime expects a different on-disk layout. Teams end up copying instructions around, patching generated folders by hand, and hoping everyone converges on the same setup.
+Adding an agent package should not mean copying files around by hand, guessing which runtime folders to touch, or wondering whether everyone on the team resolved the same revision.
 
-Nodus replaces that with one sync flow:
+Nodus gives package consumers one sync flow:
 
-- Discover package content from conventional folders:
-  - `skills/`
-  - `agents/`
-  - `rules/`
-  - `commands/`
-- Pin direct dependencies by Git tag in `nodus.toml`
+- Add a dependency from Git or a local path
+- Pin direct dependencies by tag in `nodus.toml`
 - Lock exact Git revisions and managed outputs in `nodus.lock`
 - Reuse a shared store of repository mirrors, checkouts, and content-addressed snapshots across projects
 - Emit only the runtime outputs your repo actually needs
 - Protect unmanaged files from accidental overwrite
 - Gate high-sensitivity packages behind explicit opt-in
 
+Package authors still publish content from conventional folders such as `skills/`, `agents/`, `rules/`, and `commands/`, but as a consumer you mostly interact with `nodus add`, `nodus sync`, and `nodus doctor`.
+
 ## How It Works
 
-1. A package repo exposes agent assets from top-level folders like `skills/`, `agents/`, `rules/`, and `commands/`.
-2. A consuming repo adds that package from a Git tag or local path.
-3. Nodus resolves dependencies, locks exact state, snapshots the package content, and writes runtime-specific files into managed directories such as `.codex/` or `.claude/`.
+1. Initialize or open a repo that should consume agent packages.
+2. Run `nodus add <package>` from a Git tag or local path.
+3. Nodus resolves dependencies, locks exact state, snapshots package content, and writes runtime-specific files into managed directories such as `.codex/` or `.claude/`.
 
-That means the source package stays clean, the generated outputs stay reproducible, and every repo can choose only the adapters it needs.
+That means you get a pinned dependency, reproducible generated outputs, and a repo that can prove what was installed.
 
 ## Available Today
 
