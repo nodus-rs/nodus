@@ -138,7 +138,12 @@ impl Lockfile {
             return None;
         };
 
-        if *runtime != ".claude" && *runtime != ".codex" && *runtime != ".opencode" {
+        if *runtime != ".agents"
+            && *runtime != ".claude"
+            && *runtime != ".codex"
+            && *runtime != ".cursor"
+            && *runtime != ".opencode"
+        {
             return None;
         }
 
@@ -339,10 +344,13 @@ mod tests {
                 capabilities: vec![],
             }],
             vec![
+                ".agents/commands/build.md".into(),
                 ".claude/agents/security.md".into(),
                 ".claude/commands/build.md".into(),
                 ".claude/rules/default.md".into(),
                 ".codex/rules/default.rules".into(),
+                ".cursor/commands/build.md".into(),
+                ".cursor/rules/default.mdc".into(),
                 ".opencode/agents/security.md".into(),
                 ".opencode/commands/build.md".into(),
                 ".opencode/rules/default.md".into(),
@@ -351,6 +359,9 @@ mod tests {
 
         let managed_paths = lockfile.managed_paths(Path::new("/tmp/project")).unwrap();
 
+        assert!(managed_paths.contains(&PathBuf::from(
+            "/tmp/project/.agents/commands/build_01f556.md"
+        )));
         assert!(managed_paths.contains(&PathBuf::from(
             "/tmp/project/.claude/agents/security_01f556.md"
         )));
@@ -362,6 +373,12 @@ mod tests {
         )));
         assert!(managed_paths.contains(&PathBuf::from(
             "/tmp/project/.codex/rules/default_01f556.rules"
+        )));
+        assert!(managed_paths.contains(&PathBuf::from(
+            "/tmp/project/.cursor/commands/build_01f556.md"
+        )));
+        assert!(managed_paths.contains(&PathBuf::from(
+            "/tmp/project/.cursor/rules/default_01f556.mdc"
         )));
         assert!(managed_paths.contains(&PathBuf::from(
             "/tmp/project/.opencode/agents/security_01f556.md"

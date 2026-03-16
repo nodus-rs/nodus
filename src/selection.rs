@@ -62,7 +62,7 @@ pub fn resolve_adapter_selection(
     }
 
     bail!(
-        "no adapter configuration found in {}. Pass `--adapter <claude|codex|opencode>` or configure `[adapters] enabled = [...]` in nodus.toml",
+        "no adapter configuration found in {}. Pass `--adapter <agents|claude|codex|cursor|opencode>` or configure `[adapters] enabled = [...]` in nodus.toml",
         project_root.display()
     );
 }
@@ -75,6 +75,12 @@ pub fn detect_repo_adapters(project_root: &Path) -> Adapters {
     }
     if project_root.join(".codex").exists() {
         detected = detected.union(Adapters::CODEX);
+    }
+    if project_root.join(".agents").exists() {
+        detected = detected.union(Adapters::AGENTS);
+    }
+    if project_root.join(".cursor").exists() {
+        detected = detected.union(Adapters::CURSOR);
     }
     if project_root.join(".opencode").exists() || project_root.join("AGENTS.md").exists() {
         detected = detected.union(Adapters::OPENCODE);
@@ -113,9 +119,11 @@ fn prompt_for_adapter_from(
         project_root.display()
     )?;
     writeln!(output, "Select an adapter to install:")?;
-    writeln!(output, "  1. claude")?;
-    writeln!(output, "  2. codex")?;
-    writeln!(output, "  3. opencode")?;
+    writeln!(output, "  1. agents")?;
+    writeln!(output, "  2. claude")?;
+    writeln!(output, "  3. codex")?;
+    writeln!(output, "  4. cursor")?;
+    writeln!(output, "  5. opencode")?;
     write!(output, "> ")?;
     output.flush()?;
 
@@ -126,9 +134,11 @@ fn prompt_for_adapter_from(
 
 fn parse_prompt_answer(answer: &str) -> Result<Adapter> {
     match answer.trim().to_ascii_lowercase().as_str() {
-        "1" | "claude" => Ok(Adapter::Claude),
-        "2" | "codex" => Ok(Adapter::Codex),
-        "3" | "opencode" | "open-code" => Ok(Adapter::OpenCode),
+        "1" | "agents" => Ok(Adapter::Agents),
+        "2" | "claude" => Ok(Adapter::Claude),
+        "3" | "codex" => Ok(Adapter::Codex),
+        "4" | "cursor" => Ok(Adapter::Cursor),
+        "5" | "opencode" | "open-code" => Ok(Adapter::OpenCode),
         other => bail!("invalid adapter selection `{other}`"),
     }
 }
@@ -145,13 +155,16 @@ mod tests {
     fn detects_existing_repo_adapter_roots() {
         let temp = TempDir::new().unwrap();
         fs::create_dir_all(temp.path().join(".claude")).unwrap();
+        fs::create_dir_all(temp.path().join(".cursor")).unwrap();
         fs::create_dir_all(temp.path().join(".opencode")).unwrap();
 
         let detected = detect_repo_adapters(temp.path());
 
         assert!(detected.contains(Adapter::Claude));
+        assert!(detected.contains(Adapter::Cursor));
         assert!(detected.contains(Adapter::OpenCode));
         assert!(!detected.contains(Adapter::Codex));
+        assert!(!detected.contains(Adapter::Agents));
     }
 
     #[test]
@@ -180,7 +193,8 @@ mod tests {
 
     #[test]
     fn prompt_parser_accepts_numeric_choices() {
-        assert_eq!(parse_prompt_answer("2\n").unwrap(), Adapter::Codex);
+        assert_eq!(parse_prompt_answer("3\n").unwrap(), Adapter::Codex);
+        assert_eq!(parse_prompt_answer("cursor").unwrap(), Adapter::Cursor);
         assert_eq!(parse_prompt_answer("open-code").unwrap(), Adapter::OpenCode);
     }
 }

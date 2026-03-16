@@ -8,8 +8,10 @@ use serde::{Deserialize, Serialize};
 use crate::manifest::DependencyComponent;
 use crate::resolver::{PackageSource, ResolvedPackage};
 
+pub mod agents;
 pub mod claude;
 pub mod codex;
+pub mod cursor;
 pub mod opencode;
 
 #[derive(Debug, Clone)]
@@ -23,29 +25,43 @@ pub struct ManagedFile {
 )]
 #[serde(rename_all = "lowercase")]
 pub enum Adapter {
+    #[value(name = "agents")]
+    Agents,
     #[value(name = "claude")]
     Claude,
     #[value(name = "codex")]
     Codex,
+    #[value(name = "cursor")]
+    Cursor,
     #[value(name = "opencode", alias = "open-code")]
     OpenCode,
 }
 
 impl Adapter {
-    pub const ALL: [Self; 3] = [Self::Claude, Self::Codex, Self::OpenCode];
+    pub const ALL: [Self; 5] = [
+        Self::Agents,
+        Self::Claude,
+        Self::Codex,
+        Self::Cursor,
+        Self::OpenCode,
+    ];
 
     const fn bit(self) -> u8 {
         match self {
-            Self::Claude => 1 << 0,
-            Self::Codex => 1 << 1,
-            Self::OpenCode => 1 << 2,
+            Self::Agents => 1 << 0,
+            Self::Claude => 1 << 1,
+            Self::Codex => 1 << 2,
+            Self::Cursor => 1 << 3,
+            Self::OpenCode => 1 << 4,
         }
     }
 
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Agents => "agents",
             Self::Claude => "claude",
             Self::Codex => "codex",
+            Self::Cursor => "cursor",
             Self::OpenCode => "opencode",
         }
     }
@@ -57,8 +73,10 @@ pub struct Adapters(u8);
 impl Adapters {
     #[allow(dead_code)]
     pub const NONE: Self = Self(0);
+    pub const AGENTS: Self = Self(Adapter::Agents.bit());
     pub const CLAUDE: Self = Self(Adapter::Claude.bit());
     pub const CODEX: Self = Self(Adapter::Codex.bit());
+    pub const CURSOR: Self = Self(Adapter::Cursor.bit());
     pub const OPENCODE: Self = Self(Adapter::OpenCode.bit());
 
     pub const fn contains(self, adapter: Adapter) -> bool {
@@ -128,8 +146,12 @@ impl ArtifactKind {
             Self::Agent => Adapters::CLAUDE.union(Adapters::OPENCODE),
             Self::Rule => Adapters::CLAUDE
                 .union(Adapters::CODEX)
+                .union(Adapters::CURSOR)
                 .union(Adapters::OPENCODE),
-            Self::Command => Adapters::CLAUDE.union(Adapters::OPENCODE),
+            Self::Command => Adapters::AGENTS
+                .union(Adapters::CLAUDE)
+                .union(Adapters::CURSOR)
+                .union(Adapters::OPENCODE),
         }
     }
 
@@ -361,11 +383,37 @@ pub fn build_output_plan(
                 plan.managed_files
                     .insert(format!(".opencode/rules/{}.md", rule.id));
             }
+
+            if selected_adapters.contains(Adapter::Cursor)
+                && ArtifactKind::Rule
+                    .supported_adapters()
+                    .contains(Adapter::Cursor)
+            {
+                merge_file(
+                    &mut plan.files,
+                    cursor::rule_file(project_root, package, snapshot_root, rule)?,
+                )?;
+                plan.managed_files
+                    .insert(format!(".cursor/rules/{}.mdc", rule.id));
+            }
         }
 
         for command in &package.manifest.discovered.commands {
             if !package.selects_component(DependencyComponent::Commands) {
                 continue;
+            }
+
+            if selected_adapters.contains(Adapter::Agents)
+                && ArtifactKind::Command
+                    .supported_adapters()
+                    .contains(Adapter::Agents)
+            {
+                merge_file(
+                    &mut plan.files,
+                    agents::command_file(project_root, package, snapshot_root, command)?,
+                )?;
+                plan.managed_files
+                    .insert(format!(".agents/commands/{}.md", command.id));
             }
 
             if selected_adapters.contains(Adapter::Claude)
@@ -379,6 +427,19 @@ pub fn build_output_plan(
                 )?;
                 plan.managed_files
                     .insert(format!(".claude/commands/{}.md", command.id));
+            }
+
+            if selected_adapters.contains(Adapter::Cursor)
+                && ArtifactKind::Command
+                    .supported_adapters()
+                    .contains(Adapter::Cursor)
+            {
+                merge_file(
+                    &mut plan.files,
+                    cursor::command_file(project_root, package, snapshot_root, command)?,
+                )?;
+                plan.managed_files
+                    .insert(format!(".cursor/commands/{}.md", command.id));
             }
 
             if selected_adapters.contains(Adapter::OpenCode)
@@ -447,7 +508,10 @@ fn gitignore_entry(project_root: &Path, path: &Path) -> Result<Option<(PathBuf, 
     let [runtime, rest @ ..] = components.as_slice() else {
         return Ok(None);
     };
-    if !matches!(runtime.as_str(), ".claude" | ".codex" | ".opencode") {
+    if !matches!(
+        runtime.as_str(),
+        ".agents" | ".claude" | ".codex" | ".cursor" | ".opencode"
+    ) {
         return Ok(None);
     }
     if rest.is_empty() {
@@ -479,8 +543,10 @@ fn managed_artifact_gitignore_pattern(
         return format!("skills/*_{suffix}/");
     }
 
-    if matches!(runtime, ".claude" | ".codex" | ".opencode")
-        && matches!(artifact_dir, "agents" | "commands" | "rules")
+    if matches!(
+        runtime,
+        ".agents" | ".claude" | ".codex" | ".cursor" | ".opencode"
+    ) && matches!(artifact_dir, "agents" | "commands" | "rules")
         && let Some((stem, extension)) = artifact_name.rsplit_once('.')
         && let Some((_, suffix)) = stem.rsplit_once('_')
         && !suffix.is_empty()
@@ -552,25 +618,33 @@ mod tests {
     #[test]
     fn artifact_kind_support_matrix_matches_supported_adapters() {
         let skill = ArtifactKind::Skill.supported_adapters();
+        assert!(!skill.contains(Adapter::Agents));
         assert!(skill.intersects(Adapters::CLAUDE));
         assert!(skill.contains(Adapter::Claude));
         assert!(skill.contains(Adapter::Codex));
+        assert!(!skill.contains(Adapter::Cursor));
         assert!(skill.contains(Adapter::OpenCode));
         assert_eq!(skill.iter().count(), 3);
 
         let agent = ArtifactKind::Agent.supported_adapters();
+        assert!(!agent.contains(Adapter::Agents));
         assert!(agent.contains(Adapter::Claude));
         assert!(!agent.contains(Adapter::Codex));
+        assert!(!agent.contains(Adapter::Cursor));
         assert!(agent.contains(Adapter::OpenCode));
 
         let rule = ArtifactKind::Rule.supported_adapters();
+        assert!(!rule.contains(Adapter::Agents));
         assert!(rule.contains(Adapter::Claude));
         assert!(rule.contains(Adapter::Codex));
+        assert!(rule.contains(Adapter::Cursor));
         assert!(rule.contains(Adapter::OpenCode));
 
         let command = ArtifactKind::Command.supported_adapters();
+        assert!(command.contains(Adapter::Agents));
         assert!(command.contains(Adapter::Claude));
         assert!(!command.contains(Adapter::Codex));
+        assert!(command.contains(Adapter::Cursor));
         assert!(command.contains(Adapter::OpenCode));
 
         assert!(Adapters::NONE.is_empty());

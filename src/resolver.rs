@@ -791,8 +791,10 @@ fn load_owned_paths(project_root: &Path, lockfile: Option<&Lockfile>) -> Result<
 
 fn prune_empty_parent_dirs(path: &Path, project_root: &Path) -> Result<()> {
     let stop_roots = [
+        project_root.join(".agents"),
         project_root.join(".claude"),
         project_root.join(".codex"),
+        project_root.join(".cursor"),
         project_root.join(".opencode"),
     ];
     let mut current = path.parent();
@@ -1629,6 +1631,7 @@ shared = { path = "vendor/shared" }
         let managed_command_file = namespaced_file_name(dependency, "build", "md");
         let managed_claude_rule_file = namespaced_file_name(dependency, "default", "md");
         let managed_codex_rule_file = namespaced_file_name(dependency, "default", "rules");
+        let managed_cursor_rule_file = namespaced_file_name(dependency, "default", "mdc");
 
         assert!(
             temp.path()
@@ -1658,6 +1661,21 @@ shared = { path = "vendor/shared" }
         assert!(
             temp.path()
                 .join(format!(".codex/rules/{managed_codex_rule_file}"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".agents/commands/{managed_command_file}"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".cursor/commands/{managed_command_file}"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".cursor/rules/{managed_cursor_rule_file}"))
                 .exists()
         );
         assert!(
@@ -1854,6 +1872,10 @@ shared = { path = "vendor/shared" }
             &temp.path().join("vendor/shared/rules/default.rules"),
             "allow = []\n",
         );
+        write_file(
+            &temp.path().join("vendor/shared/commands/build.txt"),
+            "cargo test\n",
+        );
 
         sync_all(temp.path(), cache.path());
 
@@ -1864,13 +1886,27 @@ shared = { path = "vendor/shared" }
             .find(|package| package.alias == "shared")
             .unwrap();
         let managed_skill_id = namespaced_skill_id(dependency, "review");
+        let managed_command_file = namespaced_file_name(dependency, "build", "md");
         let codex_gitignore = fs::read_to_string(temp.path().join(".codex/.gitignore")).unwrap();
+        let agents_gitignore = fs::read_to_string(temp.path().join(".agents/.gitignore")).unwrap();
+        let cursor_gitignore = fs::read_to_string(temp.path().join(".cursor/.gitignore")).unwrap();
 
         assert!(codex_gitignore.contains("# Managed by nodus"));
         assert!(codex_gitignore.contains(".gitignore"));
         let (_, suffix) = managed_skill_id.rsplit_once('_').unwrap();
         assert!(codex_gitignore.contains(&format!("skills/*_{suffix}/")));
         assert!(codex_gitignore.contains(&format!("rules/*_{suffix}.rules")));
+        let (_, command_suffix) = managed_command_file
+            .trim_end_matches(".md")
+            .rsplit_once('_')
+            .unwrap();
+        assert!(agents_gitignore.contains("# Managed by nodus"));
+        assert!(agents_gitignore.contains(".gitignore"));
+        assert!(agents_gitignore.contains(&format!("commands/*_{command_suffix}.md")));
+        assert!(cursor_gitignore.contains("# Managed by nodus"));
+        assert!(cursor_gitignore.contains(".gitignore"));
+        assert!(cursor_gitignore.contains(&format!("commands/*_{command_suffix}.md")));
+        assert!(cursor_gitignore.contains(&format!("rules/*_{suffix}.mdc")));
     }
 
     #[test]

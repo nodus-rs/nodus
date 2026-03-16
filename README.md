@@ -161,7 +161,7 @@ After setup, your repo has a pinned dependency in `nodus.toml`, exact resolved s
 
 ## Why Teams Use Nodus
 
-- Add a package from Git or a local path without manually copying files into `.codex/`, `.claude/`, or `.opencode/`
+- Add a package from Git or a local path without manually copying files into `.agents/`, `.codex/`, `.claude/`, `.cursor/`, or `.opencode/`
 - Install once and emit only the runtime outputs your repo actually uses
 - Reuse shared mirrors, checkouts, and content-addressed snapshots across projects
 - Keep generated files under explicit ownership so stale outputs can be pruned safely
@@ -174,7 +174,7 @@ Nodus currently supports:
 - Local path dependencies
 - Git dependencies resolved from tags or branches
 - Deterministic sync with lock state stored in `nodus.lock`
-- Managed output emission for Claude, Codex, and OpenCode
+- Managed output emission for Agents, Claude, Codex, Cursor, and OpenCode
 - Repo-level adapter selection that can be inferred, chosen explicitly, or persisted
 - Validation of shared store state, lockfile state, and managed files with `nodus doctor`
 
@@ -262,11 +262,13 @@ Unknown manifest fields are ignored with warnings.
 
 Nodus emits outputs only for the selected adapters. It resolves that selection in this order:
 
-1. Explicit `--adapter <claude|codex|opencode>` flags on `nodus add` or `nodus sync`
+1. Explicit `--adapter <agents|claude|codex|cursor|opencode>` flags on `nodus add` or `nodus sync`
 2. Persisted `[adapters] enabled = [...]` in `nodus.toml`
 3. Detected repo roots:
+   - `.agents/` => Agents
    - `.claude/` => Claude
    - `.codex/` => Codex
+   - `.cursor/` => Cursor
    - `.opencode/` or `AGENTS.md` => OpenCode
 4. Interactive prompt on a TTY
 5. Error with guidance in non-interactive environments
@@ -371,7 +373,7 @@ Options:
 - `--store-path <path>`: override the shared repository store root
 - `--locked`: fail if `nodus.lock` would change
 - `--allow-high-sensitivity`: allow packages that declare `high` sensitivity capabilities
-- `--adapter <claude|codex|opencode>`: override and persist adapter selection for this repo
+- `--adapter <agents|claude|codex|cursor|opencode>`: override and persist adapter selection for this repo
 
 ### `nodus doctor`
 
@@ -436,12 +438,15 @@ Current adapter behavior:
 - Nodus emits only the selected adapters for the repo
 - Nodus filters each dependency's own exported components before adapter-specific emission
 - If multiple adapter roots are already present, Nodus installs all detected adapters
+- Agents: discovered commands are copied to `.agents/commands/<command-id>_<source-id>.md`
 - Claude: discovered skills are copied to `.claude/skills/<skill-id>_<source-id>/`
 - Claude: discovered agents are copied to `.claude/agents/<agent-id>_<source-id>.md`
 - Claude: discovered commands are copied to `.claude/commands/<command-id>_<source-id>.md`
 - Claude: discovered rules are copied to `.claude/rules/<rule-id>_<source-id>.md`
 - Codex: discovered skills are copied to `.codex/skills/<skill-id>_<source-id>/`
 - Codex: discovered rules are copied to `.codex/rules/<rule-id>_<source-id>.rules`
+- Cursor: discovered commands are copied to `.cursor/commands/<command-id>_<source-id>.md`
+- Cursor: discovered rules are copied to `.cursor/rules/<rule-id>_<source-id>.mdc`
 - OpenCode: discovered skills are copied to `.opencode/skills/<skill-id>_<source-id>/`
 - OpenCode: discovered agents are copied to `.opencode/agents/<agent-id>_<source-id>.md`
 - OpenCode: discovered commands are copied to `.opencode/commands/<command-id>_<source-id>.md`
@@ -452,7 +457,7 @@ For managed directories and files, `<source-id>` is a short deterministic suffix
 - Git dependencies use the first 6 characters of the locked commit SHA
 - Root and local-path packages use the first 6 characters of the package content digest
 
-In `nodus.lock`, managed runtime outputs are tracked by stable logical roots such as `.claude/skills/<skill-id>`, `.claude/agents/<agent-id>.md`, `.codex/rules/<rule-id>.rules`, and `.opencode/commands/<command-id>.md`. During sync and doctor, Nodus expands each logical path back to the concrete suffixed directory or file using the locked package source.
+In `nodus.lock`, managed runtime outputs are tracked by stable logical roots such as `.agents/commands/<command-id>.md`, `.claude/skills/<skill-id>`, `.codex/rules/<rule-id>.rules`, `.cursor/rules/<rule-id>.mdc`, and `.opencode/commands/<command-id>.md`. During sync and doctor, Nodus expands each logical path back to the concrete suffixed directory or file using the locked package source.
 
 For each selected runtime root, Nodus also writes a managed `.gitignore` file that ignores both itself and the generated runtime outputs inside that root.
 
