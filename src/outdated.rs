@@ -1,6 +1,8 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use rayon::prelude::*;
 
 use crate::git::{ensure_git_dependency, latest_tag, prepare_repository_mirror};
 use crate::lockfile::Lockfile;
@@ -44,6 +46,28 @@ enum DependencyStatus {
 struct DependencyReport {
     alias: String,
     status: DependencyStatus,
+}
+
+#[derive(Debug, Clone)]
+struct DependencySnapshot {
+    alias: String,
+    spec: DependencySpec,
+}
+
+#[derive(Debug, Clone)]
+enum DependencyProbe {
+    Path {
+        path: PathBuf,
+    },
+    GitTag {
+        current_tag: String,
+        latest_tag: String,
+    },
+    GitBranch {
+        branch: String,
+        locked_rev: Option<String>,
+        latest_rev: String,
+    },
 }
 
 impl DependencyReport {
@@ -102,16 +126,27 @@ pub fn check_outdated_in_dir(
         format!("{dependency_count} direct dependencies"),
     )?;
     let lockfile = load_lockfile(cwd)?;
-    let mut reports = Vec::new();
-    for (alias, dependency) in &root.manifest.dependencies {
-        reports.push(check_dependency(
-            alias,
-            dependency,
-            lockfile.as_ref(),
-            reporter,
-            cache_root,
-        )?);
-    }
+    let dependencies = root
+        .manifest
+        .dependencies
+        .iter()
+        .map(|(alias, spec)| DependencySnapshot {
+            alias: alias.clone(),
+            spec: spec.clone(),
+        })
+        .collect::<Vec<_>>();
+    let probes = probe_dependencies(&dependencies, lockfile.as_ref(), cache_root)?;
+    let reports = dependencies
+        .iter()
+        .map(|dependency| {
+            report_for_dependency(
+                &dependency.alias,
+                probes.get(&dependency.alias).with_context(|| {
+                    format!("missing dependency probe for `{}`", dependency.alias)
+                })?,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     let outdated_count = reports.iter().filter(|report| report.is_outdated()).count();
     for report in reports {
@@ -124,68 +159,133 @@ pub fn check_outdated_in_dir(
     })
 }
 
-fn check_dependency(
-    alias: &str,
-    dependency: &DependencySpec,
+fn probe_dependencies(
+    dependencies: &[DependencySnapshot],
     lockfile: Option<&Lockfile>,
-    reporter: &Reporter,
     cache_root: &Path,
-) -> Result<DependencyReport> {
-    let status = match dependency.source_kind()? {
-        DependencySourceKind::Path => {
-            let path = dependency
-                .path
-                .clone()
-                .with_context(|| format!("dependency `{alias}` must declare `path`"))?;
-            DependencyStatus::Path { path }
+) -> Result<BTreeMap<String, DependencyProbe>> {
+    let mut probes = BTreeMap::new();
+    let mut git_groups = BTreeMap::<String, Vec<&DependencySnapshot>>::new();
+
+    for dependency in dependencies {
+        match dependency.spec.source_kind()? {
+            DependencySourceKind::Path => {
+                let path = dependency.spec.path.clone().with_context(|| {
+                    format!("dependency `{}` must declare `path`", dependency.alias)
+                })?;
+                probes.insert(dependency.alias.clone(), DependencyProbe::Path { path });
+            }
+            DependencySourceKind::Git => {
+                let url = dependency.spec.resolved_git_url()?;
+                git_groups.entry(url).or_default().push(dependency);
+            }
         }
-        DependencySourceKind::Git => {
-            let url = dependency.resolved_git_url()?;
-            let mirror_path = prepare_repository_mirror(cache_root, &url, true, reporter)?;
-            match dependency.requested_git_ref()? {
-                RequestedGitRef::Tag(tag) => {
-                    let latest = latest_tag(&mirror_path)?;
-                    if latest == tag {
-                        DependencyStatus::GitTagCurrent {
-                            tag: tag.to_string(),
-                        }
-                    } else {
-                        DependencyStatus::GitTagOutdated {
-                            current: tag.to_string(),
-                            latest,
-                        }
-                    }
-                }
-                RequestedGitRef::Branch(branch) => {
-                    let latest_rev = ensure_git_dependency(
-                        cache_root,
-                        &url,
-                        None,
-                        Some(branch),
-                        true,
-                        reporter,
-                    )?
-                    .rev;
-                    match locked_rev(lockfile, alias) {
-                        Some(current_rev) if current_rev == latest_rev => {
-                            DependencyStatus::GitBranchCurrent {
-                                branch: branch.to_string(),
-                                rev: current_rev,
+    }
+
+    let git_probes = git_groups
+        .into_par_iter()
+        .map(|(url, dependencies)| {
+            let reporter = Reporter::silent();
+            let mirror_path = prepare_repository_mirror(cache_root, &url, true, &reporter)?;
+            let mut latest_tag_name = None;
+            let mut latest_branch_revs = BTreeMap::<String, String>::new();
+            let mut group_probes = Vec::with_capacity(dependencies.len());
+
+            for dependency in dependencies {
+                let probe = match dependency.spec.requested_git_ref()? {
+                    RequestedGitRef::Tag(current_tag) => {
+                        let latest_tag = match latest_tag_name.clone() {
+                            Some(tag) => tag,
+                            None => {
+                                let tag = latest_tag(&mirror_path)?;
+                                latest_tag_name = Some(tag.clone());
+                                tag
                             }
+                        };
+                        DependencyProbe::GitTag {
+                            current_tag: current_tag.to_string(),
+                            latest_tag,
                         }
-                        Some(current_rev) => DependencyStatus::GitBranchOutdated {
-                            branch: branch.to_string(),
-                            current_rev,
-                            latest_rev,
-                        },
-                        None => DependencyStatus::GitBranchUnlocked {
-                            branch: branch.to_string(),
-                            latest_rev,
-                        },
                     }
+                    RequestedGitRef::Branch(branch) => {
+                        let latest_rev = match latest_branch_revs.get(branch) {
+                            Some(rev) => rev.clone(),
+                            None => {
+                                let rev = ensure_git_dependency(
+                                    cache_root,
+                                    &url,
+                                    None,
+                                    Some(branch),
+                                    true,
+                                    &reporter,
+                                )?
+                                .rev;
+                                latest_branch_revs.insert(branch.to_string(), rev.clone());
+                                rev
+                            }
+                        };
+                        DependencyProbe::GitBranch {
+                            branch: branch.to_string(),
+                            locked_rev: locked_rev(lockfile, &dependency.alias),
+                            latest_rev,
+                        }
+                    }
+                };
+                group_probes.push((dependency.alias.clone(), probe));
+            }
+
+            Ok(group_probes)
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .collect::<Result<Vec<_>>>()?;
+
+    for group in git_probes {
+        for (alias, probe) in group {
+            probes.insert(alias, probe);
+        }
+    }
+
+    Ok(probes)
+}
+
+fn report_for_dependency(alias: &str, probe: &DependencyProbe) -> Result<DependencyReport> {
+    let status = match probe {
+        DependencyProbe::Path { path } => DependencyStatus::Path { path: path.clone() },
+        DependencyProbe::GitTag {
+            current_tag,
+            latest_tag,
+        } => {
+            if latest_tag == current_tag {
+                DependencyStatus::GitTagCurrent {
+                    tag: current_tag.clone(),
+                }
+            } else {
+                DependencyStatus::GitTagOutdated {
+                    current: current_tag.clone(),
+                    latest: latest_tag.clone(),
                 }
             }
         }
+        DependencyProbe::GitBranch {
+            branch,
+            locked_rev,
+            latest_rev,
+        } => match locked_rev {
+            Some(current_rev) if current_rev == latest_rev => DependencyStatus::GitBranchCurrent {
+                branch: branch.clone(),
+                rev: current_rev.clone(),
+            },
+            Some(current_rev) => DependencyStatus::GitBranchOutdated {
+                branch: branch.clone(),
+                current_rev: current_rev.clone(),
+                latest_rev: latest_rev.clone(),
+            },
+            None => DependencyStatus::GitBranchUnlocked {
+                branch: branch.clone(),
+                latest_rev: latest_rev.clone(),
+            },
+        },
     };
 
     Ok(DependencyReport {
