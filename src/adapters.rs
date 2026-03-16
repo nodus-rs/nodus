@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
@@ -361,6 +361,12 @@ pub fn build_output_plan(
         }
     }
 
+    for file in gitignore_files(project_root, &plan.files)? {
+        plan.managed_files
+            .insert(display_relative(project_root, &file.path));
+        merge_file(&mut plan.files, file)?;
+    }
+
     Ok(OutputPlan {
         files: plan
             .files
@@ -370,6 +376,75 @@ pub fn build_output_plan(
         managed_files: plan.managed_files.into_iter().collect(),
         warnings: plan.warnings,
     })
+}
+
+fn gitignore_files(
+    project_root: &Path,
+    files: &BTreeMap<PathBuf, Vec<u8>>,
+) -> Result<Vec<ManagedFile>> {
+    let mut entries = BTreeMap::<PathBuf, BTreeSet<String>>::new();
+
+    for path in files.keys() {
+        let Some((root, pattern)) = gitignore_entry(project_root, path)? else {
+            continue;
+        };
+        entries.entry(root).or_default().insert(pattern);
+    }
+
+    Ok(entries
+        .into_iter()
+        .map(|(root, patterns)| ManagedFile {
+            path: root.join(".gitignore"),
+            contents: render_gitignore(&patterns).into_bytes(),
+        })
+        .collect())
+}
+
+fn gitignore_entry(project_root: &Path, path: &Path) -> Result<Option<(PathBuf, String)>> {
+    let relative = path
+        .strip_prefix(project_root)
+        .with_context(|| format!("failed to make {} relative", path.display()))?;
+    let components = relative
+        .iter()
+        .map(|component| component.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+
+    let [runtime, rest @ ..] = components.as_slice() else {
+        return Ok(None);
+    };
+    if !matches!(runtime.as_str(), ".claude" | ".codex" | ".opencode") {
+        return Ok(None);
+    }
+    if rest.is_empty() {
+        return Ok(None);
+    }
+    if rest == [".gitignore"] {
+        return Ok(None);
+    }
+
+    let pattern = if rest.first().map(String::as_str) == Some("skills") && rest.len() >= 2 {
+        format!("skills/{}/", rest[1])
+    } else {
+        rest.join("/")
+    };
+
+    Ok(Some((project_root.join(runtime), pattern)))
+}
+
+fn render_gitignore(patterns: &BTreeSet<String>) -> String {
+    let mut output = String::from("# Managed by nodus\n");
+    for pattern in patterns {
+        output.push_str(pattern);
+        output.push('\n');
+    }
+    output
+}
+
+fn display_relative(project_root: &Path, path: &Path) -> String {
+    path.strip_prefix(project_root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
 }
 
 fn warn_if_unsupported(

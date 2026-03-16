@@ -1067,6 +1067,29 @@ shared = { path = "vendor/shared" }
     }
 
     #[test]
+    fn sync_writes_runtime_gitignores_for_managed_outputs() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_skill(&temp.path().join("skills/review"), "Review");
+        write_file(&temp.path().join("rules/default.rules"), "allow = []\n");
+
+        sync_all(temp.path(), cache.path());
+
+        let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+        let root_package = resolution
+            .packages
+            .iter()
+            .find(|package| package.alias == "root")
+            .unwrap();
+        let managed_skill_id = namespaced_skill_id(root_package, "review");
+        let codex_gitignore = fs::read_to_string(temp.path().join(".codex/.gitignore")).unwrap();
+
+        assert!(codex_gitignore.contains("# Managed by nodus"));
+        assert!(codex_gitignore.contains(&format!("skills/{managed_skill_id}/")));
+        assert!(codex_gitignore.contains("rules/default.rules"));
+    }
+
+    #[test]
     fn sync_detects_multiple_adapter_roots_and_persists_them() {
         let temp = TempDir::new().unwrap();
         let cache = cache_dir();
@@ -1158,8 +1181,11 @@ enabled = ["codex"]
             [Adapter::Codex].as_slice()
         );
         assert!(!temp.path().join(".claude/skills").exists());
+        assert!(!temp.path().join(".claude/.gitignore").exists());
         assert!(temp.path().join(".codex/skills").exists());
+        assert!(temp.path().join(".codex/.gitignore").exists());
         assert!(!temp.path().join(".opencode/skills").exists());
+        assert!(!temp.path().join(".opencode/.gitignore").exists());
     }
 
     #[test]
