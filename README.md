@@ -1,68 +1,59 @@
 # Nodus
 
-Nodus is a local-first Rust CLI for managing project-scoped agent packages by convention instead of explicit export configuration.
+Nodus is a local-first Rust CLI for managing project-scoped agent packages.
 
-The current implementation discovers package content from repository folders, supports Git-tag dependencies backed entirely by a shared remote repository cache and shared cached checkouts, locks exact commits in `nodus.lock`, snapshots package contents into a content-addressed store, and emits managed runtime outputs for Claude, Codex, and OpenCode.
+It lets a repository publish agent assets by convention, resolves those packages from Git tags or local paths, locks exact revisions in `nodus.lock`, snapshots resolved content into a shared local store, and emits managed runtime files for Claude, Codex, and OpenCode.
 
-## Status
+## Why Nodus
 
-The current MVP supports:
+Agent customization tends to drift because every runtime expects a different on-disk layout. Nodus gives teams one package shape and one sync flow:
 
-- Zero-config package discovery from:
+- Discover package content from conventional folders:
   - `skills/`
   - `agents/`
   - `rules/`
   - `commands/`
-- Minimal root `nodus.toml`
-- Persisted adapter selection in `nodus.toml`
-- Git dependencies pinned by `tag` in the manifest and exact `rev` in the lockfile
-- `nodus add <url>` with automatic latest-tag selection
-- `nodus add <url> --tag <tag>` for explicit pinning
-- `nodus add <url> --adapter <name>` / `nodus sync --adapter <name>` for explicit adapter installs
-- Shared Git repository cache with shared cached checkouts by revision
-- Shared content-addressed snapshots in the cache root
-- Deterministic `nodus.lock`
-- Managed output emission for the selected adapters:
-  - `.claude/skills/<id>_<source-id>/`
-  - `.claude/agents/<id>.md`
-  - `.claude/commands/<id>.md`
-  - `.claude/rules/<id>.md`
-  - `.claude/.gitignore`
-  - `.codex/skills/<id>_<source-id>/`
-  - `.codex/rules/<id>.rules`
-  - `.codex/.gitignore`
-  - `.opencode/skills/<id>/`
-  - `.opencode/agents/<id>.md`
-  - `.opencode/commands/<id>.md`
-  - `.opencode/rules/<id>.md`
-  - `.opencode/.gitignore`
-- Ownership tracking in `nodus.lock`
-- Collision protection for unmanaged files
-- Capability gating for high-sensitivity packages
+- Pin direct dependencies by Git tag in `nodus.toml`
+- Lock exact Git revisions and managed outputs in `nodus.lock`
+- Reuse a shared cache of repository mirrors, checkouts, and content-addressed snapshots across projects
+- Emit only the runtime outputs your repo actually needs
+- Protect unmanaged files from accidental overwrite
+- Gate high-sensitivity packages behind explicit opt-in
 
-Still deferred:
+## Current Scope
+
+Nodus currently supports:
+
+- Local path dependencies
+- Git dependencies resolved from tags
+- Deterministic sync with lock state stored in `nodus.lock`
+- Managed output emission for Claude, Codex, and OpenCode
+- Repo-level adapter selection that can be inferred, chosen explicitly, or persisted
+- Validation of cache state, lockfile state, and managed files with `nodus doctor`
+
+Not implemented yet:
 
 - Remote registries
-- Publish flows
+- Package publishing workflows
 - Signature or provenance verification
 - Global install scopes
 - Claude plugin mode
 
 ## Install
 
-Install the CLI with Cargo:
+For now, install from source with Cargo:
 
 ```bash
 cargo install --path .
 ```
 
-Then run it directly:
+After installation:
 
 ```bash
 nodus <command>
 ```
 
-By default, Nodus stores shared Git repository mirrors in the system cache directory for this app. On macOS, that is:
+By default, Nodus stores shared mirrors, checkouts, and snapshots in the platform cache directory for the app. On macOS, that is:
 
 ```text
 ~/Library/Caches/nodus/
@@ -72,7 +63,7 @@ You can override that location for any command with `--cache-path <path>`.
 
 ## Quick Start
 
-Initialize a local package skeleton:
+Initialize a repo that will consume agent packages:
 
 ```bash
 nodus init
@@ -83,46 +74,47 @@ That creates:
 - `nodus.toml`
 - `skills/example/SKILL.md`
 
-Add a Git dependency by tag:
-
-```bash
-nodus add wenext-limited/playbook-ios
-```
-
-If the repo does not already contain adapter roots such as `.codex/`, `.claude/`, `.opencode/`, or `AGENTS.md`, pass `--adapter` the first time so Nodus can persist the choice:
+Add a dependency from Git:
 
 ```bash
 nodus add wenext-limited/playbook-ios --adapter codex
 ```
 
-Sync resolved dependency content into managed runtime outputs:
+That command:
+
+- resolves the latest tag unless you pass `--tag`
+- records the dependency in `nodus.toml`
+- persists adapter selection when needed
+- runs a normal sync immediately
+
+Sync dependencies into managed runtime outputs:
 
 ```bash
 nodus sync
 ```
 
-If the root project declares any `high` sensitivity capabilities:
-
-```bash
-nodus sync --allow-high-sensitivity
-```
-
-Validate that the repo, shared cached dependencies, lockfile, and owned outputs are all consistent:
+Validate that the repo, lockfile, managed outputs, and shared cache are consistent:
 
 ```bash
 nodus doctor
-```
-
-Remove one configured dependency and prune its managed outputs:
-
-```bash
-nodus remove playbook_ios
 ```
 
 For reproducible CI:
 
 ```bash
 nodus sync --locked
+```
+
+If the root project declares any `high` sensitivity capabilities, opt in explicitly:
+
+```bash
+nodus sync --allow-high-sensitivity
+```
+
+Remove a configured dependency and prune its managed outputs:
+
+```bash
+nodus remove playbook_ios
 ```
 
 Use a custom shared cache root when needed:
@@ -192,7 +184,7 @@ Nodus emits outputs only for the selected adapters. It resolves that selection i
 
 When Nodus resolves adapters from flags, detection, or a prompt, it writes `[adapters] enabled = [...]` into `nodus.toml` so later `sync`, `doctor`, and CI runs stay deterministic.
 
-## Discovery Rules
+## Package Discovery
 
 Nodus validates and discovers package content by top-level folders:
 
@@ -265,7 +257,7 @@ nodus add wenext-limited/playbook-ios
 
 ### `nodus init`
 
-Creates an empty `nodus.toml` plus `skills/example/SKILL.md`.
+Creates a minimal `nodus.toml` plus `skills/example/SKILL.md`.
 
 ### `nodus remove`
 
