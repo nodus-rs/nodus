@@ -2,7 +2,7 @@
 
 Nodus is a local-first Rust CLI for managing project-scoped agent packages by convention instead of explicit export configuration.
 
-The current implementation discovers package content from repository folders, supports Git-tag dependencies backed entirely by a shared remote repository cache and shared cached checkouts, locks exact commits in `agentpack.lock`, snapshots package contents into a content-addressed store, and emits managed runtime outputs for Claude, Codex, and OpenCode.
+The current implementation discovers package content from repository folders, supports Git-tag dependencies backed entirely by a shared remote repository cache and shared cached checkouts, locks exact commits in `nodus.lock`, snapshots package contents into a content-addressed store, and emits managed runtime outputs for Claude, Codex, and OpenCode.
 
 ## Status
 
@@ -19,14 +19,14 @@ The current MVP supports:
 - `nodus add <url> --tag <tag>` for explicit pinning
 - Shared Git repository cache with shared cached checkouts by revision
 - Shared content-addressed snapshots in the cache root
-- Deterministic `agentpack.lock`
+- Deterministic `nodus.lock`
 - Managed output emission for:
   - `.claude/skills/<id>_<source-id>/`
   - `.codex/skills/<id>_<source-id>/`
   - `.codex/rules/<id>.rules`
   - `.opencode/instructions/<id>.md`
   - `opencode.json`
-- Ownership tracking in `agentpack.lock`
+- Ownership tracking in `nodus.lock`
 - Collision protection for unmanaged files
 - Capability gating for high-sensitivity packages
 
@@ -224,17 +224,17 @@ Creates an empty `nodus.toml` plus `skills/example/SKILL.md`.
 ### `nodus uninstall`
 
 Removes one dependency from `nodus.toml` and runs the normal sync flow to update
-`agentpack.lock` and prune managed runtime files. The package argument accepts either the
+`nodus.lock` and prune managed runtime files. The package argument accepts either the
 dependency alias or a repository reference like `owner/repo`.
 
 ### `nodus sync`
 
-Resolves the root project plus configured dependencies, snapshots their discovered content, writes `agentpack.lock`, and emits managed runtime outputs.
+Resolves the root project plus configured dependencies, snapshots their discovered content, writes `nodus.lock`, and emits managed runtime outputs.
 
 Options:
 
 - `--cache-path <path>`: override the shared Git repository cache root
-- `--locked`: fail if `agentpack.lock` would change
+- `--locked`: fail if `nodus.lock` would change
 - `--allow-high-sensitivity`: allow packages that declare `high` sensitivity capabilities
 
 ### `nodus doctor`
@@ -246,7 +246,7 @@ Checks that:
 - shared repository mirrors exist in the cache root with the expected origin URL
 - discovered layouts are valid
 - Git dependencies are at the expected locked revision
-- `agentpack.lock` is up to date
+- `nodus.lock` is up to date
 - managed file ownership entries are internally consistent
 - no unmanaged-file collisions would block sync
 
@@ -254,7 +254,7 @@ Checks that:
 
 Nodus only manages files it wrote itself.
 
-Managed files are tracked in `agentpack.lock`. During sync, Nodus:
+Managed files are tracked in `nodus.lock`. During sync, Nodus:
 
 - writes or updates managed files
 - removes stale managed files that are no longer desired
@@ -264,7 +264,7 @@ This is especially important for OpenCode. Nodus manages `.opencode/instructions
 
 ## Lockfile and Store
 
-`agentpack.lock` records:
+`nodus.lock` records:
 
 - dependency alias
 - source kind (`path` or `git`)

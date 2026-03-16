@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::manifest::Capability;
 use crate::store::write_atomic;
 
-pub const LOCKFILE_NAME: &str = "agentpack.lock";
+pub const LOCKFILE_NAME: &str = "nodus.lock";
 const LOCKFILE_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

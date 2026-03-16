@@ -593,7 +593,6 @@ fn prune_empty_parent_dirs(path: &Path, project_root: &Path) -> Result<()> {
         project_root.join(".claude"),
         project_root.join(".codex"),
         project_root.join(".opencode"),
-        project_root.join(".agen"),
     ];
     let mut current = path.parent();
 
@@ -766,7 +765,7 @@ shared = { path = "vendor/shared" }
         assert!(manifest.contains("[dependencies]"));
         assert!(manifest.contains("tag = \"v0.1.0\""));
         assert!(manifest.contains("url = "));
-        let lockfile = Lockfile::read(&temp.path().join("agentpack.lock")).unwrap();
+        let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
         assert!(!lockfile.managed_files.is_empty());
 
         let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
@@ -877,7 +876,7 @@ shared = { path = "vendor/shared" }
                 .exists()
         );
 
-        let lockfile = Lockfile::read(&temp.path().join("agentpack.lock")).unwrap();
+        let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
         assert_eq!(lockfile.packages.len(), 1);
         assert_eq!(lockfile.packages[0].alias, "root");
     }
