@@ -57,7 +57,7 @@ pub struct RuleSource {
     pub path: PathBuf,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Capability {
     pub id: String,
     pub sensitivity: String,
@@ -227,6 +227,18 @@ impl LoadedManifest {
         files.sort();
         files.dedup();
         Ok(files)
+    }
+
+    pub fn package_files(&self) -> Result<Vec<PathBuf>> {
+        let mut files = self.export_files()?;
+        files.push(self.manifest_path.clone());
+        files.sort();
+        files.dedup();
+        Ok(files)
+    }
+
+    pub fn resolve_path(&self, value: &Path) -> Result<PathBuf> {
+        self.resolve_existing_path(value)
     }
 
     fn validate_export_ids<'a>(
