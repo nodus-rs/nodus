@@ -3,7 +3,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use tempfile::NamedTempFile;
+use rayon::prelude::*;
+use tempfile::{Builder, NamedTempFile};
 
 use crate::resolver::Resolution;
 
@@ -23,15 +24,19 @@ pub fn snapshot_resolution(
     fs::create_dir_all(&store_root)
         .with_context(|| format!("failed to create store root {}", store_root.display()))?;
 
-    let mut stored_packages = Vec::new();
-    for package in &resolution.packages {
-        let snapshot_root = snapshot_package(&store_root, resolution, package)?;
-        stored_packages.push(StoredPackage {
-            digest: package.digest.clone(),
-            snapshot_root,
-        });
-    }
-    Ok(stored_packages)
+    resolution
+        .packages
+        .par_iter()
+        .map(|package| {
+            let snapshot_root = snapshot_package(&store_root, package)?;
+            Ok(StoredPackage {
+                digest: package.digest.clone(),
+                snapshot_root,
+            })
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .collect()
 }
 
 pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
@@ -61,42 +66,44 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
 
 fn snapshot_package(
     store_root: &Path,
-    _resolution: &Resolution,
     package: &crate::resolver::ResolvedPackage,
 ) -> Result<PathBuf> {
-    let digest_dir = store_root.join(digest_directory_name(&package.digest)?);
+    let digest_dir_name = digest_directory_name(&package.digest)?;
+    let digest_dir = store_root.join(digest_dir_name);
     let files = package.manifest.package_files()?;
     if digest_dir.exists() {
         if snapshot_is_complete(&digest_dir, &package.manifest.root, &files)? {
             return Ok(digest_dir);
         }
 
-        fs::remove_dir_all(&digest_dir).with_context(|| {
-            format!(
-                "failed to remove incomplete snapshot {}",
-                digest_dir.display()
-            )
-        })?;
+        match fs::remove_dir_all(&digest_dir) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to remove incomplete snapshot {}",
+                        digest_dir.display()
+                    )
+                });
+            }
+        }
     }
 
     if digest_dir.exists() {
         return Ok(digest_dir);
     }
 
-    let staging_root = store_root.join(format!(
-        ".tmp-{}",
-        digest_directory_name(&package.digest)?.replace('/', "_")
-    ));
-    if staging_root.exists() {
-        fs::remove_dir_all(&staging_root).with_context(|| {
+    let staging = Builder::new()
+        .prefix(&format!(".tmp-{}-", digest_dir_name.replace('/', "_")))
+        .tempdir_in(store_root)
+        .with_context(|| {
             format!(
-                "failed to clean stale staging dir {}",
-                staging_root.display()
+                "failed to create staging dir for snapshot {}",
+                digest_dir.display()
             )
         })?;
-    }
-    fs::create_dir_all(&staging_root)
-        .with_context(|| format!("failed to create staging dir {}", staging_root.display()))?;
+    let staging_root = staging.path().to_path_buf();
 
     for file in files {
         let relative = file.strip_prefix(&package.manifest.root).with_context(|| {
@@ -123,17 +130,11 @@ fn snapshot_package(
     }
 
     match fs::rename(&staging_root, &digest_dir) {
-        Ok(()) => Ok(digest_dir),
-        Err(error) if digest_dir.exists() => {
-            fs::remove_dir_all(&staging_root).with_context(|| {
-                format!(
-                    "failed to remove redundant staging dir {} after {}",
-                    staging_root.display(),
-                    error
-                )
-            })?;
+        Ok(()) => {
+            let _ = staging.keep();
             Ok(digest_dir)
         }
+        Err(_) if digest_dir.exists() => Ok(digest_dir),
         Err(error) => Err(error).with_context(|| {
             format!(
                 "failed to promote snapshot {} into {}",
@@ -240,6 +241,55 @@ mod tests {
                 .snapshot_root
                 .join("rules/common/coding-style.md")
                 .exists()
+        );
+    }
+
+    #[test]
+    fn reuses_the_same_snapshot_for_duplicate_package_digests() {
+        let temp = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        write_file(
+            &temp.path().join("nodus.toml"),
+            r#"
+[dependencies]
+alpha = { path = "vendor/alpha" }
+beta = { path = "vendor/beta" }
+"#,
+        );
+        write_file(
+            &temp.path().join("vendor/alpha/skills/shared/SKILL.md"),
+            "---\nname: Shared\ndescription: Example.\n---\n# Shared\n",
+        );
+        write_file(
+            &temp.path().join("vendor/beta/skills/shared/SKILL.md"),
+            "---\nname: Shared\ndescription: Example.\n---\n# Shared\n",
+        );
+
+        let reporter = Reporter::silent();
+        let resolution = resolve_project_for_sync(temp.path(), cache.path(), &reporter).unwrap();
+        let stored = snapshot_resolution(cache.path(), &resolution).unwrap();
+
+        let mut dependency_digests = resolution
+            .packages
+            .iter()
+            .filter(|package| matches!(package.alias.as_str(), "alpha" | "beta"))
+            .map(|package| package.digest.clone())
+            .collect::<Vec<_>>();
+        dependency_digests.sort();
+        dependency_digests.dedup();
+        assert_eq!(dependency_digests.len(), 1);
+
+        let dependency_snapshots = stored
+            .iter()
+            .filter(|package| package.digest == dependency_digests[0])
+            .map(|package| package.snapshot_root.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(dependency_snapshots.len(), 2);
+        assert_eq!(dependency_snapshots[0], dependency_snapshots[1]);
+        assert!(
+            dependency_snapshots[0]
+                .join("skills/shared/SKILL.md")
+                .is_file()
         );
     }
 

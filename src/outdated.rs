@@ -317,9 +317,11 @@ mod tests {
             cache.path(),
             &repo.path().to_string_lossy(),
             Some("v0.1.0"),
-            &[Adapter::Codex],
-            &[],
-            false,
+            crate::git::AddDependencyOptions {
+                adapters: &[Adapter::Codex],
+                components: &[],
+                sync_on_launch: false,
+            },
             &reporter,
         )
         .unwrap();
@@ -347,9 +349,11 @@ mod tests {
             cache.path(),
             &repo.path().to_string_lossy(),
             Some("v0.1.0"),
-            &[Adapter::Codex],
-            &[],
-            false,
+            crate::git::AddDependencyOptions {
+                adapters: &[Adapter::Codex],
+                components: &[],
+                sync_on_launch: false,
+            },
             &reporter,
         )
         .unwrap();
@@ -378,9 +382,11 @@ mod tests {
             cache.path(),
             &repo.path().to_string_lossy(),
             None,
-            &[Adapter::Codex],
-            &[],
-            false,
+            crate::git::AddDependencyOptions {
+                adapters: &[Adapter::Codex],
+                components: &[],
+                sync_on_launch: false,
+            },
             &reporter,
         )
         .unwrap();

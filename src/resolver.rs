@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 
 use crate::adapters::{Adapter, Adapters, ManagedFile, build_output_plan};
@@ -149,23 +150,6 @@ pub fn sync_in_dir(
         } else {
             SyncMode::Normal
         },
-        allow_high_sensitivity,
-        &[],
-        false,
-        reporter,
-    )
-}
-
-pub fn sync_in_dir_frozen(
-    cwd: &Path,
-    cache_root: &Path,
-    allow_high_sensitivity: bool,
-    reporter: &Reporter,
-) -> Result<SyncSummary> {
-    sync_in_dir_with_adapters_mode(
-        cwd,
-        cache_root,
-        SyncMode::Frozen,
         allow_high_sensitivity,
         &[],
         false,
@@ -704,17 +688,26 @@ fn compute_package_digest(manifest: &LoadedManifest) -> Result<String> {
     let mut files = manifest.package_files()?;
     files.sort();
 
+    let file_payloads = files
+        .par_iter()
+        .map(|file| {
+            let relative = file
+                .strip_prefix(&manifest.root)
+                .with_context(|| format!("failed to make {} relative", file.display()))?
+                .to_path_buf();
+            let contents = fs::read(file)
+                .with_context(|| format!("failed to read {} for hashing", file.display()))?;
+            Ok((relative, contents))
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .collect::<Result<Vec<_>>>()?;
+
     let mut hasher = Sha256::new();
-    for file in files {
-        let relative = file
-            .strip_prefix(&manifest.root)
-            .with_context(|| format!("failed to make {} relative", file.display()))?;
+    for (relative, contents) in file_payloads {
         hasher.update(relative.to_string_lossy().as_bytes());
         hasher.update([0]);
-        hasher.update(
-            fs::read(&file)
-                .with_context(|| format!("failed to read {} for hashing", file.display()))?,
-        );
+        hasher.update(contents);
         hasher.update([0xff]);
     }
 
@@ -948,11 +941,15 @@ fn prune_stale_files(
 }
 
 fn write_managed_files(planned_files: &[ManagedFile]) -> Result<()> {
-    for file in planned_files {
-        write_atomic(&file.path, &file.contents)
-            .with_context(|| format!("failed to write managed file {}", file.path.display()))?;
-    }
-    Ok(())
+    planned_files
+        .par_iter()
+        .map(|file| {
+            write_atomic(&file.path, &file.contents)
+                .with_context(|| format!("failed to write managed file {}", file.path.display()))
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .collect()
 }
 
 fn validate_state_consistency(
@@ -1033,7 +1030,7 @@ mod tests {
     use super::*;
     use crate::adapters::{Adapter, Adapters, namespaced_file_name, namespaced_skill_id};
     use crate::git::{
-        AddSummary, RemoveSummary,
+        AddDependencyOptions, AddSummary, RemoveSummary,
         add_dependency_in_dir_with_adapters as add_dependency_in_dir_with_adapters_impl,
         normalize_alias_from_url, remove_dependency_in_dir as remove_dependency_in_dir_impl,
         shared_checkout_path, shared_repository_path,
@@ -1208,7 +1205,14 @@ mod tests {
         allow_high_sensitivity: bool,
     ) -> Result<SyncSummary> {
         let reporter = Reporter::silent();
-        super::sync_in_dir_frozen(cwd, cache_root, allow_high_sensitivity, &reporter)
+        super::sync_in_dir_with_adapters_frozen(
+            cwd,
+            cache_root,
+            allow_high_sensitivity,
+            &[],
+            false,
+            &reporter,
+        )
     }
 
     fn sync_in_dir_with_adapters(
@@ -1249,9 +1253,11 @@ mod tests {
             cache_root,
             url,
             tag,
-            adapters,
-            components,
-            false,
+            AddDependencyOptions {
+                adapters,
+                components,
+                sync_on_launch: false,
+            },
             &reporter,
         )
     }

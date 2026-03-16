@@ -181,9 +181,11 @@ fn run_command_in_dir(
                 cache_root,
                 &url,
                 tag.as_deref(),
-                &adapter,
-                &component,
-                sync_on_launch,
+                crate::git::AddDependencyOptions {
+                    adapters: &adapter,
+                    components: &component,
+                    sync_on_launch,
+                },
                 reporter,
             )?;
             reporter.finish(format!(

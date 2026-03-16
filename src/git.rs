@@ -43,6 +43,13 @@ pub struct RemoveSummary {
     pub managed_file_count: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct AddDependencyOptions<'a> {
+    pub adapters: &'a [Adapter],
+    pub components: &'a [DependencyComponent],
+    pub sync_on_launch: bool,
+}
+
 impl GitCheckout {
     fn reference_display(&self) -> String {
         self.tag
@@ -57,22 +64,11 @@ pub fn add_dependency_with_adapters(
     cache_root: &Path,
     url: &str,
     tag: Option<&str>,
-    adapters: &[Adapter],
-    components: &[DependencyComponent],
-    sync_on_launch: bool,
+    options: AddDependencyOptions<'_>,
     reporter: &Reporter,
 ) -> Result<AddSummary> {
     let cwd = std::env::current_dir().context("failed to determine the current directory")?;
-    add_dependency_in_dir_with_adapters(
-        &cwd,
-        cache_root,
-        url,
-        tag,
-        adapters,
-        components,
-        sync_on_launch,
-        reporter,
-    )
+    add_dependency_in_dir_with_adapters(&cwd, cache_root, url, tag, options, reporter)
 }
 
 #[allow(dead_code)]
@@ -90,9 +86,7 @@ pub fn add_dependency_in_dir_with_adapters(
     cache_root: &Path,
     url: &str,
     tag: Option<&str>,
-    adapters: &[Adapter],
-    components: &[DependencyComponent],
-    sync_on_launch: bool,
+    options: AddDependencyOptions<'_>,
     reporter: &Reporter,
 ) -> Result<AddSummary> {
     let normalized_url = normalize_git_url(url);
@@ -129,8 +123,8 @@ pub fn add_dependency_in_dir_with_adapters(
                 .branch
                 .as_ref()
                 .and(dependency_manifest.effective_version()),
-            components: (!components.is_empty()).then(|| {
-                let mut sorted = components.to_vec();
+            components: (!options.components.is_empty()).then(|| {
+                let mut sorted = options.components.to_vec();
                 sorted.sort();
                 sorted.dedup();
                 sorted
@@ -140,13 +134,13 @@ pub fn add_dependency_in_dir_with_adapters(
     let selection = resolve_adapter_selection(
         project_root,
         &root.manifest,
-        adapters,
+        options.adapters,
         should_prompt_for_adapter(),
     )?;
     if selection.should_persist {
         root.manifest.set_enabled_adapters(&selection.adapters);
     }
-    if sync_on_launch {
+    if options.sync_on_launch {
         root.manifest.set_sync_on_launch(true);
     }
 
@@ -157,7 +151,7 @@ pub fn add_dependency_in_dir_with_adapters(
         cache_root,
         false,
         false,
-        adapters,
+        options.adapters,
         false,
         reporter,
     )?;
