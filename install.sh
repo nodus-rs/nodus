@@ -7,6 +7,7 @@ BIN_NAME="nodus"
 INSTALL_DIR="${NODUS_INSTALL_DIR:-$HOME/.local/bin}"
 REQUESTED_VERSION="${NODUS_VERSION:-}"
 VERIFY_CHECKSUMS=1
+MODE="install"
 TEMP_DIR=""
 
 usage() {
@@ -15,11 +16,13 @@ Install nodus from GitHub release assets.
 
 Usage:
   ./install.sh [--version <tag>] [--install-dir <path>] [--no-verify]
+  ./install.sh --uninstall [--install-dir <path>]
 
 Options:
   --version <tag>       Install a specific release tag, for example v0.1.0.
   --install-dir <path>  Install the binary into this directory.
   --no-verify           Skip SHA-256 checksum verification.
+  --uninstall           Remove the installed binary from the install directory.
   -h, --help            Show this help text.
 
 Environment:
@@ -56,6 +59,10 @@ parse_args() {
         ;;
       --no-verify)
         VERIFY_CHECKSUMS=0
+        shift
+        ;;
+      --uninstall)
+        MODE="uninstall"
         shift
         ;;
       -h|--help)
@@ -199,9 +206,27 @@ cleanup() {
   fi
 }
 
+uninstall_binary() {
+  local installed_bin
+  installed_bin="${INSTALL_DIR}/${BIN_NAME}"
+
+  if [ ! -e "${installed_bin}" ]; then
+    log "${BIN_NAME} is not installed in ${INSTALL_DIR}"
+    return
+  fi
+
+  rm -f "${installed_bin}"
+  log "Removed ${installed_bin}"
+}
+
 main() {
   parse_args "$@"
   normalize_version
+
+  if [ "${MODE}" = "uninstall" ]; then
+    uninstall_binary
+    return
+  fi
 
   need_cmd uname
   need_cmd mktemp
