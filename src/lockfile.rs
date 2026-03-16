@@ -93,7 +93,7 @@ impl Lockfile {
 
         for relative in &self.managed_files {
             let relative_path = Self::validate_managed_relative(relative, project_root)?;
-            if let Some(paths) = self.expand_skill_root(project_root, relative_path) {
+            if let Some(paths) = self.expand_managed_root(project_root, relative_path) {
                 managed_paths.extend(paths);
             } else {
                 managed_paths.insert(project_root.join(relative_path));
@@ -119,34 +119,70 @@ impl Lockfile {
         Ok(relative_path)
     }
 
-    fn expand_skill_root(&self, project_root: &Path, relative_path: &Path) -> Option<Vec<PathBuf>> {
+    fn expand_managed_root(
+        &self,
+        project_root: &Path,
+        relative_path: &Path,
+    ) -> Option<Vec<PathBuf>> {
         let components = relative_path
             .components()
             .map(|component| component.as_os_str().to_string_lossy().into_owned())
             .collect::<Vec<_>>();
 
-        let [runtime, skills_dir, skill_id] = components.as_slice() else {
+        let [runtime, artifact_dir, artifact_name] = components.as_slice() else {
             return None;
         };
 
-        if (*runtime != ".claude" && *runtime != ".codex" && *runtime != ".opencode")
-            || *skills_dir != "skills"
-        {
+        if *runtime != ".claude" && *runtime != ".codex" && *runtime != ".opencode" {
             return None;
         }
 
-        let paths = self
-            .packages
-            .iter()
-            .filter(|package| package.skills.iter().any(|existing| existing == skill_id))
-            .map(|package| {
-                project_root.join(format!(
-                    "{runtime}/skills/{}_{}",
-                    skill_id,
-                    locked_package_short_id(package)
-                ))
-            })
-            .collect::<Vec<_>>();
+        let paths = match artifact_dir.as_str() {
+            "skills" => self
+                .packages
+                .iter()
+                .filter(|package| {
+                    package
+                        .skills
+                        .iter()
+                        .any(|existing| existing == artifact_name)
+                })
+                .map(|package| {
+                    project_root.join(format!(
+                        "{runtime}/skills/{}_{}",
+                        artifact_name,
+                        locked_package_short_id(package)
+                    ))
+                })
+                .collect::<Vec<_>>(),
+            "agents" | "rules" | "commands" => {
+                let (artifact_id, extension) = artifact_name.rsplit_once('.')?;
+                self.packages
+                    .iter()
+                    .filter(|package| match artifact_dir.as_str() {
+                        "agents" => package
+                            .agents
+                            .iter()
+                            .any(|existing| existing == artifact_id),
+                        "rules" => package.rules.iter().any(|existing| existing == artifact_id),
+                        "commands" => package
+                            .commands
+                            .iter()
+                            .any(|existing| existing == artifact_id),
+                        _ => false,
+                    })
+                    .map(|package| {
+                        project_root.join(format!(
+                            "{runtime}/{artifact_dir}/{}_{}.{}",
+                            artifact_id,
+                            locked_package_short_id(package),
+                            extension
+                        ))
+                    })
+                    .collect::<Vec<_>>()
+            }
+            _ => return None,
+        };
 
         if paths.is_empty() { None } else { Some(paths) }
     }
@@ -266,6 +302,64 @@ mod tests {
         )));
         assert!(managed_paths.contains(&PathBuf::from(
             "/tmp/project/.opencode/skills/iframe-ad_01f556"
+        )));
+    }
+
+    #[test]
+    fn expands_logical_file_outputs_to_namespaced_files() {
+        let lockfile = Lockfile::new(
+            vec![LockedPackage {
+                alias: "shared".into(),
+                name: "shared".into(),
+                version_tag: Some("v0.1.0".into()),
+                source: LockedSource {
+                    kind: "git".into(),
+                    path: None,
+                    url: Some("https://github.com/example/shared".into()),
+                    tag: Some("v0.1.0".into()),
+                    rev: Some("01f556abcdef".into()),
+                },
+                digest: "sha256:abc".into(),
+                skills: vec![],
+                agents: vec!["security".into()],
+                rules: vec!["default".into()],
+                commands: vec!["build".into()],
+                dependencies: vec![],
+                capabilities: vec![],
+            }],
+            vec![
+                ".claude/agents/security.md".into(),
+                ".claude/commands/build.md".into(),
+                ".claude/rules/default.md".into(),
+                ".codex/rules/default.rules".into(),
+                ".opencode/agents/security.md".into(),
+                ".opencode/commands/build.md".into(),
+                ".opencode/rules/default.md".into(),
+            ],
+        );
+
+        let managed_paths = lockfile.managed_paths(Path::new("/tmp/project")).unwrap();
+
+        assert!(managed_paths.contains(&PathBuf::from(
+            "/tmp/project/.claude/agents/security_01f556.md"
+        )));
+        assert!(managed_paths.contains(&PathBuf::from(
+            "/tmp/project/.claude/commands/build_01f556.md"
+        )));
+        assert!(managed_paths.contains(&PathBuf::from(
+            "/tmp/project/.claude/rules/default_01f556.md"
+        )));
+        assert!(managed_paths.contains(&PathBuf::from(
+            "/tmp/project/.codex/rules/default_01f556.rules"
+        )));
+        assert!(managed_paths.contains(&PathBuf::from(
+            "/tmp/project/.opencode/agents/security_01f556.md"
+        )));
+        assert!(managed_paths.contains(&PathBuf::from(
+            "/tmp/project/.opencode/commands/build_01f556.md"
+        )));
+        assert!(managed_paths.contains(&PathBuf::from(
+            "/tmp/project/.opencode/rules/default_01f556.md"
         )));
     }
 }

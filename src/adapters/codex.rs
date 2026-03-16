@@ -3,7 +3,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::adapters::{ManagedFile, namespaced_skill_id};
+use crate::adapters::{ManagedFile, namespaced_file_name, namespaced_skill_id};
 use crate::manifest::{FileEntry, SkillEntry};
 use crate::resolver::ResolvedPackage;
 
@@ -23,13 +23,14 @@ pub fn skill_files(
 
 pub fn rule_file(
     project_root: &Path,
+    package: &ResolvedPackage,
     snapshot_root: &Path,
     rule: &FileEntry,
 ) -> Result<ManagedFile> {
     copy_file(
         project_root
             .join(".codex/rules")
-            .join(format!("{}.rules", rule.id)),
+            .join(namespaced_file_name(package, &rule.id, "rules")),
         snapshot_root.join(&rule.path),
     )
 }

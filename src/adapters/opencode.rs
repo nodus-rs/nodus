@@ -3,7 +3,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
-use crate::adapters::{ManagedFile, namespaced_skill_id};
+use crate::adapters::{ManagedFile, namespaced_file_name, namespaced_skill_id};
 use crate::manifest::{FileEntry, SkillEntry};
 use crate::resolver::ResolvedPackage;
 
@@ -48,39 +48,42 @@ pub fn skill_files(
 
 pub fn agent_file(
     project_root: &Path,
+    package: &ResolvedPackage,
     snapshot_root: &Path,
     agent: &FileEntry,
 ) -> Result<ManagedFile> {
     copy_file(
         project_root
             .join(".opencode/agents")
-            .join(format!("{}.md", agent.id)),
+            .join(namespaced_file_name(package, &agent.id, "md")),
         snapshot_root.join(&agent.path),
     )
 }
 
 pub fn command_file(
     project_root: &Path,
+    package: &ResolvedPackage,
     snapshot_root: &Path,
     command: &FileEntry,
 ) -> Result<ManagedFile> {
     copy_file(
         project_root
             .join(".opencode/commands")
-            .join(format!("{}.md", command.id)),
+            .join(namespaced_file_name(package, &command.id, "md")),
         snapshot_root.join(&command.path),
     )
 }
 
 pub fn rule_file(
     project_root: &Path,
+    package: &ResolvedPackage,
     snapshot_root: &Path,
     rule: &FileEntry,
 ) -> Result<ManagedFile> {
     copy_file(
         project_root
             .join(".opencode/rules")
-            .join(format!("{}.md", rule.id)),
+            .join(namespaced_file_name(package, &rule.id, "md")),
         snapshot_root.join(&rule.path),
     )
 }

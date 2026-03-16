@@ -157,7 +157,23 @@ struct OutputAccumulator {
 }
 
 pub fn namespaced_skill_id(package: &ResolvedPackage, skill_id: &str) -> String {
-    format!("{skill_id}_{}", package_short_id(package))
+    namespaced_artifact_id(package, skill_id)
+}
+
+pub fn namespaced_artifact_id(package: &ResolvedPackage, artifact_id: &str) -> String {
+    format!("{artifact_id}_{}", package_short_id(package))
+}
+
+pub fn namespaced_file_name(
+    package: &ResolvedPackage,
+    artifact_id: &str,
+    extension: &str,
+) -> String {
+    format!(
+        "{}.{}",
+        namespaced_artifact_id(package, artifact_id),
+        extension.trim_start_matches('.')
+    )
 }
 
 pub fn package_short_id(package: &ResolvedPackage) -> String {
@@ -273,7 +289,7 @@ pub fn build_output_plan(
             {
                 merge_file(
                     &mut plan.files,
-                    claude::agent_file(project_root, snapshot_root, agent)?,
+                    claude::agent_file(project_root, package, snapshot_root, agent)?,
                 )?;
                 plan.managed_files
                     .insert(format!(".claude/agents/{}.md", agent.id));
@@ -286,7 +302,7 @@ pub fn build_output_plan(
             {
                 merge_file(
                     &mut plan.files,
-                    opencode::agent_file(project_root, snapshot_root, agent)?,
+                    opencode::agent_file(project_root, package, snapshot_root, agent)?,
                 )?;
                 plan.managed_files
                     .insert(format!(".opencode/agents/{}.md", agent.id));
@@ -301,7 +317,7 @@ pub fn build_output_plan(
             {
                 merge_file(
                     &mut plan.files,
-                    claude::rule_file(project_root, snapshot_root, rule)?,
+                    claude::rule_file(project_root, package, snapshot_root, rule)?,
                 )?;
                 plan.managed_files
                     .insert(format!(".claude/rules/{}.md", rule.id));
@@ -314,7 +330,7 @@ pub fn build_output_plan(
             {
                 merge_file(
                     &mut plan.files,
-                    codex::rule_file(project_root, snapshot_root, rule)?,
+                    codex::rule_file(project_root, package, snapshot_root, rule)?,
                 )?;
                 plan.managed_files
                     .insert(format!(".codex/rules/{}.rules", rule.id));
@@ -327,7 +343,7 @@ pub fn build_output_plan(
             {
                 merge_file(
                     &mut plan.files,
-                    opencode::rule_file(project_root, snapshot_root, rule)?,
+                    opencode::rule_file(project_root, package, snapshot_root, rule)?,
                 )?;
                 plan.managed_files
                     .insert(format!(".opencode/rules/{}.md", rule.id));
@@ -342,7 +358,7 @@ pub fn build_output_plan(
             {
                 merge_file(
                     &mut plan.files,
-                    claude::command_file(project_root, snapshot_root, command)?,
+                    claude::command_file(project_root, package, snapshot_root, command)?,
                 )?;
                 plan.managed_files
                     .insert(format!(".claude/commands/{}.md", command.id));
@@ -355,7 +371,7 @@ pub fn build_output_plan(
             {
                 merge_file(
                     &mut plan.files,
-                    opencode::command_file(project_root, snapshot_root, command)?,
+                    opencode::command_file(project_root, package, snapshot_root, command)?,
                 )?;
                 plan.managed_files
                     .insert(format!(".opencode/commands/{}.md", command.id));
@@ -424,8 +440,8 @@ fn gitignore_entry(project_root: &Path, path: &Path) -> Result<Option<(PathBuf, 
         return Ok(None);
     }
 
-    let pattern = if rest.first().map(String::as_str) == Some("skills") && rest.len() >= 2 {
-        skill_gitignore_pattern(runtime, &rest[1])
+    let pattern = if rest.len() >= 2 {
+        managed_artifact_gitignore_pattern(runtime, &rest[0], &rest[1])
     } else {
         rest.join("/")
     };
@@ -433,15 +449,29 @@ fn gitignore_entry(project_root: &Path, path: &Path) -> Result<Option<(PathBuf, 
     Ok(Some((project_root.join(runtime), pattern)))
 }
 
-fn skill_gitignore_pattern(runtime: &str, skill_dir: &str) -> String {
-    if matches!(runtime, ".claude" | ".codex" | ".opencode")
-        && let Some((_, suffix)) = skill_dir.rsplit_once('_')
+fn managed_artifact_gitignore_pattern(
+    runtime: &str,
+    artifact_dir: &str,
+    artifact_name: &str,
+) -> String {
+    if artifact_dir == "skills"
+        && matches!(runtime, ".claude" | ".codex" | ".opencode")
+        && let Some((_, suffix)) = artifact_name.rsplit_once('_')
         && !suffix.is_empty()
     {
         return format!("skills/*_{suffix}/");
     }
 
-    format!("skills/{skill_dir}/")
+    if matches!(runtime, ".claude" | ".codex" | ".opencode")
+        && matches!(artifact_dir, "agents" | "commands" | "rules")
+        && let Some((stem, extension)) = artifact_name.rsplit_once('.')
+        && let Some((_, suffix)) = stem.rsplit_once('_')
+        && !suffix.is_empty()
+    {
+        return format!("{artifact_dir}/*_{suffix}.{extension}");
+    }
+
+    format!("{artifact_dir}/{artifact_name}")
 }
 
 fn render_gitignore(patterns: &BTreeSet<String>) -> String {

@@ -772,7 +772,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::adapters::{Adapter, Adapters, namespaced_skill_id};
+    use crate::adapters::{Adapter, Adapters, namespaced_file_name, namespaced_skill_id};
     use crate::git::{
         AddSummary, RemoveSummary,
         add_dependency_in_dir_with_adapters as add_dependency_in_dir_with_adapters_impl,
@@ -1331,6 +1331,10 @@ shared = { path = "vendor/shared" }
             .find(|package| package.alias == "shared")
             .unwrap();
         let managed_skill_id = namespaced_skill_id(dependency, "checks");
+        let managed_agent_file = namespaced_file_name(dependency, "shared", "md");
+        let managed_command_file = namespaced_file_name(dependency, "build", "md");
+        let managed_claude_rule_file = namespaced_file_name(dependency, "default", "md");
+        let managed_codex_rule_file = namespaced_file_name(dependency, "default", "rules");
 
         assert!(
             temp.path()
@@ -1342,18 +1346,46 @@ shared = { path = "vendor/shared" }
                 .join(format!(".codex/skills/{managed_skill_id}/SKILL.md"))
                 .exists()
         );
-        assert!(temp.path().join(".claude/agents/shared.md").exists());
-        assert!(temp.path().join(".claude/commands/build.md").exists());
-        assert!(temp.path().join(".claude/rules/default.md").exists());
-        assert!(temp.path().join(".codex/rules/default.rules").exists());
+        assert!(
+            temp.path()
+                .join(format!(".claude/agents/{managed_agent_file}"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".claude/commands/{managed_command_file}"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".claude/rules/{managed_claude_rule_file}"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".codex/rules/{managed_codex_rule_file}"))
+                .exists()
+        );
         assert!(
             temp.path()
                 .join(format!(".opencode/skills/{managed_skill_id}/SKILL.md"))
                 .exists()
         );
-        assert!(temp.path().join(".opencode/agents/shared.md").exists());
-        assert!(temp.path().join(".opencode/commands/build.md").exists());
-        assert!(temp.path().join(".opencode/rules/default.md").exists());
+        assert!(
+            temp.path()
+                .join(format!(".opencode/agents/{managed_agent_file}"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".opencode/commands/{managed_command_file}"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".opencode/rules/{managed_claude_rule_file}"))
+                .exists()
+        );
         assert!(!temp.path().join(".claude/agents/security.md").exists());
         assert!(!temp.path().join(".opencode/agents/security.md").exists());
         assert!(
@@ -1421,7 +1453,7 @@ shared = { path = "vendor/shared" }
         assert!(codex_gitignore.contains(".gitignore"));
         let (_, suffix) = managed_skill_id.rsplit_once('_').unwrap();
         assert!(codex_gitignore.contains(&format!("skills/*_{suffix}/")));
-        assert!(codex_gitignore.contains("rules/default.rules"));
+        assert!(codex_gitignore.contains(&format!("rules/*_{suffix}.rules")));
     }
 
     #[test]
@@ -1664,12 +1696,45 @@ shared = { path = "vendor/shared" }
         );
 
         sync_all(temp.path(), cache.path());
-        assert!(temp.path().join(".claude/agents/security.md").exists());
-        assert!(temp.path().join(".claude/commands/build.md").exists());
-        assert!(temp.path().join(".claude/rules/default.md").exists());
-        assert!(temp.path().join(".opencode/agents/security.md").exists());
-        assert!(temp.path().join(".opencode/rules/default.md").exists());
-        assert!(temp.path().join(".opencode/commands/build.md").exists());
+        let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+        let dependency = resolution
+            .packages
+            .iter()
+            .find(|package| package.alias == "shared")
+            .unwrap();
+        let managed_agent_file = namespaced_file_name(dependency, "security", "md");
+        let managed_command_file = namespaced_file_name(dependency, "build", "md");
+        let managed_rule_file = namespaced_file_name(dependency, "default", "md");
+        assert!(
+            temp.path()
+                .join(format!(".claude/agents/{managed_agent_file}"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".claude/commands/{managed_command_file}"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".claude/rules/{managed_rule_file}"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".opencode/agents/{managed_agent_file}"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".opencode/rules/{managed_rule_file}"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".opencode/commands/{managed_command_file}"))
+                .exists()
+        );
 
         fs::remove_file(temp.path().join("vendor/shared/agents/security.md")).unwrap();
         fs::remove_dir(temp.path().join("vendor/shared/agents")).unwrap();
@@ -1679,12 +1744,42 @@ shared = { path = "vendor/shared" }
         fs::remove_dir(temp.path().join("vendor/shared/commands")).unwrap();
         sync_all(temp.path(), cache.path());
 
-        assert!(!temp.path().join(".claude/agents/security.md").exists());
-        assert!(!temp.path().join(".claude/commands/build.md").exists());
-        assert!(!temp.path().join(".claude/rules/default.md").exists());
-        assert!(!temp.path().join(".opencode/agents/security.md").exists());
-        assert!(!temp.path().join(".opencode/rules/default.md").exists());
-        assert!(!temp.path().join(".opencode/commands/build.md").exists());
+        assert!(
+            !temp
+                .path()
+                .join(format!(".claude/agents/{managed_agent_file}"))
+                .exists()
+        );
+        assert!(
+            !temp
+                .path()
+                .join(format!(".claude/commands/{managed_command_file}"))
+                .exists()
+        );
+        assert!(
+            !temp
+                .path()
+                .join(format!(".claude/rules/{managed_rule_file}"))
+                .exists()
+        );
+        assert!(
+            !temp
+                .path()
+                .join(format!(".opencode/agents/{managed_agent_file}"))
+                .exists()
+        );
+        assert!(
+            !temp
+                .path()
+                .join(format!(".opencode/rules/{managed_rule_file}"))
+                .exists()
+        );
+        assert!(
+            !temp
+                .path()
+                .join(format!(".opencode/commands/{managed_command_file}"))
+                .exists()
+        );
     }
 
     #[test]
@@ -1715,7 +1810,18 @@ shared = { path = "vendor/shared" }
             fs::read_to_string(temp.path().join("AGENTS.md")).unwrap(),
             "user-owned agents\n"
         );
-        assert!(temp.path().join(".claude/rules/default.md").exists());
+        let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+        let dependency = resolution
+            .packages
+            .iter()
+            .find(|package| package.alias == "shared")
+            .unwrap();
+        let managed_rule_file = namespaced_file_name(dependency, "default", "md");
+        assert!(
+            temp.path()
+                .join(format!(".claude/rules/{managed_rule_file}"))
+                .exists()
+        );
     }
 
     #[test]
@@ -1764,6 +1870,143 @@ other = { path = "vendor/other" }
         assert!(
             temp.path()
                 .join(format!(".opencode/skills/{other_skill_id}/SKILL.md"))
+                .exists()
+        );
+    }
+
+    #[test]
+    fn sync_namespaces_duplicate_file_ids_across_packages() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_manifest(
+            temp.path(),
+            r#"
+[dependencies]
+shared = { path = "vendor/shared" }
+other = { path = "vendor/other" }
+"#,
+        );
+        write_file(
+            &temp.path().join("vendor/shared/agents/security.md"),
+            "# Shared Security\n",
+        );
+        write_file(
+            &temp.path().join("vendor/shared/rules/default.rules"),
+            "allow = []\n",
+        );
+        write_file(
+            &temp.path().join("vendor/shared/commands/build.txt"),
+            "cargo test\n",
+        );
+        write_file(
+            &temp.path().join("vendor/other/agents/security.md"),
+            "# Other Security\n",
+        );
+        write_file(
+            &temp.path().join("vendor/other/rules/default.rules"),
+            "deny = []\n",
+        );
+        write_file(
+            &temp.path().join("vendor/other/commands/build.txt"),
+            "cargo check\n",
+        );
+
+        sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &Adapter::ALL).unwrap();
+
+        let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+        let shared = resolution
+            .packages
+            .iter()
+            .find(|package| package.alias == "shared")
+            .unwrap();
+        let other = resolution
+            .packages
+            .iter()
+            .find(|package| package.alias == "other")
+            .unwrap();
+
+        let shared_agent_file = namespaced_file_name(shared, "security", "md");
+        let other_agent_file = namespaced_file_name(other, "security", "md");
+        let shared_command_file = namespaced_file_name(shared, "build", "md");
+        let other_command_file = namespaced_file_name(other, "build", "md");
+        let shared_claude_rule_file = namespaced_file_name(shared, "default", "md");
+        let other_claude_rule_file = namespaced_file_name(other, "default", "md");
+        let shared_codex_rule_file = namespaced_file_name(shared, "default", "rules");
+        let other_codex_rule_file = namespaced_file_name(other, "default", "rules");
+
+        assert_ne!(shared_agent_file, other_agent_file);
+        assert_ne!(shared_command_file, other_command_file);
+        assert_ne!(shared_claude_rule_file, other_claude_rule_file);
+        assert_ne!(shared_codex_rule_file, other_codex_rule_file);
+
+        assert!(
+            temp.path()
+                .join(format!(".claude/agents/{shared_agent_file}"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".claude/agents/{other_agent_file}"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".claude/commands/{shared_command_file}"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".claude/commands/{other_command_file}"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".claude/rules/{shared_claude_rule_file}"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".claude/rules/{other_claude_rule_file}"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".codex/rules/{shared_codex_rule_file}"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".codex/rules/{other_codex_rule_file}"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".opencode/agents/{shared_agent_file}"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".opencode/agents/{other_agent_file}"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".opencode/commands/{shared_command_file}"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".opencode/commands/{other_command_file}"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".opencode/rules/{shared_claude_rule_file}"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".opencode/rules/{other_claude_rule_file}"))
                 .exists()
         );
     }
