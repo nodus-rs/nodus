@@ -26,7 +26,7 @@ The current MVP supports:
   - `.codex/rules/<id>.rules`
   - `.opencode/instructions/<id>.md`
   - `opencode.json`
-- Ownership tracking via `.agen/state.json`
+- Ownership tracking in `agentpack.lock`
 - Collision protection for unmanaged files
 - Capability gating for high-sensitivity packages
 
@@ -212,14 +212,14 @@ Checks that:
 - discovered layouts are valid
 - Git dependencies are at the expected locked revision
 - `agentpack.lock` is up to date
-- managed file ownership state is internally consistent
+- managed file ownership entries are internally consistent
 - no unmanaged-file collisions would block sync
 
 ## Managed Files
 
 Agen only manages files it wrote itself.
 
-Managed files are tracked in `.agen/state.json`. During sync, Agen:
+Managed files are tracked in `agentpack.lock`. During sync, Agen:
 
 - writes or updates managed files
 - removes stale managed files that are no longer desired
@@ -239,6 +239,7 @@ This is especially important for OpenCode. Agen manages `.opencode/instructions/
 - content digest
 - discovered skills / agents / rules / commands
 - declared capabilities
+- managed file paths
 
 Resolved packages are snapshotted under:
 

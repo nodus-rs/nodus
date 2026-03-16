@@ -13,7 +13,6 @@ use crate::manifest::{
     DependencySourceKind, DependencySpec, LoadedManifest, PackageRole, load_dependency_from_dir,
     load_root_from_dir,
 };
-use crate::state::SyncState;
 use crate::store::{snapshot_resolution, write_atomic};
 
 #[derive(Debug, Clone)]
@@ -67,9 +66,12 @@ pub fn sync_in_dir(cwd: &Path, locked: bool, allow_high_sensitivity: bool) -> Re
     let resolution = resolve_project(cwd, ResolveMode::Sync)?;
     enforce_capabilities(&resolution, allow_high_sensitivity)?;
     let stored_packages = snapshot_resolution(&resolution)?;
-    let lockfile = resolution.to_lockfile()?;
     let lockfile_path = cwd.join(LOCKFILE_NAME);
-    let existing_state = SyncState::load(cwd)?;
+    let existing_lockfile = if lockfile_path.exists() {
+        Some(Lockfile::read(&lockfile_path)?)
+    } else {
+        None
+    };
 
     let snapshot_by_digest = stored_packages
         .into_iter()
@@ -87,18 +89,18 @@ pub fn sync_in_dir(cwd: &Path, locked: bool, allow_high_sensitivity: bool) -> Re
         })
         .collect::<Result<Vec<_>>>()?;
     let planned_files = build_managed_files(cwd, &package_snapshots)?;
+    let lockfile = resolution.to_lockfile(cwd, &planned_files)?;
+    let owned_paths = load_owned_paths(cwd, existing_lockfile.as_ref())?;
 
     if locked {
-        if !lockfile_path.exists() {
+        let Some(existing) = existing_lockfile.as_ref() else {
             bail!(
                 "`--locked` requires an existing {} in {}",
                 LOCKFILE_NAME,
                 cwd.display()
             );
-        }
-
-        let existing = Lockfile::read(&lockfile_path)?;
-        if existing != lockfile {
+        };
+        if *existing != lockfile {
             bail!(
                 "{} is out of date; run `agen sync` without `--locked` to regenerate it",
                 LOCKFILE_NAME
@@ -106,14 +108,13 @@ pub fn sync_in_dir(cwd: &Path, locked: bool, allow_high_sensitivity: bool) -> Re
         }
     }
 
-    validate_collisions(&planned_files, &existing_state.owned_paths(cwd))?;
-    prune_stale_files(&existing_state, &planned_files, cwd)?;
+    validate_collisions(&planned_files, &owned_paths)?;
+    prune_stale_files(&owned_paths, &planned_files, cwd)?;
     write_managed_files(&planned_files)?;
 
     if !locked {
         lockfile.write(&lockfile_path)?;
     }
-    SyncState::save(cwd, planned_files.iter().map(|file| file.path.clone()))?;
 
     for warning in &resolution.warnings {
         eprintln!("warning: {warning}");
@@ -134,27 +135,26 @@ pub fn resolve_project_for_sync(root: &Path) -> Result<Resolution> {
 
 pub fn doctor_in_dir(cwd: &Path) -> Result<()> {
     let resolution = resolve_project(cwd, ResolveMode::Doctor)?;
-    let expected_lockfile = resolution.to_lockfile()?;
     let lockfile_path = cwd.join(LOCKFILE_NAME);
     if !lockfile_path.exists() {
         bail!("missing {}", LOCKFILE_NAME);
     }
 
     let existing_lockfile = Lockfile::read(&lockfile_path)?;
-    if existing_lockfile != expected_lockfile {
-        bail!("{LOCKFILE_NAME} is out of date");
-    }
-
-    let existing_state = SyncState::load(cwd)?;
     let package_roots = resolution
         .packages
         .iter()
         .map(|package| (package.clone(), package.root.clone()))
         .collect::<Vec<_>>();
     let planned_files = build_managed_files(cwd, &package_roots)?;
+    let expected_lockfile = resolution.to_lockfile(cwd, &planned_files)?;
+    if existing_lockfile != expected_lockfile {
+        bail!("{LOCKFILE_NAME} is out of date");
+    }
+    let owned_paths = load_owned_paths(cwd, Some(&existing_lockfile))?;
 
-    validate_collisions(&planned_files, &existing_state.owned_paths(cwd))?;
-    validate_state_consistency(&existing_state, &planned_files, cwd)?;
+    validate_collisions(&planned_files, &owned_paths)?;
+    validate_state_consistency(&owned_paths, &planned_files)?;
 
     for package in &resolution.packages {
         if let PackageSource::Git { rev, .. } = &package.source {
@@ -357,7 +357,11 @@ fn compute_package_digest(manifest: &LoadedManifest) -> Result<String> {
 }
 
 impl Resolution {
-    pub fn to_lockfile(&self) -> Result<Lockfile> {
+    pub fn to_lockfile(
+        &self,
+        project_root: &Path,
+        planned_files: &[ManagedFile],
+    ) -> Result<Lockfile> {
         let mut packages = Vec::new();
 
         for package in &self.packages {
@@ -445,7 +449,12 @@ impl Resolution {
             });
         }
 
-        Ok(Lockfile::new(packages))
+        let managed_files = planned_files
+            .iter()
+            .map(|file| Lockfile::normalize_relative(project_root, &file.path))
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(Lockfile::new(packages, managed_files))
     }
 }
 
@@ -506,7 +515,7 @@ fn validate_collisions(
 }
 
 fn prune_stale_files(
-    state: &SyncState,
+    owned_paths: &HashSet<PathBuf>,
     planned_files: &[ManagedFile],
     project_root: &Path,
 ) -> Result<()> {
@@ -514,7 +523,6 @@ fn prune_stale_files(
         .iter()
         .map(|file| file.path.clone())
         .collect::<HashSet<_>>();
-    let owned_paths = state.owned_paths(project_root);
 
     for path in owned_paths.difference(&desired_paths) {
         if path.exists() {
@@ -537,27 +545,33 @@ fn write_managed_files(planned_files: &[ManagedFile]) -> Result<()> {
 }
 
 fn validate_state_consistency(
-    state: &SyncState,
+    owned_paths: &HashSet<PathBuf>,
     planned_files: &[ManagedFile],
-    project_root: &Path,
 ) -> Result<()> {
     let desired_paths = planned_files
         .iter()
         .map(|file| file.path.clone())
         .collect::<HashSet<_>>();
-    let owned_paths = state.owned_paths(project_root);
 
     if let Some(path) = owned_paths.difference(&desired_paths).next() {
         bail!("stale managed state entry for {}", path.display());
     }
 
-    for path in desired_paths.intersection(&owned_paths) {
+    for path in desired_paths.intersection(owned_paths) {
         if !path.exists() {
             bail!("managed file is missing from disk: {}", path.display());
         }
     }
 
     Ok(())
+}
+
+fn load_owned_paths(project_root: &Path, lockfile: Option<&Lockfile>) -> Result<HashSet<PathBuf>> {
+    if let Some(lockfile) = lockfile {
+        return lockfile.managed_paths(project_root);
+    }
+
+    Ok(HashSet::new())
 }
 
 fn prune_empty_parent_dirs(path: &Path, project_root: &Path) -> Result<()> {
@@ -672,7 +686,16 @@ shared = { path = "vendor/shared" }
         write_skill(&temp.path().join("vendor/shared/skills/checks"), "Checks");
 
         let resolution = resolve_project(temp.path(), ResolveMode::Sync).unwrap();
-        let lockfile = resolution.to_lockfile().unwrap();
+        let planned_files = build_managed_files(
+            temp.path(),
+            &resolution
+                .packages
+                .iter()
+                .map(|package| (package.clone(), package.root.clone()))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let lockfile = resolution.to_lockfile(temp.path(), &planned_files).unwrap();
 
         assert_eq!(lockfile.packages.len(), 2);
         assert_eq!(lockfile.packages[0].alias, "root");
@@ -691,8 +714,8 @@ shared = { path = "vendor/shared" }
         assert!(manifest.contains("[dependencies]"));
         assert!(manifest.contains("tag = \"v0.1.0\""));
         assert!(manifest.contains("url = "));
-        assert!(temp.path().join("agentpack.lock").exists());
-        assert!(temp.path().join(".agen/state.json").exists());
+        let lockfile = Lockfile::read(&temp.path().join("agentpack.lock")).unwrap();
+        assert!(!lockfile.managed_files.is_empty());
 
         let resolution = resolve_project(temp.path(), ResolveMode::Sync).unwrap();
         let dependency = resolution

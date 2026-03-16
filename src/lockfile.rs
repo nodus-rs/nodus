@@ -1,19 +1,22 @@
+use std::collections::HashSet;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::manifest::Capability;
 use crate::store::write_atomic;
 
 pub const LOCKFILE_NAME: &str = "agentpack.lock";
-const LOCKFILE_VERSION: u32 = 2;
+const LOCKFILE_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lockfile {
     pub version: u32,
     pub packages: Vec<LockedPackage>,
+    #[serde(default)]
+    pub managed_files: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,7 +55,7 @@ pub struct LockedSource {
 }
 
 impl Lockfile {
-    pub fn new(mut packages: Vec<LockedPackage>) -> Self {
+    pub fn new(mut packages: Vec<LockedPackage>, mut managed_files: Vec<String>) -> Self {
         packages.sort_by(|left, right| {
             left.alias
                 .cmp(&right.alias)
@@ -63,9 +66,12 @@ impl Lockfile {
                 .then(left.source.tag.cmp(&right.source.tag))
                 .then(left.source.rev.cmp(&right.source.rev))
         });
+        managed_files.sort();
+        managed_files.dedup();
         Self {
             version: LOCKFILE_VERSION,
             packages,
+            managed_files,
         }
     }
 
@@ -81,6 +87,39 @@ impl Lockfile {
         write_atomic(path, contents.as_bytes())
             .with_context(|| format!("failed to write lockfile {}", path.display()))
     }
+
+    pub fn managed_paths(&self, project_root: &Path) -> Result<HashSet<PathBuf>> {
+        self.managed_files
+            .iter()
+            .map(|relative| {
+                let relative_path = Path::new(relative);
+                if relative_path.is_absolute()
+                    || relative_path
+                        .components()
+                        .any(|component| matches!(component, std::path::Component::ParentDir))
+                {
+                    bail!(
+                        "managed path {} escapes project root {}",
+                        relative,
+                        project_root.display()
+                    );
+                }
+                let path = project_root.join(relative_path);
+                Ok(path)
+            })
+            .collect()
+    }
+
+    pub fn normalize_relative(project_root: &Path, path: &Path) -> Result<String> {
+        let relative = path.strip_prefix(project_root).with_context(|| {
+            format!(
+                "managed path {} is not inside project root {}",
+                path.display(),
+                project_root.display()
+            )
+        })?;
+        Ok(relative.to_string_lossy().replace('\\', "/"))
+    }
 }
 
 #[cfg(test)]
@@ -89,29 +128,35 @@ mod tests {
 
     #[test]
     fn round_trips_lockfile_as_toml() {
-        let lockfile = Lockfile::new(vec![LockedPackage {
-            alias: "playbook_ios".into(),
-            name: "playbook-ios".into(),
-            version_tag: Some("v0.1.0".into()),
-            source: LockedSource {
-                kind: "git".into(),
-                path: None,
-                url: Some("https://github.com/wenext-limited/playbook-ios".into()),
-                tag: Some("v0.1.0".into()),
-                rev: Some("abc123".into()),
-            },
-            digest: "sha256:abc".into(),
-            skills: vec!["review".into()],
-            agents: vec!["security-reviewer".into()],
-            rules: vec!["safe-shell".into()],
-            commands: vec!["build".into()],
-            dependencies: vec![],
-            capabilities: vec![Capability {
-                id: "shell.exec".into(),
-                sensitivity: "high".into(),
-                justification: Some("Needed for tests".into()),
+        let lockfile = Lockfile::new(
+            vec![LockedPackage {
+                alias: "playbook_ios".into(),
+                name: "playbook-ios".into(),
+                version_tag: Some("v0.1.0".into()),
+                source: LockedSource {
+                    kind: "git".into(),
+                    path: None,
+                    url: Some("https://github.com/wenext-limited/playbook-ios".into()),
+                    tag: Some("v0.1.0".into()),
+                    rev: Some("abc123".into()),
+                },
+                digest: "sha256:abc".into(),
+                skills: vec!["review".into()],
+                agents: vec!["security-reviewer".into()],
+                rules: vec!["safe-shell".into()],
+                commands: vec!["build".into()],
+                dependencies: vec![],
+                capabilities: vec![Capability {
+                    id: "shell.exec".into(),
+                    sensitivity: "high".into(),
+                    justification: Some("Needed for tests".into()),
+                }],
             }],
-        }]);
+            vec![
+                ".claude/skills/review_a1b2c3/SKILL.md".into(),
+                ".codex/rules/safe-shell.rules".into(),
+            ],
+        );
 
         let encoded = toml::to_string_pretty(&lockfile).unwrap();
         let decoded: Lockfile = toml::from_str(&encoded).unwrap();
