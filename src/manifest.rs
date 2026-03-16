@@ -389,6 +389,9 @@ fn discover_skills(root: &Path) -> Result<Vec<SkillEntry>> {
         .with_context(|| format!("failed to read {}", skills_root.display()))?
     {
         let entry = entry?;
+        if should_ignore_discovery_entry(&entry.path()) {
+            continue;
+        }
         let file_type = entry.file_type()?;
         if !file_type.is_dir() {
             bail!("`skills/` entries must be directories");
@@ -426,6 +429,9 @@ fn discover_files(root: &Path, directory: &str, markdown_only: bool) -> Result<V
         fs::read_dir(&dir_root).with_context(|| format!("failed to read {}", dir_root.display()))?
     {
         let entry = entry?;
+        if should_ignore_discovery_entry(&entry.path()) {
+            continue;
+        }
         let file_type = entry.file_type()?;
         if !file_type.is_file() {
             bail!("`{directory}/` entries must be files");
@@ -458,6 +464,13 @@ fn discover_files(root: &Path, directory: &str, markdown_only: bool) -> Result<V
 
     items.sort_by(|left, right| left.id.cmp(&right.id));
     Ok(items)
+}
+
+fn should_ignore_discovery_entry(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    name.starts_with('.') || name.eq_ignore_ascii_case("README.md")
 }
 
 fn validate_skill_directory(skill_dir: &Path) -> Result<()> {
@@ -726,6 +739,24 @@ playbook_ios = { url = "https://github.com/wenext-limited/playbook-ios" }
         assert_eq!(loaded.discovered.agents[0].id, "security");
         assert_eq!(loaded.discovered.rules[0].id, "default");
         assert_eq!(loaded.discovered.commands[0].id, "build");
+    }
+
+    #[test]
+    fn ignores_readme_and_dotfiles_in_discovery_directories() {
+        let temp = TempDir::new().unwrap();
+        write_valid_skill(temp.path());
+        write_file(&temp.path().join("skills/README.md"), "# Skills\n");
+        write_file(&temp.path().join("skills/.DS_Store"), "binary\n");
+        write_file(&temp.path().join("agents/.DS_Store"), "binary\n");
+        write_file(&temp.path().join("agents/README.md"), "# Agents\n");
+        write_file(&temp.path().join("agents/security.md"), "# Security\n");
+
+        let loaded = load_root_from_dir(temp.path()).unwrap();
+
+        assert_eq!(loaded.discovered.skills.len(), 1);
+        assert_eq!(loaded.discovered.skills[0].id, "review");
+        assert_eq!(loaded.discovered.agents.len(), 1);
+        assert_eq!(loaded.discovered.agents[0].id, "security");
     }
 
     #[test]
