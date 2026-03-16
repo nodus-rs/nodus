@@ -203,7 +203,7 @@ Nodus validates and discovers package content by top-level folders:
 
 Package validity rules:
 
-- A dependency repo must contain at least one of `skills/`, `agents/`, `rules/`, or `commands/`
+- A dependency repo must contain at least one of `skills/`, `agents/`, `rules/`, or `commands/`, or declare at least one dependency in `nodus.toml`
 - Other files and directories are allowed and ignored
 - `skills/` entries must be directories
 - Each skill must contain `SKILL.md` with YAML frontmatter containing:
@@ -249,8 +249,10 @@ Behavior:
 - materializes a shared cached checkout for the resolved revision under the cache root
 - resolves the latest tag when `--tag` is omitted
 - checks out the resolved tag
-- validates the discovered package layout
+- validates the discovered package layout or dependency wrapper manifest
 - creates or updates `nodus.toml`
+- records only the direct dependency you added in the caller manifest
+- lets the normal sync flow recursively resolve dependencies declared by the remote repo's `nodus.toml`
 - persists adapter selection when it is inferred or explicitly provided
 
 Example:
@@ -271,7 +273,7 @@ dependency alias or a repository reference like `owner/repo`.
 
 ### `nodus sync`
 
-Resolves the root project plus configured dependencies, snapshots their discovered content, writes `nodus.lock`, and emits managed runtime outputs.
+Resolves the root project plus configured dependencies, recursively follows nested dependencies declared in dependency manifests, snapshots their discovered content, writes `nodus.lock`, and emits managed runtime outputs.
 
 Options:
 
