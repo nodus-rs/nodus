@@ -596,6 +596,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::adapters::namespaced_skill_id;
     use crate::git::add_dependency_in_dir;
     use crate::manifest::{MANIFEST_FILE, load_root_from_dir};
 
@@ -745,17 +746,24 @@ shared = { path = "vendor/shared" }
         write_file(&temp.path().join("agents/security.md"), "# Security\n");
         write_file(&temp.path().join("rules/default.rules"), "allow = []\n");
         write_file(&temp.path().join("AGENTS.md"), "user-owned instructions\n");
+        let resolution = resolve_project(temp.path(), ResolveMode::Sync).unwrap();
+        let root_package = resolution
+            .packages
+            .iter()
+            .find(|package| package.alias == "root")
+            .unwrap();
+        let managed_skill_id = namespaced_skill_id(root_package, "review");
 
         sync_in_dir(temp.path(), false, false).unwrap();
 
         assert!(
             temp.path()
-                .join(".claude/skills/review_root/SKILL.md")
+                .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
                 .exists()
         );
         assert!(
             temp.path()
-                .join(".codex/skills/review_root/SKILL.md")
+                .join(format!(".codex/skills/{managed_skill_id}/SKILL.md"))
                 .exists()
         );
         assert!(temp.path().join(".codex/rules/default.rules").exists());
@@ -782,6 +790,13 @@ id = "shell.exec"
 sensitivity = "high"
 "#,
         );
+        let resolution = resolve_project(temp.path(), ResolveMode::Sync).unwrap();
+        let root_package = resolution
+            .packages
+            .iter()
+            .find(|package| package.alias == "root")
+            .unwrap();
+        let managed_skill_id = namespaced_skill_id(root_package, "review");
 
         let error = sync_in_dir(temp.path(), false, false)
             .unwrap_err()
@@ -791,7 +806,32 @@ sensitivity = "high"
         sync_in_dir(temp.path(), false, true).unwrap();
         assert!(
             temp.path()
-                .join(".claude/skills/review_root/SKILL.md")
+                .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
+                .exists()
+        );
+    }
+
+    #[test]
+    fn sync_uses_short_git_revision_suffix_for_dependency_skills() {
+        let temp = TempDir::new().unwrap();
+        let (_repo, url) = create_git_dependency();
+
+        add_dependency_in_dir(temp.path(), &url, Some("v0.1.0")).unwrap();
+        let resolution = resolve_project(temp.path(), ResolveMode::Sync).unwrap();
+        let dependency = resolution
+            .packages
+            .iter()
+            .find(|package| matches!(package.source, PackageSource::Git { .. }))
+            .unwrap();
+        let managed_skill_id = namespaced_skill_id(dependency, "review");
+
+        sync_in_dir(temp.path(), false, false).unwrap();
+
+        assert!(managed_skill_id.starts_with("review_"));
+        assert_eq!(managed_skill_id.len(), "review_".len() + 6);
+        assert!(
+            temp.path()
+                .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
                 .exists()
         );
     }

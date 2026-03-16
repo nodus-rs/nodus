@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-use crate::resolver::ResolvedPackage;
+use crate::resolver::{PackageSource, ResolvedPackage};
 
 pub mod claude;
 pub mod codex;
@@ -16,7 +16,34 @@ pub struct ManagedFile {
 }
 
 pub fn namespaced_skill_id(package: &ResolvedPackage, skill_id: &str) -> String {
-    format!("{skill_id}_{}", package.alias)
+    format!("{skill_id}_{}", package_short_id(package))
+}
+
+fn package_short_id(package: &ResolvedPackage) -> String {
+    match &package.source {
+        PackageSource::Git { rev, .. } => short_source_id(rev),
+        PackageSource::Path { .. } | PackageSource::Root => short_source_id(
+            package
+                .digest
+                .strip_prefix("sha256:")
+                .unwrap_or(&package.digest),
+        ),
+    }
+}
+
+fn short_source_id(value: &str) -> String {
+    let short = value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .take(6)
+        .collect::<String>()
+        .to_ascii_lowercase();
+
+    if short.is_empty() {
+        "local0".into()
+    } else {
+        short
+    }
 }
 
 pub fn build_managed_files(

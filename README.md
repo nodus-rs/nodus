@@ -21,8 +21,8 @@ The current MVP supports:
 - Deterministic `agentpack.lock`
 - Content-addressed snapshots under `.agen/store/sha256/`
 - Managed output emission for:
-  - `.claude/skills/<id>_<package>/`
-  - `.codex/skills/<id>_<package>/`
+  - `.claude/skills/<id>_<source-id>/`
+  - `.codex/skills/<id>_<source-id>/`
   - `.codex/rules/<id>.rules`
   - `.opencode/instructions/<id>.md`
   - `opencode.json`
@@ -252,11 +252,16 @@ Sync emits from those snapshots rather than directly from mutable working trees.
 
 Current adapter behavior:
 
-- Claude: discovered skills are copied to `.claude/skills/<skill-id>_<package-alias>/`
-- Codex: discovered skills are copied to `.codex/skills/<skill-id>_<package-alias>/`
+- Claude: discovered skills are copied to `.claude/skills/<skill-id>_<source-id>/`
+- Codex: discovered skills are copied to `.codex/skills/<skill-id>_<source-id>/`
 - Codex: discovered rules are copied to `.codex/rules/<rule-id>.rules`
 - OpenCode: discovered agents are copied to `.opencode/instructions/<agent-id>.md`
 - OpenCode: managed instruction paths are written to `opencode.json`
+
+For skill folders, `<source-id>` is a short deterministic suffix:
+
+- Git dependencies use the first 6 characters of the locked commit SHA
+- Root and local-path packages use the first 6 characters of the package content digest
 - Commands: discovered and locked, but not emitted
 
 ## Development
