@@ -625,7 +625,10 @@ mod tests {
 
     use super::*;
     use crate::adapters::namespaced_skill_id;
-    use crate::git::{add_dependency_in_dir, shared_checkout_path, shared_repository_path};
+    use crate::git::{
+        add_dependency_in_dir, normalize_alias_from_url, remove_dependency_in_dir,
+        shared_checkout_path, shared_repository_path,
+    };
     use crate::manifest::{MANIFEST_FILE, load_root_from_dir};
 
     fn write_file(path: &Path, contents: &str) {
@@ -836,6 +839,73 @@ shared = { path = "vendor/shared" }
         .to_string();
 
         assert!(error.contains("does not match the Agen package layout"));
+    }
+
+    #[test]
+    fn remove_dependency_updates_manifest_and_prunes_managed_files() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        let (_repo, url) = create_git_dependency();
+        let alias = normalize_alias_from_url(&url).unwrap();
+
+        add_dependency_in_dir(temp.path(), cache.path(), &url, Some("v0.1.0")).unwrap();
+
+        let manifest_before = load_root_from_dir(temp.path()).unwrap();
+        let dependency = resolve_project(temp.path(), cache.path(), ResolveMode::Sync)
+            .unwrap()
+            .packages
+            .into_iter()
+            .find(|package| package.alias != "root")
+            .unwrap();
+        let managed_skill_id = namespaced_skill_id(&dependency, "review");
+
+        assert!(manifest_before.manifest.dependencies.contains_key(&alias));
+        assert!(
+            temp.path()
+                .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
+                .exists()
+        );
+
+        remove_dependency_in_dir(temp.path(), cache.path(), &alias).unwrap();
+
+        let manifest_after = load_root_from_dir(temp.path()).unwrap();
+        assert!(manifest_after.manifest.dependencies.is_empty());
+        assert!(
+            !temp
+                .path()
+                .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
+                .exists()
+        );
+
+        let lockfile = Lockfile::read(&temp.path().join("agentpack.lock")).unwrap();
+        assert_eq!(lockfile.packages.len(), 1);
+        assert_eq!(lockfile.packages[0].alias, "root");
+    }
+
+    #[test]
+    fn remove_dependency_accepts_repository_reference() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        let (_repo, url) = create_git_dependency();
+
+        add_dependency_in_dir(temp.path(), cache.path(), &url, Some("v0.1.0")).unwrap();
+
+        remove_dependency_in_dir(temp.path(), cache.path(), &url).unwrap();
+
+        let manifest = load_root_from_dir(temp.path()).unwrap();
+        assert!(manifest.manifest.dependencies.is_empty());
+    }
+
+    #[test]
+    fn remove_dependency_rejects_unknown_package() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+
+        let error = remove_dependency_in_dir(temp.path(), cache.path(), "missing")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("dependency `missing` does not exist"));
     }
 
     #[test]

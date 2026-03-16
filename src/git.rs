@@ -24,6 +24,11 @@ pub fn add_dependency(cache_root: &Path, url: &str, tag: Option<&str>) -> Result
     add_dependency_in_dir(&cwd, cache_root, url, tag)
 }
 
+pub fn remove_dependency(cache_root: &Path, package: &str) -> Result<()> {
+    let cwd = std::env::current_dir().context("failed to determine the current directory")?;
+    remove_dependency_in_dir(&cwd, cache_root, package)
+}
+
 pub fn add_dependency_in_dir(
     project_root: &Path,
     cache_root: &Path,
@@ -51,6 +56,19 @@ pub fn add_dependency_in_dir(
             tag: Some(checkout.tag.clone()),
         },
     );
+
+    write_manifest(&project_root.join(MANIFEST_FILE), &root.manifest)?;
+    sync_in_dir(project_root, cache_root, false, false)
+}
+
+pub fn remove_dependency_in_dir(
+    project_root: &Path,
+    cache_root: &Path,
+    package: &str,
+) -> Result<()> {
+    let mut root = load_from_dir(project_root, PackageRole::Root)?;
+    let alias = resolve_dependency_alias(&root.manifest.dependencies, package)?;
+    root.manifest.dependencies.remove(&alias);
 
     write_manifest(&project_root.join(MANIFEST_FILE), &root.manifest)?;
     sync_in_dir(project_root, cache_root, false, false)
@@ -176,6 +194,22 @@ pub fn normalize_alias_from_url(url: &str) -> Result<String> {
         bail!("failed to derive a valid dependency alias from `{url}`");
     }
     Ok(alias)
+}
+
+fn resolve_dependency_alias(
+    dependencies: &std::collections::BTreeMap<String, DependencySpec>,
+    package: &str,
+) -> Result<String> {
+    if dependencies.contains_key(package) {
+        return Ok(package.to_string());
+    }
+
+    let normalized = normalize_alias_from_url(package)?;
+    if dependencies.contains_key(&normalized) {
+        return Ok(normalized);
+    }
+
+    bail!("dependency `{package}` does not exist")
 }
 
 fn normalize_repository_name_from_url(url: &str) -> Result<String> {
@@ -450,6 +484,42 @@ mod tests {
         assert_eq!(
             normalize_git_url("https://github.com/wenext-limited/playbook-ios"),
             "https://github.com/wenext-limited/playbook-ios"
+        );
+    }
+
+    #[test]
+    fn resolves_dependency_alias_from_exact_name() {
+        let mut dependencies = std::collections::BTreeMap::new();
+        dependencies.insert(
+            "playbook_ios".into(),
+            DependencySpec {
+                url: Some("https://github.com/wenext-limited/playbook-ios".into()),
+                path: None,
+                tag: Some("v0.1.0".into()),
+            },
+        );
+
+        assert_eq!(
+            resolve_dependency_alias(&dependencies, "playbook_ios").unwrap(),
+            "playbook_ios"
+        );
+    }
+
+    #[test]
+    fn resolves_dependency_alias_from_repository_reference() {
+        let mut dependencies = std::collections::BTreeMap::new();
+        dependencies.insert(
+            "playbook_ios".into(),
+            DependencySpec {
+                url: Some("https://github.com/wenext-limited/playbook-ios".into()),
+                path: None,
+                tag: Some("v0.1.0".into()),
+            },
+        );
+
+        assert_eq!(
+            resolve_dependency_alias(&dependencies, "wenext-limited/playbook-ios").unwrap(),
+            "playbook_ios"
         );
     }
 

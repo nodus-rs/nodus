@@ -98,6 +98,12 @@ Validate that the repo, shared cached dependencies, lockfile, and owned outputs 
 agen doctor
 ```
 
+Remove one configured dependency and prune its managed outputs:
+
+```bash
+agen uninstall playbook_ios
+```
+
 For reproducible CI:
 
 ```bash
@@ -214,6 +220,12 @@ agen add wenext-limited/playbook-ios
 ### `agen init`
 
 Creates an empty `agentpack.toml` plus `skills/example/SKILL.md`.
+
+### `agen uninstall`
+
+Removes one dependency from `agentpack.toml` and runs the normal sync flow to update
+`agentpack.lock` and prune managed runtime files. The package argument accepts either the
+dependency alias or a repository reference like `owner/repo`.
 
 ### `agen sync`
 

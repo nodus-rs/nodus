@@ -20,6 +20,9 @@ enum Command {
         #[arg(long)]
         tag: Option<String>,
     },
+    Uninstall {
+        package: String,
+    },
     Init,
     Sync {
         #[arg(long)]
@@ -36,6 +39,7 @@ pub fn run() -> Result<()> {
 
     match cli.command {
         Command::Add { url, tag } => crate::git::add_dependency(&cache_root, &url, tag.as_deref()),
+        Command::Uninstall { package } => crate::git::remove_dependency(&cache_root, &package),
         Command::Init => crate::manifest::scaffold_init(),
         Command::Sync {
             locked,
