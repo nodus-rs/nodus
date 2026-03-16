@@ -56,6 +56,7 @@ pub struct Adapters(u8);
 impl Adapters {
     #[allow(dead_code)]
     pub const NONE: Self = Self(0);
+    pub const ALL: Self = Self(Self::CLAUDE.0 | Self::CODEX.0 | Self::OPENCODE.0);
     pub const CLAUDE: Self = Self(Adapter::Claude.bit());
     pub const CODEX: Self = Self(Adapter::Codex.bit());
     pub const OPENCODE: Self = Self(Adapter::OpenCode.bit());
@@ -75,6 +76,19 @@ impl Adapters {
 
     pub const fn is_empty(self) -> bool {
         self.0 == 0
+    }
+
+    pub fn from_slice(adapters: &[Adapter]) -> Self {
+        adapters
+            .iter()
+            .copied()
+            .fold(Self::NONE, |selected, adapter| {
+                selected.union(adapter.into())
+            })
+    }
+
+    pub fn to_vec(self) -> Vec<Adapter> {
+        self.iter().collect()
     }
 
     #[allow(dead_code)]
@@ -178,6 +192,7 @@ pub fn short_source_id(value: &str) -> String {
 pub fn build_output_plan(
     project_root: &Path,
     packages: &[(ResolvedPackage, PathBuf)],
+    selected_adapters: Adapters,
 ) -> Result<OutputPlan> {
     let mut plan = OutputAccumulator::default();
 
@@ -208,9 +223,10 @@ pub fn build_output_plan(
         );
 
         for skill in &package.manifest.discovered.skills {
-            if ArtifactKind::Skill
-                .supported_adapters()
-                .contains(Adapter::Claude)
+            if selected_adapters.contains(Adapter::Claude)
+                && ArtifactKind::Skill
+                    .supported_adapters()
+                    .contains(Adapter::Claude)
             {
                 merge_files(
                     &mut plan.files,
@@ -220,9 +236,10 @@ pub fn build_output_plan(
                     .insert(format!(".claude/skills/{}", skill.id));
             }
 
-            if ArtifactKind::Skill
-                .supported_adapters()
-                .contains(Adapter::Codex)
+            if selected_adapters.contains(Adapter::Codex)
+                && ArtifactKind::Skill
+                    .supported_adapters()
+                    .contains(Adapter::Codex)
             {
                 merge_files(
                     &mut plan.files,
@@ -232,9 +249,10 @@ pub fn build_output_plan(
                     .insert(format!(".codex/skills/{}", skill.id));
             }
 
-            if ArtifactKind::Skill
-                .supported_adapters()
-                .contains(Adapter::OpenCode)
+            if selected_adapters.contains(Adapter::OpenCode)
+                && ArtifactKind::Skill
+                    .supported_adapters()
+                    .contains(Adapter::OpenCode)
             {
                 claim_opencode_skill_id(&mut plan.opencode_skill_owners, package, &skill.id)?;
                 merge_files(
@@ -247,9 +265,10 @@ pub fn build_output_plan(
         }
 
         for agent in &package.manifest.discovered.agents {
-            if ArtifactKind::Agent
-                .supported_adapters()
-                .contains(Adapter::Claude)
+            if selected_adapters.contains(Adapter::Claude)
+                && ArtifactKind::Agent
+                    .supported_adapters()
+                    .contains(Adapter::Claude)
             {
                 merge_file(
                     &mut plan.files,
@@ -259,9 +278,10 @@ pub fn build_output_plan(
                     .insert(format!(".claude/agents/{}.md", agent.id));
             }
 
-            if ArtifactKind::Agent
-                .supported_adapters()
-                .contains(Adapter::OpenCode)
+            if selected_adapters.contains(Adapter::OpenCode)
+                && ArtifactKind::Agent
+                    .supported_adapters()
+                    .contains(Adapter::OpenCode)
             {
                 merge_file(
                     &mut plan.files,
@@ -273,9 +293,10 @@ pub fn build_output_plan(
         }
 
         for rule in &package.manifest.discovered.rules {
-            if ArtifactKind::Rule
-                .supported_adapters()
-                .contains(Adapter::Claude)
+            if selected_adapters.contains(Adapter::Claude)
+                && ArtifactKind::Rule
+                    .supported_adapters()
+                    .contains(Adapter::Claude)
             {
                 merge_file(
                     &mut plan.files,
@@ -285,9 +306,10 @@ pub fn build_output_plan(
                     .insert(format!(".claude/rules/{}.md", rule.id));
             }
 
-            if ArtifactKind::Rule
-                .supported_adapters()
-                .contains(Adapter::Codex)
+            if selected_adapters.contains(Adapter::Codex)
+                && ArtifactKind::Rule
+                    .supported_adapters()
+                    .contains(Adapter::Codex)
             {
                 merge_file(
                     &mut plan.files,
@@ -297,9 +319,10 @@ pub fn build_output_plan(
                     .insert(format!(".codex/rules/{}.rules", rule.id));
             }
 
-            if ArtifactKind::Rule
-                .supported_adapters()
-                .contains(Adapter::OpenCode)
+            if selected_adapters.contains(Adapter::OpenCode)
+                && ArtifactKind::Rule
+                    .supported_adapters()
+                    .contains(Adapter::OpenCode)
             {
                 merge_file(
                     &mut plan.files,
@@ -311,9 +334,10 @@ pub fn build_output_plan(
         }
 
         for command in &package.manifest.discovered.commands {
-            if ArtifactKind::Command
-                .supported_adapters()
-                .contains(Adapter::Claude)
+            if selected_adapters.contains(Adapter::Claude)
+                && ArtifactKind::Command
+                    .supported_adapters()
+                    .contains(Adapter::Claude)
             {
                 merge_file(
                     &mut plan.files,
@@ -323,9 +347,10 @@ pub fn build_output_plan(
                     .insert(format!(".claude/commands/{}.md", command.id));
             }
 
-            if ArtifactKind::Command
-                .supported_adapters()
-                .contains(Adapter::OpenCode)
+            if selected_adapters.contains(Adapter::OpenCode)
+                && ArtifactKind::Command
+                    .supported_adapters()
+                    .contains(Adapter::OpenCode)
             {
                 merge_file(
                     &mut plan.files,

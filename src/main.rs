@@ -5,6 +5,7 @@ mod git;
 mod lockfile;
 mod manifest;
 mod resolver;
+mod selection;
 mod store;
 
 fn main() -> anyhow::Result<()> {

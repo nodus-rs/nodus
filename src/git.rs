@@ -11,6 +11,7 @@ use crate::manifest::{
     write_manifest,
 };
 use crate::resolver::{sync_in_dir, sync_in_dir_with_adapters};
+use crate::selection::{resolve_adapter_selection, should_prompt_for_adapter};
 
 #[derive(Debug, Clone)]
 pub struct GitCheckout {
@@ -18,11 +19,6 @@ pub struct GitCheckout {
     pub url: String,
     pub tag: String,
     pub rev: String,
-}
-
-pub fn add_dependency(cache_root: &Path, url: &str, tag: Option<&str>) -> Result<()> {
-    let cwd = std::env::current_dir().context("failed to determine the current directory")?;
-    add_dependency_in_dir(&cwd, cache_root, url, tag)
 }
 
 pub fn add_dependency_with_adapters(
@@ -38,15 +34,6 @@ pub fn add_dependency_with_adapters(
 pub fn remove_dependency(cache_root: &Path, package: &str) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to determine the current directory")?;
     remove_dependency_in_dir(&cwd, cache_root, package)
-}
-
-pub fn add_dependency_in_dir(
-    project_root: &Path,
-    cache_root: &Path,
-    url: &str,
-    tag: Option<&str>,
-) -> Result<()> {
-    add_dependency_in_dir_with_adapters(project_root, cache_root, url, tag, &[])
 }
 
 pub fn add_dependency_in_dir_with_adapters(
@@ -79,6 +66,15 @@ pub fn add_dependency_in_dir_with_adapters(
             tag: Some(checkout.tag.clone()),
         },
     );
+    let selection = resolve_adapter_selection(
+        project_root,
+        &root.manifest,
+        adapters,
+        should_prompt_for_adapter(),
+    )?;
+    if selection.should_persist {
+        root.manifest.set_enabled_adapters(&selection.adapters);
+    }
 
     write_manifest(&project_root.join(MANIFEST_FILE), &root.manifest)?;
     sync_in_dir_with_adapters(project_root, cache_root, false, false, adapters)

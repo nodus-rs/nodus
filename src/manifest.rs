@@ -33,6 +33,15 @@ pub struct AdapterConfig {
     pub enabled: Vec<Adapter>,
 }
 
+impl AdapterConfig {
+    pub fn normalized(adapters: &[Adapter]) -> Self {
+        let mut enabled = adapters.to_vec();
+        enabled.sort();
+        enabled.dedup();
+        Self { enabled }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Capability {
     pub id: String,
@@ -353,6 +362,18 @@ impl LoadedManifest {
         }
 
         Ok(canonical)
+    }
+}
+
+impl Manifest {
+    pub fn enabled_adapters(&self) -> Option<&[Adapter]> {
+        self.adapters
+            .as_ref()
+            .map(|config| config.enabled.as_slice())
+    }
+
+    pub fn set_enabled_adapters(&mut self, adapters: &[Adapter]) {
+        self.adapters = Some(AdapterConfig::normalized(adapters));
     }
 }
 

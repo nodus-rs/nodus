@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 
-use crate::adapters::{ManagedFile, build_output_plan};
+use crate::adapters::{Adapter, Adapters, ManagedFile, build_output_plan};
 use crate::git::{
     current_rev, ensure_git_dependency, shared_checkout_path, shared_repository_path,
     validate_shared_checkout,
@@ -14,8 +14,9 @@ use crate::git::{
 use crate::lockfile::{LOCKFILE_NAME, LockedPackage, LockedSource, Lockfile};
 use crate::manifest::{
     DependencySourceKind, DependencySpec, LoadedManifest, PackageRole, load_dependency_from_dir,
-    load_root_from_dir,
+    load_root_from_dir, write_manifest,
 };
+use crate::selection::{resolve_adapter_selection, should_prompt_for_adapter};
 use crate::store::{snapshot_resolution, write_atomic};
 
 #[derive(Debug, Clone)]
@@ -66,11 +67,6 @@ struct ResolveContext<'a> {
     mode: ResolveMode,
 }
 
-pub fn sync(cache_root: &Path, locked: bool, allow_high_sensitivity: bool) -> Result<()> {
-    let cwd = env::current_dir().context("failed to determine the current directory")?;
-    sync_in_dir(&cwd, cache_root, locked, allow_high_sensitivity)
-}
-
 pub fn sync_with_adapters(
     cache_root: &Path,
     locked: bool,
@@ -95,8 +91,25 @@ pub fn sync_in_dir_with_adapters(
     cache_root: &Path,
     locked: bool,
     allow_high_sensitivity: bool,
-    _adapters: &[crate::adapters::Adapter],
+    adapters: &[Adapter],
 ) -> Result<()> {
+    let mut root = load_root_from_dir(cwd)?;
+    let selection = resolve_adapter_selection(
+        cwd,
+        &root.manifest,
+        adapters,
+        !locked && should_prompt_for_adapter(),
+    )?;
+    if selection.should_persist {
+        if locked {
+            bail!(
+                "adapter selection must be persisted before running `nodus sync --locked`; rerun without `--locked` or set `[adapters] enabled = [...]` in nodus.toml"
+            );
+        }
+        root.manifest.set_enabled_adapters(&selection.adapters);
+        write_manifest(&cwd.join(crate::manifest::MANIFEST_FILE), &root.manifest)?;
+    }
+
     let resolution = resolve_project(cwd, cache_root, ResolveMode::Sync)?;
     enforce_capabilities(&resolution, allow_high_sensitivity)?;
     let stored_packages = snapshot_resolution(cache_root, &resolution)?;
@@ -122,10 +135,11 @@ pub fn sync_in_dir_with_adapters(
             Ok((package.clone(), snapshot_root))
         })
         .collect::<Result<Vec<_>>>()?;
-    let output_plan = build_output_plan(cwd, &package_snapshots)?;
+    let selected_adapters = Adapters::from_slice(&selection.adapters);
+    let output_plan = build_output_plan(cwd, &package_snapshots, selected_adapters)?;
     let planned_files = &output_plan.files;
-    let desired_paths = resolution.managed_paths(cwd)?;
-    let lockfile = resolution.to_lockfile()?;
+    let desired_paths = resolution.managed_paths(cwd, selected_adapters)?;
+    let lockfile = resolution.to_lockfile(selected_adapters)?;
     let owned_paths = load_owned_paths(cwd, existing_lockfile.as_ref())?;
 
     if locked {
@@ -174,6 +188,9 @@ pub fn resolve_project_for_sync(root: &Path, cache_root: &Path) -> Result<Resolu
 }
 
 pub fn doctor_in_dir(cwd: &Path, cache_root: &Path) -> Result<()> {
+    let root = load_root_from_dir(cwd)?;
+    let selection = resolve_adapter_selection(cwd, &root.manifest, &[], false)?;
+    let selected_adapters = Adapters::from_slice(&selection.adapters);
     let resolution = resolve_project(cwd, cache_root, ResolveMode::Doctor)?;
     let lockfile_path = cwd.join(LOCKFILE_NAME);
     if !lockfile_path.exists() {
@@ -186,10 +203,10 @@ pub fn doctor_in_dir(cwd: &Path, cache_root: &Path) -> Result<()> {
         .iter()
         .map(|package| (package.clone(), package.root.clone()))
         .collect::<Vec<_>>();
-    let output_plan = build_output_plan(cwd, &package_roots)?;
+    let output_plan = build_output_plan(cwd, &package_roots, selected_adapters)?;
     let planned_files = &output_plan.files;
-    let desired_paths = resolution.managed_paths(cwd)?;
-    let expected_lockfile = resolution.to_lockfile()?;
+    let desired_paths = resolution.managed_paths(cwd, selected_adapters)?;
+    let expected_lockfile = resolution.to_lockfile(selected_adapters)?;
     if existing_lockfile != expected_lockfile {
         bail!("{LOCKFILE_NAME} is out of date");
     }
@@ -403,7 +420,7 @@ fn compute_package_digest(manifest: &LoadedManifest) -> Result<String> {
 }
 
 impl Resolution {
-    pub fn to_lockfile(&self) -> Result<Lockfile> {
+    pub fn to_lockfile(&self, selected_adapters: Adapters) -> Result<Lockfile> {
         let mut packages = Vec::new();
 
         for package in &self.packages {
@@ -491,21 +508,28 @@ impl Resolution {
             });
         }
 
-        Ok(Lockfile::new(packages, self.lockfile_managed_files()?))
+        Ok(Lockfile::new(
+            packages,
+            self.lockfile_managed_files(selected_adapters)?,
+        ))
     }
 
-    pub fn managed_paths(&self, project_root: &Path) -> Result<HashSet<PathBuf>> {
-        let lockfile = self.to_lockfile()?;
+    pub fn managed_paths(
+        &self,
+        project_root: &Path,
+        selected_adapters: Adapters,
+    ) -> Result<HashSet<PathBuf>> {
+        let lockfile = self.to_lockfile(selected_adapters)?;
         lockfile.managed_paths(project_root)
     }
 
-    fn lockfile_managed_files(&self) -> Result<Vec<String>> {
+    fn lockfile_managed_files(&self, selected_adapters: Adapters) -> Result<Vec<String>> {
         let package_roots = self
             .packages
             .iter()
             .map(|package| (package.clone(), package.root.clone()))
             .collect::<Vec<_>>();
-        Ok(build_output_plan(&self.project_root, &package_roots)?.managed_files)
+        Ok(build_output_plan(&self.project_root, &package_roots, selected_adapters)?.managed_files)
     }
 }
 
@@ -672,9 +696,9 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::adapters::namespaced_skill_id;
+    use crate::adapters::{Adapter, Adapters, namespaced_skill_id};
     use crate::git::{
-        add_dependency_in_dir, normalize_alias_from_url, remove_dependency_in_dir,
+        add_dependency_in_dir_with_adapters, normalize_alias_from_url, remove_dependency_in_dir,
         shared_checkout_path, shared_repository_path,
     };
     use crate::manifest::{MANIFEST_FILE, load_root_from_dir};
@@ -740,6 +764,15 @@ mod tests {
         TempDir::new().unwrap()
     }
 
+    fn sync_all(project_root: &Path, cache_root: &Path) {
+        sync_in_dir_with_adapters(project_root, cache_root, false, false, &Adapter::ALL).unwrap();
+    }
+
+    fn add_dependency_all(project_root: &Path, cache_root: &Path, url: &str, tag: Option<&str>) {
+        add_dependency_in_dir_with_adapters(project_root, cache_root, url, tag, &Adapter::ALL)
+            .unwrap();
+    }
+
     fn git_output(path: &Path, args: &[&str]) -> String {
         let output = Command::new("git")
             .args(args)
@@ -770,7 +803,7 @@ shared = { path = "vendor/shared" }
         write_skill(&temp.path().join("vendor/shared/skills/checks"), "Checks");
 
         let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
-        let lockfile = resolution.to_lockfile().unwrap();
+        let lockfile = resolution.to_lockfile(Adapters::ALL).unwrap();
 
         assert_eq!(lockfile.packages.len(), 2);
         assert_eq!(lockfile.packages[0].alias, "root");
@@ -793,7 +826,7 @@ shared = { path = "vendor/shared" }
         let cache = cache_dir();
         let (_repo, url) = create_git_dependency();
 
-        add_dependency_in_dir(temp.path(), cache.path(), &url, Some("v0.1.0")).unwrap();
+        add_dependency_all(temp.path(), cache.path(), &url, Some("v0.1.0"));
 
         let mirror_path = shared_repository_path(cache.path(), &url).unwrap();
         let rev = git_output(&mirror_path, &["rev-parse", "v0.1.0^{commit}"]);
@@ -853,11 +886,12 @@ shared = { path = "vendor/shared" }
             );
         }
 
-        add_dependency_in_dir(
+        add_dependency_in_dir_with_adapters(
             temp.path(),
             cache.path(),
             &repo.path().to_string_lossy(),
             None,
+            &Adapter::ALL,
         )
         .unwrap();
 
@@ -878,11 +912,12 @@ shared = { path = "vendor/shared" }
             .output()
             .unwrap();
 
-        let error = add_dependency_in_dir(
+        let error = add_dependency_in_dir_with_adapters(
             temp.path(),
             cache.path(),
             &repo.path().to_string_lossy(),
             Some("v0.1.0"),
+            &Adapter::ALL,
         )
         .unwrap_err()
         .to_string();
@@ -897,7 +932,7 @@ shared = { path = "vendor/shared" }
         let (_repo, url) = create_git_dependency();
         let alias = normalize_alias_from_url(&url).unwrap();
 
-        add_dependency_in_dir(temp.path(), cache.path(), &url, Some("v0.1.0")).unwrap();
+        add_dependency_all(temp.path(), cache.path(), &url, Some("v0.1.0"));
 
         let manifest_before = load_root_from_dir(temp.path()).unwrap();
         let dependency = resolve_project(temp.path(), cache.path(), ResolveMode::Sync)
@@ -937,7 +972,7 @@ shared = { path = "vendor/shared" }
         let cache = cache_dir();
         let (_repo, url) = create_git_dependency();
 
-        add_dependency_in_dir(temp.path(), cache.path(), &url, Some("v0.1.0")).unwrap();
+        add_dependency_all(temp.path(), cache.path(), &url, Some("v0.1.0"));
 
         remove_dependency_in_dir(temp.path(), cache.path(), &url).unwrap();
 
@@ -966,6 +1001,9 @@ shared = { path = "vendor/shared" }
         write_file(&temp.path().join("rules/default.rules"), "allow = []\n");
         write_file(&temp.path().join("commands/build.txt"), "cargo test\n");
         write_file(&temp.path().join("AGENTS.md"), "user-owned instructions\n");
+
+        sync_all(temp.path(), cache.path());
+
         let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
         let root_package = resolution
             .packages
@@ -973,8 +1011,6 @@ shared = { path = "vendor/shared" }
             .find(|package| package.alias == "root")
             .unwrap();
         let managed_skill_id = namespaced_skill_id(root_package, "review");
-
-        sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
 
         assert!(
             temp.path()
@@ -1010,12 +1046,127 @@ shared = { path = "vendor/shared" }
     }
 
     #[test]
+    fn sync_detects_existing_codex_root_and_persists_only_codex() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_skill(&temp.path().join("skills/review"), "Review");
+        fs::create_dir_all(temp.path().join(".codex")).unwrap();
+
+        sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+
+        let manifest = load_root_from_dir(temp.path()).unwrap();
+        assert_eq!(
+            manifest.manifest.enabled_adapters().unwrap(),
+            [Adapter::Codex].as_slice()
+        );
+        assert!(temp.path().join(".codex/skills").exists());
+        assert!(!temp.path().join(".claude/skills").exists());
+        assert!(!temp.path().join(".opencode/skills").exists());
+    }
+
+    #[test]
+    fn sync_detects_multiple_adapter_roots_and_persists_them() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_skill(&temp.path().join("skills/review"), "Review");
+        fs::create_dir_all(temp.path().join(".claude")).unwrap();
+        fs::create_dir_all(temp.path().join(".opencode")).unwrap();
+
+        sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+
+        let manifest = load_root_from_dir(temp.path()).unwrap();
+        assert_eq!(
+            manifest.manifest.enabled_adapters().unwrap(),
+            [Adapter::Claude, Adapter::OpenCode].as_slice()
+        );
+        assert!(temp.path().join(".claude/skills").exists());
+        assert!(!temp.path().join(".codex/skills").exists());
+        assert!(temp.path().join(".opencode/skills").exists());
+    }
+
+    #[test]
+    fn sync_persists_explicit_adapter_selection_when_repo_has_no_roots() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_skill(&temp.path().join("skills/review"), "Review");
+
+        sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex])
+            .unwrap();
+
+        let manifest = load_root_from_dir(temp.path()).unwrap();
+        assert_eq!(
+            manifest.manifest.enabled_adapters().unwrap(),
+            [Adapter::Codex].as_slice()
+        );
+        assert!(temp.path().join(".codex/skills").exists());
+        assert!(!temp.path().join(".claude/skills").exists());
+        assert!(!temp.path().join(".opencode/skills").exists());
+    }
+
+    #[test]
+    fn sync_requires_explicit_adapter_when_repo_has_no_signals() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_skill(&temp.path().join("skills/review"), "Review");
+
+        let error = sync_in_dir(temp.path(), cache.path(), false, false)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("Pass `--adapter"));
+    }
+
+    #[test]
+    fn sync_prefers_manifest_selection_over_detected_roots() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_skill(&temp.path().join("skills/review"), "Review");
+        write_file(
+            &temp.path().join(MANIFEST_FILE),
+            r#"
+[adapters]
+enabled = ["codex"]
+"#,
+        );
+        fs::create_dir_all(temp.path().join(".claude")).unwrap();
+
+        sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+
+        assert!(temp.path().join(".codex/skills").exists());
+        assert!(!temp.path().join(".claude/skills").exists());
+    }
+
+    #[test]
+    fn sync_prunes_outputs_when_adapter_selection_is_narrowed() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_skill(&temp.path().join("skills/review"), "Review");
+
+        sync_all(temp.path(), cache.path());
+        assert!(temp.path().join(".claude/skills").exists());
+        assert!(temp.path().join(".codex/skills").exists());
+        assert!(temp.path().join(".opencode/skills").exists());
+
+        sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex])
+            .unwrap();
+
+        let manifest = load_root_from_dir(temp.path()).unwrap();
+        assert_eq!(
+            manifest.manifest.enabled_adapters().unwrap(),
+            [Adapter::Codex].as_slice()
+        );
+        assert!(!temp.path().join(".claude/skills").exists());
+        assert!(temp.path().join(".codex/skills").exists());
+        assert!(!temp.path().join(".opencode/skills").exists());
+    }
+
+    #[test]
     fn sync_records_stable_skill_roots_in_lockfile() {
         let temp = TempDir::new().unwrap();
         let cache = cache_dir();
         write_skill(&temp.path().join("skills/iframe-ad"), "Iframe Ad");
 
-        sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+        sync_all(temp.path(), cache.path());
 
         let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
 
@@ -1055,6 +1206,14 @@ id = "shell.exec"
 sensitivity = "high"
 "#,
         );
+
+        let error =
+            sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &Adapter::ALL)
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("--allow-high-sensitivity"));
+
+        sync_in_dir_with_adapters(temp.path(), cache.path(), false, true, &Adapter::ALL).unwrap();
         let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
         let root_package = resolution
             .packages
@@ -1062,13 +1221,6 @@ sensitivity = "high"
             .find(|package| package.alias == "root")
             .unwrap();
         let managed_skill_id = namespaced_skill_id(root_package, "review");
-
-        let error = sync_in_dir(temp.path(), cache.path(), false, false)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("--allow-high-sensitivity"));
-
-        sync_in_dir(temp.path(), cache.path(), false, true).unwrap();
         assert!(
             temp.path()
                 .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
@@ -1082,7 +1234,7 @@ sensitivity = "high"
         let cache = cache_dir();
         let (_repo, url) = create_git_dependency();
 
-        add_dependency_in_dir(temp.path(), cache.path(), &url, Some("v0.1.0")).unwrap();
+        add_dependency_all(temp.path(), cache.path(), &url, Some("v0.1.0"));
         let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
         let dependency = resolution
             .packages
@@ -1091,7 +1243,7 @@ sensitivity = "high"
             .unwrap();
         let managed_skill_id = namespaced_skill_id(dependency, "review");
 
-        sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+        sync_all(temp.path(), cache.path());
 
         assert!(managed_skill_id.starts_with("review_"));
         assert_eq!(managed_skill_id.len(), "review_".len() + 6);
@@ -1112,7 +1264,7 @@ sensitivity = "high"
         write_file(&temp.path().join("rules/default.rules"), "allow = []\n");
         write_file(&temp.path().join("commands/build.txt"), "cargo test\n");
 
-        sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+        sync_all(temp.path(), cache.path());
         assert!(temp.path().join(".claude/agents/security.md").exists());
         assert!(temp.path().join(".claude/commands/build.md").exists());
         assert!(temp.path().join(".claude/rules/default.md").exists());
@@ -1126,7 +1278,7 @@ sensitivity = "high"
         fs::remove_dir(temp.path().join("rules")).unwrap();
         fs::remove_file(temp.path().join("commands/build.txt")).unwrap();
         fs::remove_dir(temp.path().join("commands")).unwrap();
-        sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+        sync_all(temp.path(), cache.path());
 
         assert!(!temp.path().join(".claude/agents/security.md").exists());
         assert!(!temp.path().join(".claude/commands/build.md").exists());
@@ -1144,7 +1296,7 @@ sensitivity = "high"
         write_file(&temp.path().join("CLAUDE.md"), "user-owned memory\n");
         write_file(&temp.path().join("AGENTS.md"), "user-owned agents\n");
 
-        sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+        sync_all(temp.path(), cache.path());
 
         assert_eq!(
             fs::read_to_string(temp.path().join("CLAUDE.md")).unwrap(),
@@ -1174,9 +1326,10 @@ shared = { path = "vendor/shared" }
             "---\nname: Shared Review\ndescription: Different review skill.\n---\n# Shared Review\n",
         );
 
-        let error = sync_in_dir(temp.path(), cache.path(), false, false)
-            .unwrap_err()
-            .to_string();
+        let error =
+            sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &Adapter::ALL)
+                .unwrap_err()
+                .to_string();
 
         assert!(error.contains("multiple packages export OpenCode skill `review`"));
     }
@@ -1187,7 +1340,7 @@ shared = { path = "vendor/shared" }
         let cache = cache_dir();
         write_skill(&temp.path().join("skills/review"), "Review");
 
-        sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+        sync_all(temp.path(), cache.path());
 
         let first_resolution =
             resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
@@ -1205,7 +1358,7 @@ shared = { path = "vendor/shared" }
             "---\nname: Review\ndescription: Updated review skill.\n---\n# Review\nchanged\n",
         );
 
-        sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+        sync_all(temp.path(), cache.path());
 
         let second_resolution =
             resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
@@ -1230,7 +1383,7 @@ shared = { path = "vendor/shared" }
         let cache = cache_dir();
         write_skill(&temp.path().join("skills/review"), "Review");
 
-        sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+        sync_all(temp.path(), cache.path());
 
         let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
         let root_package = resolution
@@ -1256,7 +1409,7 @@ shared = { path = "vendor/shared" }
         let temp = TempDir::new().unwrap();
         let cache = cache_dir();
         write_skill(&temp.path().join("skills/review"), "Review");
-        sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+        sync_all(temp.path(), cache.path());
 
         write_skill(&temp.path().join("skills/renamed"), "Renamed");
 
@@ -1267,14 +1420,38 @@ shared = { path = "vendor/shared" }
     }
 
     #[test]
+    fn doctor_accepts_legacy_detected_adapter_roots_without_manifest_config() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_skill(&temp.path().join("skills/review"), "Review");
+        fs::create_dir_all(temp.path().join(".codex")).unwrap();
+
+        let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+        let package_roots = resolution
+            .packages
+            .iter()
+            .map(|package| (package.clone(), package.root.clone()))
+            .collect::<Vec<_>>();
+        let output_plan = build_output_plan(temp.path(), &package_roots, Adapters::CODEX).unwrap();
+        write_managed_files(&output_plan.files).unwrap();
+        resolution
+            .to_lockfile(Adapters::CODEX)
+            .unwrap()
+            .write(&temp.path().join(LOCKFILE_NAME))
+            .unwrap();
+
+        doctor_in_dir(temp.path(), cache.path()).unwrap();
+    }
+
+    #[test]
     fn shared_cache_is_reused_across_multiple_projects() {
         let cache = cache_dir();
         let project_one = TempDir::new().unwrap();
         let project_two = TempDir::new().unwrap();
         let (_repo, url) = create_git_dependency();
 
-        add_dependency_in_dir(project_one.path(), cache.path(), &url, Some("v0.1.0")).unwrap();
-        add_dependency_in_dir(project_two.path(), cache.path(), &url, Some("v0.1.0")).unwrap();
+        add_dependency_all(project_one.path(), cache.path(), &url, Some("v0.1.0"));
+        add_dependency_all(project_two.path(), cache.path(), &url, Some("v0.1.0"));
 
         let mirror_path = shared_repository_path(cache.path(), &url).unwrap();
         let rev = git_output(&mirror_path, &["rev-parse", "v0.1.0^{commit}"]);
@@ -1318,7 +1495,7 @@ shared = { path = "vendor/shared" }
         let cache = cache_dir();
         let (_repo, url) = create_git_dependency();
 
-        add_dependency_in_dir(temp.path(), cache.path(), &url, Some("v0.1.0")).unwrap();
+        add_dependency_all(temp.path(), cache.path(), &url, Some("v0.1.0"));
 
         assert!(shared_repository_path(cache.path(), &url).unwrap().exists());
     }
@@ -1329,7 +1506,7 @@ shared = { path = "vendor/shared" }
         let cache = cache_dir();
         let (_repo, url) = create_git_dependency();
 
-        add_dependency_in_dir(temp.path(), cache.path(), &url, Some("v0.1.0")).unwrap();
+        add_dependency_all(temp.path(), cache.path(), &url, Some("v0.1.0"));
 
         doctor_in_dir(temp.path(), cache.path()).unwrap();
     }
