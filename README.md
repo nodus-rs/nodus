@@ -1,17 +1,24 @@
 # Agen
 
-Agen is a local-first Rust CLI for managing project-scoped agent packages.
+Agen is a local-first Rust CLI for managing project-scoped agent packages by convention instead of explicit export configuration.
 
-In this MVP, Agen treats a repository as an `agentpack` package described by `agentpack.toml`, resolves local path dependencies, writes a deterministic `agentpack.lock`, snapshots package contents into a local content-addressed store, and emits managed runtime outputs for Claude, Codex, and OpenCode.
+The current implementation discovers package content from repository folders, supports Git-tag dependencies cloned into `.agen/deps/`, locks exact commits in `agentpack.lock`, snapshots package contents into a content-addressed store, and emits managed runtime outputs for Claude, Codex, and OpenCode.
 
 ## Status
 
-This repository currently implements the MVP slice:
+The current MVP supports:
 
-- TOML manifest parsing and validation via `agentpack.toml`
-- Deterministic lockfile generation via `agentpack.lock`
-- Local path dependency resolution with cycle and version-conflict checks
-- Project-local package snapshots under `.agen/store/sha256/`
+- Zero-config package discovery from:
+  - `skills/`
+  - `agents/`
+  - `rules/`
+  - `commands/`
+- Minimal root `agentpack.toml`
+- Git dependencies pinned by `tag` in the manifest and exact `rev` in the lockfile
+- `agen add <url> --tag <tag>`
+- Managed Git clones under `.agen/deps/`
+- Deterministic `agentpack.lock`
+- Content-addressed snapshots under `.agen/store/sha256/`
 - Managed output emission for:
   - `.claude/skills/<id>/`
   - `.codex/skills/<id>/`
@@ -22,15 +29,14 @@ This repository currently implements the MVP slice:
 - Collision protection for unmanaged files
 - Capability gating for high-sensitivity packages
 
-Not implemented yet:
+Still deferred:
 
 - Remote registries
 - Publish flows
-- Signing or provenance verification
-- User/global install scopes
+- Signature or provenance verification
+- Global install scopes
 - Claude plugin mode
-- OpenCode executable plugin exports
-- General dependency solving beyond local path resolution
+- Runtime emission for discovered `commands/`
 
 ## Install
 
@@ -48,36 +54,42 @@ agen <command>
 
 ## Quick Start
 
-Create a starter package in the current repository:
+Initialize a local package skeleton:
 
 ```bash
 agen init
 ```
 
-That scaffolds:
+That creates:
 
 - `agentpack.toml`
 - `skills/example/SKILL.md`
 
-Then sync the package into managed runtime outputs:
+Add a Git dependency by tag:
+
+```bash
+agen add https://github.com/wenext-limited/playbook-ios --tag v0.1.0
+```
+
+Sync discovered content into managed runtime outputs:
 
 ```bash
 agen sync
 ```
 
-If your package declares any `high` sensitivity capabilities, sync requires explicit opt-in:
+If the root project declares any `high` sensitivity capabilities:
 
 ```bash
 agen sync --allow-high-sensitivity
 ```
 
-Validate that the repo is consistent with the current manifest and lockfile:
+Validate that the repo, managed clones, lockfile, and owned outputs are all consistent:
 
 ```bash
 agen doctor
 ```
 
-For CI or reproducible local checks, use:
+For reproducible CI:
 
 ```bash
 agen sync --locked
@@ -85,84 +97,95 @@ agen sync --locked
 
 ## Manifest
 
-The only supported manifest format in the MVP is `agentpack.toml`.
+The root project does not need `api_version`, `name`, or `version` just to consume dependencies.
 
-Minimal example:
+A minimal consumer manifest looks like:
 
 ```toml
-api_version = "agentpack/v0"
-name = "example-pack"
-version = "0.1.0"
-
-[[exports.skills]]
-id = "review"
-path = "skills/review"
+[dependencies]
+playbook_ios = { url = "https://github.com/wenext-limited/playbook-ios", tag = "v0.1.0" }
 ```
 
-More complete example:
+You can also use local path dependencies:
 
 ```toml
-api_version = "agentpack/v0"
-name = "acme-dev-standards"
-version = "0.1.0"
+[dependencies]
+local_playbook = { path = "vendor/playbook", tag = "v0.1.0" }
+```
 
-[[exports.skills]]
-id = "review"
-path = "skills/review"
+Optional capabilities are still supported:
 
-[[exports.agents]]
-id = "security-reviewer"
-path = "agents/security-reviewer.md"
-
-[[exports.rules]]
-id = "default"
-
-[[exports.rules.sources]]
-type = "codex.ruleset"
-path = "rules/default.rules"
-
+```toml
 [[capabilities]]
 id = "shell.exec"
 sensitivity = "high"
 justification = "Run repository checks."
-
-[dependencies.agentpacks.shared]
-path = "vendor/shared"
-requirement = "^1.0.0"
 ```
 
 ### Supported Fields
 
-- `api_version`
-- `name`
-- `version`
-- `exports.skills`
-- `exports.agents`
-- `exports.rules`
+- `api_version` (optional)
+- `name` (optional)
+- `version` (optional)
 - `capabilities`
-- `dependencies.agentpacks.<name>.path`
-- `dependencies.agentpacks.<name>.requirement`
+- `[dependencies]`
+- `dependencies.<alias>.url`
+- `dependencies.<alias>.path`
+- `dependencies.<alias>.tag`
 
-Unsupported manifest fields are currently ignored with warnings.
+Unknown manifest fields are ignored with warnings.
 
-### Skill Validation
+## Discovery Rules
 
-Each exported skill must point to a directory containing `SKILL.md` with YAML frontmatter that includes:
+Agen validates and discovers package content by top-level folders:
 
-- `name`
-- `description`
+- `skills/<id>/SKILL.md` => skill
+- `agents/<id>.md` => agent
+- `rules/<id>.*` => rule
+- `commands/<id>.*` => command
+
+Package validity rules:
+
+- A dependency repo must contain at least one of `skills/`, `agents/`, `rules/`, or `commands/`
+- Other files and directories are allowed and ignored
+- `skills/` entries must be directories
+- Each skill must contain `SKILL.md` with YAML frontmatter containing:
+  - `name`
+  - `description`
+- `agents/` entries must be `.md` files
+- `rules/` and `commands/` entries must be files
+
+Discovered `commands/` content is currently validated and locked, but not emitted to any runtime yet.
 
 ## Commands
 
+### `agen add`
+
+```bash
+agen add <url> --tag <tag>
+```
+
+Behavior:
+
+- infers the dependency alias from the repo name
+- clones into `.agen/deps/<alias>/`
+- checks out the requested tag
+- validates the discovered package layout
+- creates or updates `agentpack.toml`
+
+Example:
+
+```bash
+agen add https://github.com/wenext-limited/playbook-ios --tag v0.1.0
+```
+
 ### `agen init`
 
-Scaffolds a starter `agentpack.toml` plus an example skill in `skills/example/`.
-
-`init` refuses to overwrite an existing manifest or example skill.
+Creates an empty `agentpack.toml` plus `skills/example/SKILL.md`.
 
 ### `agen sync`
 
-Resolves the local package graph, snapshots package contents, writes `agentpack.lock`, and emits managed runtime outputs into the current repository.
+Resolves the root project plus configured dependencies, snapshots their discovered content, writes `agentpack.lock`, and emits managed runtime outputs.
 
 Options:
 
@@ -173,9 +196,11 @@ Options:
 
 Checks that:
 
-- `agentpack.toml` is valid
-- dependencies resolve successfully
-- `agentpack.lock` exists and is up to date
+- the root manifest parses
+- dependency clones exist under `.agen/deps/`
+- discovered layouts are valid
+- Git dependencies are at the expected locked revision
+- `agentpack.lock` is up to date
 - managed file ownership state is internally consistent
 - no unmanaged-file collisions would block sync
 
@@ -183,42 +208,45 @@ Checks that:
 
 Agen only manages files it wrote itself.
 
-Files owned by Agen are recorded in `.agen/state.json`. During sync, Agen:
+Managed files are tracked in `.agen/state.json`. During sync, Agen:
 
 - writes or updates managed files
-- removes stale managed files that are no longer part of the desired state
+- removes stale managed files that are no longer desired
 - refuses to overwrite existing unmanaged files
 
-This is especially important for OpenCode. Agen manages instruction files under `.opencode/instructions/` and `opencode.json`, but it does not overwrite a top-level `AGENTS.md`.
+This is especially important for OpenCode. Agen manages `.opencode/instructions/` and `opencode.json`, but it does not overwrite a top-level `AGENTS.md`.
 
 ## Lockfile and Store
 
-`agentpack.lock` captures the resolved package graph, including:
+`agentpack.lock` records:
 
-- package name and version
-- source path
+- dependency alias
+- source kind (`path` or `git`)
+- source URL or path
+- requested tag
+- exact Git revision
 - content digest
-- exported IDs
-- dependencies
+- discovered skills / agents / rules / commands
 - declared capabilities
 
-Resolved packages are snapshotted into the local store:
+Resolved packages are snapshotted under:
 
 ```text
 .agen/store/sha256/<digest>/
 ```
 
-Adapters read from these snapshots rather than directly from mutable working trees.
+Sync emits from those snapshots rather than directly from mutable working trees.
 
 ## Runtime Output Mapping
 
 Current adapter behavior:
 
-- Claude: exported skills are copied to `.claude/skills/<skill-id>/`
-- Codex: exported skills are copied to `.codex/skills/<skill-id>/`
-- Codex: `codex.ruleset` sources are emitted to `.codex/rules/<rule-id>.rules`
-- OpenCode: exported agents are emitted to `.opencode/instructions/<agent-id>.md`
+- Claude: discovered skills are copied to `.claude/skills/<skill-id>/`
+- Codex: discovered skills are copied to `.codex/skills/<skill-id>/`
+- Codex: discovered rules are copied to `.codex/rules/<rule-id>.rules`
+- OpenCode: discovered agents are copied to `.opencode/instructions/<agent-id>.md`
 - OpenCode: managed instruction paths are written to `opencode.json`
+- Commands: discovered and locked, but not emitted
 
 ## Development
 
@@ -228,5 +256,3 @@ Run the verification suite:
 cargo test
 cargo clippy --all-targets --all-features -- -D warnings
 ```
-
-The current implementation is intentionally single-crate, but the internal modules are already split by responsibility to make a later workspace extraction straightforward.
