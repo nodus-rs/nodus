@@ -51,27 +51,27 @@ cargo install nodus
 Install the latest prebuilt binary on macOS or Linux:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/refs/heads/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/main/install.sh | bash
 ```
 
 Install a specific release or choose a custom install directory:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/refs/heads/main/install.sh | bash -s -- --version v0.1.0
-curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/refs/heads/main/install.sh | bash -s -- --install-dir /usr/local/bin
+curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/main/install.sh | bash -s -- --version v0.1.0
+curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/main/install.sh | bash -s -- --install-dir /usr/local/bin
 ```
 
 Verify the downloaded archive when the release includes checksum assets:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/refs/heads/main/install.sh | bash -s -- --verify
+curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/main/install.sh | bash -s -- --verify
 ```
 
 Uninstall from the default or a custom install directory:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/refs/heads/main/install.sh | bash -s -- --uninstall
-curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/refs/heads/main/install.sh | bash -s -- --uninstall --install-dir /usr/local/bin
+curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/main/install.sh | bash -s -- --uninstall
+curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/main/install.sh | bash -s -- --uninstall --install-dir /usr/local/bin
 ```
 
 You can also download a prebuilt binary archive from the GitHub release assets for your platform, then run the root-level `install.sh` locally.
