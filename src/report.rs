@@ -87,6 +87,14 @@ impl Reporter {
         self.write_line(&message.to_string())
     }
 
+    pub fn color_enabled(&self) -> bool {
+        self.color_enabled
+    }
+
+    pub fn paint(&self, value: &str, style: Style) -> String {
+        self.styled(value, style)
+    }
+
     pub fn error(&self, error: &Error) -> anyhow::Result<()> {
         let mut chain = error.chain();
         if let Some(head) = chain.next() {

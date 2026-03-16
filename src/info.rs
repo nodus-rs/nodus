@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use anstyle::{AnsiColor, Effects, Style};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
@@ -114,7 +115,7 @@ pub fn describe_package_in_dir(
     reporter: &Reporter,
 ) -> Result<()> {
     let info = load_package_info(cwd, cache_root, package, tag, branch, reporter)?;
-    for line in info.render_lines() {
+    for line in info.render_lines(reporter) {
         reporter.line(line)?;
     }
     Ok(())
@@ -404,33 +405,69 @@ fn alias_from_loaded_manifest(manifest: &LoadedManifest) -> Result<String> {
 }
 
 impl PackageInfo {
-    fn render_lines(&self) -> Vec<String> {
+    fn render_lines(&self, reporter: &Reporter) -> Vec<String> {
         let mut lines = Vec::new();
 
-        lines.push(self.header_line());
+        lines.push(self.header_line(reporter));
         if let Some(description) = &self.description {
             lines.push(description.clone());
         }
 
-        self.push_optional_field(&mut lines, "version", self.version.as_deref());
-        self.push_optional_field(&mut lines, "license", self.license.as_deref());
-        self.push_optional_field(&mut lines, "rust-version", self.rust_version.as_deref());
-        self.push_optional_field(&mut lines, "documentation", self.documentation.as_deref());
-        self.push_optional_field(&mut lines, "homepage", self.homepage.as_deref());
-        self.push_optional_field(&mut lines, "repository", self.repository.as_deref());
-        lines.push(format!("source: {}", self.source_display()));
-        lines.push(format!("package-root: {}", display_path(&self.root)));
-        lines.push(format!("alias: {}", self.alias));
+        self.push_optional_field(&mut lines, reporter, "version", self.version.as_deref());
+        self.push_optional_field(&mut lines, reporter, "license", self.license.as_deref());
+        self.push_optional_field(
+            &mut lines,
+            reporter,
+            "rust-version",
+            self.rust_version.as_deref(),
+        );
+        self.push_optional_field(
+            &mut lines,
+            reporter,
+            "documentation",
+            self.documentation.as_deref(),
+        );
+        self.push_optional_field(&mut lines, reporter, "homepage", self.homepage.as_deref());
+        self.push_optional_field(
+            &mut lines,
+            reporter,
+            "repository",
+            self.repository.as_deref(),
+        );
+        lines.push(format!(
+            "{} {}",
+            paint_label(reporter, "source:"),
+            self.source_display()
+        ));
+        lines.push(format!(
+            "{} {}",
+            paint_label(reporter, "package-root:"),
+            display_path(&self.root)
+        ));
+        lines.push(format!(
+            "{} {}",
+            paint_label(reporter, "alias:"),
+            self.alias
+        ));
         if let Some(api_version) = &self.api_version {
-            lines.push(format!("api-version: {api_version}"));
+            lines.push(format!(
+                "{} {api_version}",
+                paint_label(reporter, "api-version:")
+            ));
         }
         lines.push(format!(
-            "components: {}",
+            "{} {}",
+            paint_label(reporter, "components:"),
             render_components(self.selected_components.as_deref())
         ));
-        lines.push(format!("adapters: {}", render_adapters(&self.adapters)));
         lines.push(format!(
-            "dependencies: {}",
+            "{} {}",
+            paint_label(reporter, "adapters:"),
+            render_adapters(&self.adapters)
+        ));
+        lines.push(format!(
+            "{} {}",
+            paint_label(reporter, "dependencies:"),
             render_items(&self.dependencies)
         ));
 
@@ -441,47 +478,57 @@ impl PackageInfo {
             ("commands", &self.commands),
         ];
         if artifacts.iter().any(|(_, items)| !items.is_empty()) {
-            lines.push("artifacts:".to_string());
-            lines.extend(render_named_lists(&artifacts));
+            lines.push(paint_label(reporter, "artifacts:"));
+            lines.extend(render_named_lists(reporter, &artifacts));
         }
 
         if !self.capabilities.is_empty() {
-            lines.push("capabilities:".to_string());
-            lines.extend(render_capability_lines(&self.capabilities));
+            lines.push(paint_label(reporter, "capabilities:"));
+            lines.extend(render_capability_lines(reporter, &self.capabilities));
         }
 
         if !self.features.is_empty() {
-            lines.push("features:".to_string());
-            lines.extend(render_feature_lines(&self.features));
+            lines.push(paint_label(reporter, "features:"));
+            lines.extend(render_feature_lines(reporter, &self.features));
         }
 
         if !self.warnings.is_empty() {
-            lines.push("warnings:".to_string());
+            lines.push(paint_label(reporter, "warnings:"));
             lines.extend(self.warnings.iter().map(|warning| format!("  {warning}")));
         }
 
         lines
     }
 
-    fn header_line(&self) -> String {
+    fn header_line(&self, reporter: &Reporter) -> String {
+        let name = reporter.paint(&self.name, title_style());
         if self.keywords.is_empty() {
-            self.name.clone()
+            name
         } else {
             format!(
                 "{} {}",
-                self.name,
+                name,
                 self.keywords
                     .iter()
-                    .map(|keyword| format!("#{keyword}"))
+                    .map(|keyword| reporter.paint(&format!("#{keyword}"), keyword_style()))
                     .collect::<Vec<_>>()
                     .join(" ")
             )
         }
     }
 
-    fn push_optional_field(&self, lines: &mut Vec<String>, label: &str, value: Option<&str>) {
+    fn push_optional_field(
+        &self,
+        lines: &mut Vec<String>,
+        reporter: &Reporter,
+        label: &str,
+        value: Option<&str>,
+    ) {
         if let Some(value) = value.filter(|value| !value.trim().is_empty()) {
-            lines.push(format!("{label}: {value}"));
+            lines.push(format!(
+                "{} {value}",
+                paint_label(reporter, &format!("{label}:"))
+            ));
         }
     }
 
@@ -512,7 +559,7 @@ impl PackageInfo {
     }
 }
 
-fn render_named_lists(items: &[(&str, &Vec<String>)]) -> Vec<String> {
+fn render_named_lists(reporter: &Reporter, items: &[(&str, &Vec<String>)]) -> Vec<String> {
     let width = items
         .iter()
         .filter(|(_, values)| !values.is_empty())
@@ -522,11 +569,19 @@ fn render_named_lists(items: &[(&str, &Vec<String>)]) -> Vec<String> {
     items
         .iter()
         .filter(|(_, values)| !values.is_empty())
-        .map(|(name, values)| format!("  {name:width$} = [{}]", values.join(", "), width = width))
+        .map(|(name, values)| {
+            let padded = format!("{name:width$}", width = width);
+            let label = if reporter.color_enabled() {
+                reporter.paint(&padded, dim_style())
+            } else {
+                padded
+            };
+            format!("  {label} = [{}]", values.join(", "))
+        })
         .collect()
 }
 
-fn render_capability_lines(capabilities: &[PackageCapability]) -> Vec<String> {
+fn render_capability_lines(reporter: &Reporter, capabilities: &[PackageCapability]) -> Vec<String> {
     let width = capabilities
         .iter()
         .map(|capability| capability.id.len())
@@ -535,6 +590,12 @@ fn render_capability_lines(capabilities: &[PackageCapability]) -> Vec<String> {
     capabilities
         .iter()
         .map(|capability| {
+            let padded = format!("{:width$}", capability.id, width = width);
+            let id = if reporter.color_enabled() {
+                reporter.paint(&padded, dim_style())
+            } else {
+                padded
+            };
             let justification = capability
                 .justification
                 .as_deref()
@@ -542,16 +603,17 @@ fn render_capability_lines(capabilities: &[PackageCapability]) -> Vec<String> {
                 .map(|value| format!(" ({value})"))
                 .unwrap_or_default();
             format!(
-                "  {id:width$} = {sensitivity}{justification}",
-                id = capability.id,
+                "  {id} = {sensitivity}{justification}",
                 sensitivity = capability.sensitivity,
-                width = width,
             )
         })
         .collect()
 }
 
-fn render_feature_lines(features: &BTreeMap<String, Vec<String>>) -> Vec<String> {
+fn render_feature_lines(
+    reporter: &Reporter,
+    features: &BTreeMap<String, Vec<String>>,
+) -> Vec<String> {
     let ordered = ordered_features(features);
     let width = ordered
         .iter()
@@ -563,15 +625,27 @@ fn render_feature_lines(features: &BTreeMap<String, Vec<String>>) -> Vec<String>
         .into_iter()
         .map(|(name, members)| {
             let label = if name == "default" {
-                format!("+{name}")
+                format!(
+                    "{}{name:width$}",
+                    reporter.paint("+", label_style()),
+                    width = width
+                )
             } else {
-                format!(" {name}")
+                let padded = format!("{name:width$}", width = width);
+                format!(" {}", reporter.paint(&padded, dim_style()))
             };
-            format!(
-                " {label:width$} = [{}]",
-                members.join(", "),
-                width = width + 1,
-            )
+            let members = members
+                .iter()
+                .map(|member| {
+                    if reporter.color_enabled() {
+                        reporter.paint(member, dim_style())
+                    } else {
+                        member.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(" {label} = [{members}]",)
         })
         .collect()
 }
@@ -633,6 +707,32 @@ fn display_path(path: &Path) -> String {
     }
 }
 
+fn paint_label(reporter: &Reporter, label: &str) -> String {
+    reporter.paint(label, label_style())
+}
+
+fn title_style() -> Style {
+    Style::new()
+        .bold()
+        .fg_color(Some(AnsiColor::BrightGreen.into()))
+}
+
+fn label_style() -> Style {
+    Style::new()
+        .bold()
+        .fg_color(Some(AnsiColor::BrightGreen.into()))
+}
+
+fn keyword_style() -> Style {
+    Style::new()
+        .bold()
+        .fg_color(Some(AnsiColor::BrightBlue.into()))
+}
+
+fn dim_style() -> Style {
+    Style::new() | Effects::DIMMED
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -687,6 +787,17 @@ mod tests {
         tag: Option<&str>,
         branch: Option<&str>,
     ) -> String {
+        capture_info_output_with_mode(cwd, cache_root, package, tag, branch, ColorMode::Never)
+    }
+
+    fn capture_info_output_with_mode(
+        cwd: &Path,
+        cache_root: &Path,
+        package: &str,
+        tag: Option<&str>,
+        branch: Option<&str>,
+        color_mode: ColorMode,
+    ) -> String {
         let buffer = Vec::<u8>::new();
         let output = std::sync::Arc::new(std::sync::Mutex::new(buffer));
 
@@ -704,7 +815,7 @@ mod tests {
             }
         }
 
-        let reporter = Reporter::sink(ColorMode::Never, SharedWriter(output.clone()));
+        let reporter = Reporter::sink(color_mode, SharedWriter(output.clone()));
         describe_package_in_dir(cwd, cache_root, package, tag, branch, &reporter).unwrap();
         String::from_utf8(output.lock().unwrap().clone()).unwrap()
     }
@@ -835,5 +946,39 @@ version = "0.3.0"
         assert!(output.contains("version: 0.3.0"));
         assert!(output.contains("source: git"));
         assert!(output.contains("tag v0.3.0"));
+    }
+
+    #[test]
+    fn info_uses_color_when_forced() {
+        let package = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+
+        write_file(
+            &package.path().join("Cargo.toml"),
+            r#"
+[package]
+name = "playbook-ios"
+version = "0.1.0"
+keywords = ["agents"]
+
+[features]
+default = []
+"#,
+        );
+
+        let output = capture_info_output_with_mode(
+            package.path(),
+            cache.path(),
+            ".",
+            None,
+            None,
+            ColorMode::Always,
+        );
+
+        assert!(output.contains("\u{1b}["));
+        assert!(output.contains("playbook-ios"));
+        assert!(output.contains("#agents"));
+        assert!(output.contains("version:"));
+        assert!(output.contains("features:"));
     }
 }
