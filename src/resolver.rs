@@ -426,15 +426,15 @@ fn resolve_dependency(
 ) -> Result<ResolvedPackage> {
     match dependency.source_kind()? {
         DependencySourceKind::Path => {
-            let path = dependency
+            let declared_path = dependency
                 .path
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("dependency `{alias}` must declare `path`"))?;
             let dependency_root = parent
-                .resolve_path(path)
+                .resolve_path(declared_path)
                 .with_context(|| format!("failed to resolve dependency `{alias}`"))?;
             let source = PackageSource::Path {
-                path: dependency_root.clone(),
+                path: declared_path.clone(),
                 tag: dependency.tag.clone(),
             };
             resolve_package(
@@ -526,9 +526,7 @@ impl Resolution {
                 },
                 PackageSource::Path { path, tag } => LockedSource {
                     kind: "path".into(),
-                    path: Some(display_path(
-                        path.strip_prefix(&self.project_root).unwrap_or(path),
-                    )),
+                    path: Some(display_path(path)),
                     url: None,
                     tag: tag.clone(),
                     rev: None,
@@ -1338,6 +1336,10 @@ leaf = {{ url = "{}", tag = "v0.1.0" }}
             .find(|package| package.alias == "axiom")
             .unwrap();
         assert_eq!(plugin_package.version_tag.as_deref(), Some("2.34.0"));
+        assert_eq!(
+            plugin_package.source.path.as_deref(),
+            Some("./.claude-plugin/plugins/axiom")
+        );
         assert_eq!(plugin_package.skills, vec!["review"]);
         assert_eq!(plugin_package.agents, vec!["security"]);
         assert_eq!(plugin_package.commands, vec!["build"]);
@@ -1412,6 +1414,10 @@ bundled = { path = "vendor/bundled" }
             .find(|package| package.alias == "bundled")
             .unwrap();
         assert_eq!(bundled_package.source.kind, "path");
+        assert_eq!(
+            bundled_package.source.path.as_deref(),
+            Some("vendor/bundled")
+        );
         assert_eq!(bundled_package.skills, vec!["bundled"]);
 
         let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
