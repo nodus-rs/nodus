@@ -1,15 +1,20 @@
+use std::process::ExitCode;
+
 use std::path::PathBuf;
 
-use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use crate::adapters::Adapter;
+use crate::report::{ColorMode, Reporter};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about = "Nodus manages project-scoped agent packages", long_about = None)]
 struct Cli {
     #[arg(long, global = true)]
     cache_path: Option<PathBuf>,
+
+    #[arg(long, global = true, value_enum, default_value_t = ColorMode::Auto)]
+    color: ColorMode,
 
     #[command(subcommand)]
     command: Command,
@@ -39,8 +44,23 @@ enum Command {
     Doctor,
 }
 
-pub fn run() -> Result<()> {
+pub fn run() -> ExitCode {
     let cli = Cli::parse();
+    let reporter = Reporter::stderr(cli.color);
+    let result = run_command(cli);
+
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            if reporter.error(&error).is_err() {
+                eprintln!("error: {error:#}");
+            }
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_command(cli: Cli) -> anyhow::Result<()> {
     let cache_root = crate::cache::resolve_cache_root(cli.cache_path.as_deref())?;
 
     match cli.command {
@@ -107,5 +127,12 @@ mod tests {
             }
             other => panic!("expected add command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_color_flag() {
+        let cli = Cli::try_parse_from(["nodus", "--color", "never", "doctor"]).unwrap();
+
+        assert_eq!(cli.color, super::ColorMode::Never);
     }
 }
