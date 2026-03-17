@@ -20,6 +20,10 @@ pub struct LocalConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayLink {
+    #[serde(
+        serialize_with = "serialize_repo_path",
+        deserialize_with = "deserialize_repo_path"
+    )]
     pub repo_path: PathBuf,
     pub url: String,
 }
@@ -95,6 +99,24 @@ pub fn local_dir(project_root: &Path) -> PathBuf {
     project_root.join(LOCAL_DIR)
 }
 
+fn serialize_repo_path<S>(path: &Path, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str(&display_path(path))
+}
+
+fn deserialize_repo_path<'de, D>(deserializer: D) -> Result<PathBuf, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    String::deserialize(deserializer).map(PathBuf::from)
+}
+
+fn display_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::TempDir;
@@ -121,5 +143,27 @@ mod tests {
 
         let gitignore = fs::read_to_string(temp.path().join(".nodus/.gitignore")).unwrap();
         assert_eq!(gitignore, ".gitignore\nlocal.toml\n");
+    }
+
+    #[test]
+    fn serializes_relay_repo_paths_with_forward_slashes() {
+        let config = LocalConfig {
+            relay: BTreeMap::from([(
+                "playbook_ios".into(),
+                RelayLink {
+                    repo_path: PathBuf::from(
+                        r"C:\Users\runneradmin\AppData\Local\Temp\playbook-ios",
+                    ),
+                    url: "https://github.com/wenext-limited/playbook-ios".into(),
+                },
+            )]),
+        };
+
+        let encoded = toml::to_string_pretty(&config).unwrap();
+
+        assert!(
+            encoded
+                .contains("repo_path = \"C:/Users/runneradmin/AppData/Local/Temp/playbook-ios\"")
+        );
     }
 }

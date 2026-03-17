@@ -356,6 +356,7 @@ pub fn normalize_git_url(url: &str) -> String {
         || trimmed.starts_with("git@")
         || trimmed.starts_with("ssh://")
         || trimmed.starts_with('/')
+        || looks_like_windows_path(trimmed)
         || trimmed.starts_with("./")
         || trimmed.starts_with("../")
     {
@@ -388,14 +389,24 @@ pub fn github_slug_from_url(url: &str) -> Option<String> {
 
 pub fn normalize_alias_from_url(url: &str) -> Result<String> {
     let normalized = normalize_git_url(url);
-    let trimmed = normalized.trim_end_matches('/').trim_end_matches(".git");
+    let trimmed = normalized
+        .trim_end_matches(['/', '\\'])
+        .trim_end_matches(".git");
     let tail = trimmed
-        .rsplit('/')
+        .rsplit(['/', '\\'])
         .next()
         .filter(|value| !value.is_empty())
         .ok_or_else(|| anyhow!("failed to infer a dependency alias from `{url}`"))?;
     normalize_dependency_alias(tail)
         .with_context(|| format!("failed to infer a dependency alias from `{url}`"))
+}
+
+fn looks_like_windows_path(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
 }
 
 pub fn resolve_dependency_alias(
@@ -740,6 +751,11 @@ mod tests {
             normalize_alias_from_url("wenext-limited/playbook-ios").unwrap(),
             "playbook_ios"
         );
+        assert_eq!(
+            normalize_alias_from_url(r"C:\Users\runneradmin\AppData\Local\Temp\playbook-ios")
+                .unwrap(),
+            "playbook_ios"
+        );
     }
 
     #[test]
@@ -751,6 +767,10 @@ mod tests {
         assert_eq!(
             normalize_git_url("https://github.com/wenext-limited/playbook-ios"),
             "https://github.com/wenext-limited/playbook-ios"
+        );
+        assert_eq!(
+            normalize_git_url(r"C:\Users\runneradmin\AppData\Local\Temp\playbook-ios"),
+            r"C:\Users\runneradmin\AppData\Local\Temp\playbook-ios"
         );
     }
 
