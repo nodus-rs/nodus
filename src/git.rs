@@ -356,6 +356,7 @@ pub fn normalize_git_url(url: &str) -> String {
         || trimmed.starts_with("git@")
         || trimmed.starts_with("ssh://")
         || trimmed.starts_with('/')
+        || trimmed.starts_with(r"\\")
         || looks_like_windows_path(trimmed)
         || trimmed.starts_with("./")
         || trimmed.starts_with("../")
@@ -442,15 +443,19 @@ pub fn git_urls_match(left: &str, right: &str) -> bool {
 
     match (github_slug_from_url(&left), github_slug_from_url(&right)) {
         (Some(left), Some(right)) => left == right,
-        _ => false,
+        _ => canonical_local_git_path(&left)
+            .zip(canonical_local_git_path(&right))
+            .is_some_and(|(left, right)| left == right),
     }
 }
 
 fn normalize_repository_name_from_url(url: &str) -> Result<String> {
     let normalized = normalize_git_url(url);
-    let trimmed = normalized.trim_end_matches('/').trim_end_matches(".git");
+    let trimmed = normalized
+        .trim_end_matches(['/', '\\'])
+        .trim_end_matches(".git");
     let tail = trimmed
-        .rsplit('/')
+        .rsplit(['/', '\\'])
         .next()
         .filter(|value| !value.is_empty())
         .ok_or_else(|| anyhow!("failed to infer a repository name from `{url}`"))?;
@@ -469,6 +474,20 @@ fn normalize_repository_name_from_url(url: &str) -> Result<String> {
         bail!("failed to derive a valid repository name from `{url}`");
     }
     Ok(name)
+}
+
+fn canonical_local_git_path(url: &str) -> Option<PathBuf> {
+    looks_like_local_path(url)
+        .then(|| PathBuf::from(url))
+        .and_then(|path| path.canonicalize().ok())
+}
+
+fn looks_like_local_path(value: &str) -> bool {
+    value.starts_with('/')
+        || value.starts_with("./")
+        || value.starts_with("../")
+        || value.starts_with(r"\\")
+        || looks_like_windows_path(value)
 }
 
 fn short_hash(value: &str) -> String {
@@ -516,6 +535,7 @@ fn ensure_shared_repository(
                 ],
             )?;
         }
+        git_run(mirror_path, ["config", "core.autocrlf", "false"])?;
         return Ok(());
     }
 
@@ -545,7 +565,8 @@ fn ensure_shared_repository(
             normalized_url,
             mirror_path.to_string_lossy().as_ref(),
         ],
-    )
+    )?;
+    git_run(mirror_path, ["config", "core.autocrlf", "false"])
 }
 
 fn ensure_shared_checkout(
@@ -558,7 +579,8 @@ fn ensure_shared_checkout(
 ) -> Result<()> {
     if checkout_path.exists() {
         validate_shared_checkout(checkout_path, mirror_path, normalized_url)?;
-        git_run(checkout_path, ["checkout", "--detach", rev])?;
+        git_run(checkout_path, ["config", "core.autocrlf", "false"])?;
+        git_run(checkout_path, ["checkout", "--detach", "--force", rev])?;
         return Ok(());
     }
 
@@ -584,6 +606,7 @@ fn ensure_shared_checkout(
             normalized_url
         ),
     )?;
+    git_run(mirror_path, ["config", "core.autocrlf", "false"])?;
     git_run(
         mirror_path,
         [
@@ -600,7 +623,9 @@ fn ensure_shared_checkout(
             checkout_path.display(),
             mirror_path.display(),
         )
-    })
+    })?;
+    git_run(checkout_path, ["config", "core.autocrlf", "false"])?;
+    git_run(checkout_path, ["checkout", "--detach", "--force", rev])
 }
 
 fn short_display_rev(rev: &str) -> String {
@@ -788,6 +813,16 @@ mod tests {
             github_slug_from_url("git@github.com:wenext-limited/playbook-ios.git"),
             None
         );
+    }
+
+    #[test]
+    fn matches_equivalent_local_git_paths() {
+        let temp = TempDir::new().unwrap();
+        let canonical = temp.path().canonicalize().unwrap();
+        let native = canonical.to_string_lossy().to_string();
+        let forward = native.replace('\\', "/");
+
+        assert!(git_urls_match(&native, &forward));
     }
 
     #[test]

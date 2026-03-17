@@ -146,14 +146,17 @@ fn copy_file(target_path: impl AsRef<Path>, source_path: impl AsRef<Path>) -> Re
 
 pub(crate) fn rewrite_skill_name(contents: &[u8], skill_id: &str) -> Result<Vec<u8>> {
     let contents = String::from_utf8(contents.to_vec()).context("OpenCode skills must be UTF-8")?;
-    let original_has_trailing_newline = contents.ends_with('\n');
-    let mut lines = contents.lines().map(str::to_string).collect::<Vec<_>>();
+    let mut lines = split_lines_preserving_endings(&contents);
 
-    if lines.first().map(String::as_str) != Some("---") {
+    if lines.first().map(|line| trim_line_ending(line)) != Some("---") {
         bail!("OpenCode skill {} is missing YAML frontmatter", skill_id);
     }
 
-    let Some(frontmatter_end) = lines.iter().skip(1).position(|line| line == "---") else {
+    let Some(frontmatter_end) = lines
+        .iter()
+        .skip(1)
+        .position(|line| trim_line_ending(line) == "---")
+    else {
         bail!(
             "OpenCode skill {} is missing a closing frontmatter fence",
             skill_id
@@ -164,7 +167,7 @@ pub(crate) fn rewrite_skill_name(contents: &[u8], skill_id: &str) -> Result<Vec<
     let Some(name_index) = lines
         .iter()
         .take(frontmatter_end)
-        .position(|line| line.trim_start().starts_with("name:"))
+        .position(|line| trim_line_ending(line).trim_start().starts_with("name:"))
     else {
         bail!(
             "OpenCode skill {} is missing a frontmatter `name`",
@@ -172,13 +175,36 @@ pub(crate) fn rewrite_skill_name(contents: &[u8], skill_id: &str) -> Result<Vec<
         );
     };
 
-    lines[name_index] = format!("name: {}", skill_id);
+    lines[name_index] = rewrite_frontmatter_name_line(&lines[name_index], skill_id);
+    Ok(lines.concat().into_bytes())
+}
 
-    let mut rewritten = lines.join("\n");
-    if original_has_trailing_newline {
-        rewritten.push('\n');
+fn split_lines_preserving_endings(contents: &str) -> Vec<String> {
+    if contents.is_empty() {
+        Vec::new()
+    } else {
+        contents.split_inclusive('\n').map(str::to_string).collect()
     }
-    Ok(rewritten.into_bytes())
+}
+
+fn trim_line_ending(line: &str) -> &str {
+    line.trim_end_matches(['\r', '\n'])
+}
+
+fn rewrite_frontmatter_name_line(line: &str, name: &str) -> String {
+    let leading = line
+        .chars()
+        .take_while(|character| character.is_ascii_whitespace())
+        .collect::<String>();
+    let newline = if line.ends_with("\r\n") {
+        "\r\n"
+    } else if line.ends_with('\n') {
+        "\n"
+    } else {
+        ""
+    };
+
+    format!("{leading}name: {name}{newline}")
 }
 
 fn sync_script_contents() -> Vec<u8> {
@@ -212,5 +238,17 @@ mod tests {
         assert!(rewritten.contains("name: review"));
         assert!(rewritten.contains("description: Example"));
         assert!(rewritten.ends_with('\n'));
+    }
+
+    #[test]
+    fn preserves_crlf_when_rewriting_skill_name() {
+        let contents =
+            b"---\r\nname: Review\r\ndescription: Example\r\n---\r\n# Review\r\n".as_slice();
+        let rewritten = rewrite_skill_name(contents, "review").unwrap();
+        let rewritten = String::from_utf8(rewritten).unwrap();
+
+        assert!(rewritten.contains("name: review\r\n"));
+        assert!(rewritten.contains("description: Example\r\n"));
+        assert!(rewritten.ends_with("\r\n"));
     }
 }

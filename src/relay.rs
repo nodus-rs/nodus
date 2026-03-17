@@ -844,24 +844,20 @@ fn restore_opencode_skill_name(
     let baseline_source = String::from_utf8(baseline_source.to_vec())
         .context("OpenCode source skills must be UTF-8")?;
     let restored_name = extract_frontmatter_name(&baseline_source)?;
-    let mut lines = managed.lines().map(str::to_string).collect::<Vec<_>>();
+    let mut lines = split_lines_preserving_endings(&managed);
     let Some(index) = lines
         .iter()
-        .position(|line| line.trim_start() == format!("name: {managed_skill_id}"))
+        .position(|line| trim_line_ending(line).trim_start() == format!("name: {managed_skill_id}"))
         .or_else(|| {
             lines
                 .iter()
-                .position(|line| line.trim_start().starts_with("name:"))
+                .position(|line| trim_line_ending(line).trim_start().starts_with("name:"))
         })
     else {
         bail!("OpenCode managed skill is missing a frontmatter `name`");
     };
-    lines[index] = format!("name: {restored_name}");
-    let mut restored = lines.join("\n");
-    if managed.ends_with('\n') {
-        restored.push('\n');
-    }
-    Ok(restored.into_bytes())
+    lines[index] = rewrite_frontmatter_name_line(&lines[index], &restored_name);
+    Ok(lines.concat().into_bytes())
 }
 
 fn extract_frontmatter_name(contents: &str) -> Result<String> {
@@ -879,6 +875,34 @@ fn extract_frontmatter_name(contents: &str) -> Result<String> {
         }
     }
     bail!("OpenCode skill is missing a frontmatter `name`")
+}
+
+fn split_lines_preserving_endings(contents: &str) -> Vec<String> {
+    if contents.is_empty() {
+        Vec::new()
+    } else {
+        contents.split_inclusive('\n').map(str::to_string).collect()
+    }
+}
+
+fn trim_line_ending(line: &str) -> &str {
+    line.trim_end_matches(['\r', '\n'])
+}
+
+fn rewrite_frontmatter_name_line(line: &str, name: &str) -> String {
+    let leading = line
+        .chars()
+        .take_while(|character| character.is_ascii_whitespace())
+        .collect::<String>();
+    let newline = if line.ends_with("\r\n") {
+        "\r\n"
+    } else if line.ends_with('\n') {
+        "\n"
+    } else {
+        ""
+    };
+
+    format!("{leading}name: {name}{newline}")
 }
 
 fn canonicalize_existing_dir(path: &Path) -> Result<PathBuf> {
@@ -1536,5 +1560,18 @@ target = ".github/prompts/review.md"
                 .unwrap()
                 .ends_with("\nWatched relay update.\n")
         );
+    }
+
+    #[test]
+    fn restore_opencode_skill_name_preserves_crlf() {
+        let managed = b"---\r\nname: review_abcd12\r\ndescription: Example.\r\n---\r\n# Review\r\n";
+        let baseline = b"---\r\nname: Review\r\ndescription: Example.\r\n---\r\n# Review\r\n";
+
+        let restored = restore_opencode_skill_name(managed, baseline, "review_abcd12").unwrap();
+        let restored = String::from_utf8(restored).unwrap();
+
+        assert!(restored.contains("name: Review\r\n"));
+        assert!(restored.contains("description: Example.\r\n"));
+        assert!(restored.ends_with("\r\n"));
     }
 }
