@@ -556,6 +556,17 @@ fn build_mappings(
         }
     }
 
+    for mapping in package.direct_managed_paths() {
+        for file in &mapping.files {
+            mappings.push(file_mapping(
+                project_root.join(&file.target_relative),
+                snapshot_root.join(&file.source_relative),
+                linked_repo.join(&file.source_relative),
+                RelayTransform::None,
+            ));
+        }
+    }
+
     Ok(mappings)
 }
 
@@ -751,6 +762,9 @@ mod tests {
         write_file(&repo_path.join("agents/security.md"), "# Security\n");
         write_file(&repo_path.join("rules/policy.md"), "Be careful.\n");
         write_file(&repo_path.join("commands/build.md"), "# Build\n");
+        write_file(&repo_path.join("prompts/review.md"), "Review prompt.\n");
+        write_file(&repo_path.join("templates/checklist.md"), "Checklist.\n");
+        write_file(&repo_path.join("templates/nested/tips.md"), "Tips.\n");
         init_git_repo(&repo_path);
         run_git(&repo_path, &["tag", "v0.1.0"]);
         (temp, repo_path)
@@ -788,6 +802,19 @@ mod tests {
                 sync_on_launch: false,
             },
             &reporter,
+        )
+        .unwrap();
+    }
+
+    fn sync_project(project: &Path, cache: &Path, adapters: &[Adapter]) {
+        crate::resolver::sync_in_dir_with_adapters(
+            project,
+            cache,
+            false,
+            false,
+            adapters,
+            false,
+            &Reporter::silent(),
         )
         .unwrap();
     }
@@ -921,6 +948,127 @@ mod tests {
     }
 
     #[test]
+    fn relay_writes_back_direct_managed_file_and_directory_edits() {
+        let (_remote_root, remote_repo) = create_remote_dependency();
+        let linked = clone_linked_repo(&remote_repo);
+        let linked_repo = linked.path().join("linked");
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        write_file(
+            &project.path().join("nodus.toml"),
+            &format!(
+                r#"
+[adapters]
+enabled = ["codex"]
+
+[dependencies.playbook_ios]
+url = "{}"
+tag = "v0.1.0"
+
+[[dependencies.playbook_ios.managed]]
+source = "prompts/review.md"
+target = ".github/prompts/review.md"
+
+[[dependencies.playbook_ios.managed]]
+source = "templates"
+target = "docs/templates"
+"#,
+                remote_repo.to_string_lossy()
+            ),
+        );
+
+        sync_project(project.path(), cache.path(), &[Adapter::Codex]);
+
+        append_file(
+            &project.path().join(".github/prompts/review.md"),
+            "\nRelay prompt update.\n",
+        );
+        append_file(
+            &project.path().join("docs/templates/checklist.md"),
+            "\nRelay checklist update.\n",
+        );
+        append_file(
+            &project.path().join("docs/templates/nested/tips.md"),
+            "\nRelay tips update.\n",
+        );
+
+        let summary = relay_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "playbook_ios",
+            Some(&linked_repo),
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        assert_eq!(summary.updated_file_count, 3);
+        assert!(
+            fs::read_to_string(linked_repo.join("prompts/review.md"))
+                .unwrap()
+                .ends_with("\nRelay prompt update.\n")
+        );
+        assert!(
+            fs::read_to_string(linked_repo.join("templates/checklist.md"))
+                .unwrap()
+                .ends_with("\nRelay checklist update.\n")
+        );
+        assert!(
+            fs::read_to_string(linked_repo.join("templates/nested/tips.md"))
+                .unwrap()
+                .ends_with("\nRelay tips update.\n")
+        );
+    }
+
+    #[test]
+    fn relay_rejects_direct_managed_double_edits() {
+        let (_remote_root, remote_repo) = create_remote_dependency();
+        let linked = clone_linked_repo(&remote_repo);
+        let linked_repo = linked.path().join("linked");
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        write_file(
+            &project.path().join("nodus.toml"),
+            &format!(
+                r#"
+[adapters]
+enabled = ["codex"]
+
+[dependencies.playbook_ios]
+url = "{}"
+tag = "v0.1.0"
+
+[[dependencies.playbook_ios.managed]]
+source = "prompts/review.md"
+target = ".github/prompts/review.md"
+"#,
+                remote_repo.to_string_lossy()
+            ),
+        );
+
+        sync_project(project.path(), cache.path(), &[Adapter::Codex]);
+        append_file(
+            &project.path().join(".github/prompts/review.md"),
+            "\nManaged prompt change.\n",
+        );
+        append_file(
+            &linked_repo.join("prompts/review.md"),
+            "\nLinked prompt change.\n",
+        );
+
+        let error = relay_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "playbook_ios",
+            Some(&linked_repo),
+            &Reporter::silent(),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("changed in both managed outputs and linked source"));
+    }
+
+    #[test]
     fn relay_rejects_when_managed_variants_disagree() {
         let (_remote_root, remote_repo) = create_remote_dependency();
         let linked = clone_linked_repo(&remote_repo);
@@ -998,6 +1146,48 @@ mod tests {
         .to_string();
 
         assert!(error.contains("--repo-path <path>"));
+    }
+
+    #[test]
+    fn relay_rejects_path_dependencies() {
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        write_file(
+            &project.path().join("nodus.toml"),
+            r#"
+[adapters]
+enabled = ["codex"]
+
+[dependencies.shared]
+path = "vendor/shared"
+
+[[dependencies.shared.managed]]
+source = "prompts/review.md"
+target = ".github/prompts/review.md"
+"#,
+        );
+        write_file(
+            &project.path().join("vendor/shared/skills/review/SKILL.md"),
+            "---\nname: Review\ndescription: Example.\n---\n# Review\n",
+        );
+        write_file(
+            &project.path().join("vendor/shared/prompts/review.md"),
+            "Review prompt.\n",
+        );
+
+        sync_project(project.path(), cache.path(), &[Adapter::Codex]);
+
+        let error = relay_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "shared",
+            Some(&project.path().join("vendor/shared")),
+            &Reporter::silent(),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("path dependency"));
     }
 
     #[test]
