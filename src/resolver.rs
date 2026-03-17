@@ -126,6 +126,16 @@ struct ResolveContext<'a> {
     reporter: &'a Reporter,
 }
 
+struct ResolvePackageInput {
+    alias: String,
+    package_root: PathBuf,
+    source: PackageSource,
+    role: PackageRole,
+    selected_components: Option<Vec<DependencyComponent>>,
+    direct_managed_paths: Vec<ResolvedManagedPath>,
+    extra_package_files: Vec<PathBuf>,
+}
+
 #[allow(dead_code)]
 pub fn sync_with_adapters(
     cache_root: &Path,
@@ -501,13 +511,15 @@ fn resolve_project(
     let mut state = ResolverState::default();
     resolve_package(
         &context,
-        "root".to_string(),
-        project_root.clone(),
-        PackageSource::Root,
-        PackageRole::Root,
-        None,
-        Vec::new(),
-        Vec::new(),
+        ResolvePackageInput {
+            alias: "root".to_string(),
+            package_root: project_root.clone(),
+            source: PackageSource::Root,
+            role: PackageRole::Root,
+            selected_components: None,
+            direct_managed_paths: Vec::new(),
+            extra_package_files: Vec::new(),
+        },
         &mut state,
     )?;
 
@@ -532,15 +544,18 @@ fn resolve_project(
 
 fn resolve_package(
     context: &ResolveContext<'_>,
-    alias: String,
-    package_root: PathBuf,
-    source: PackageSource,
-    role: PackageRole,
-    selected_components: Option<Vec<DependencyComponent>>,
-    direct_managed_paths: Vec<ResolvedManagedPath>,
-    extra_package_files: Vec<PathBuf>,
+    input: ResolvePackageInput,
     state: &mut ResolverState,
 ) -> Result<ResolvedPackage> {
+    let ResolvePackageInput {
+        alias,
+        package_root,
+        source,
+        role,
+        selected_components,
+        direct_managed_paths,
+        extra_package_files,
+    } = input;
     if let Some(existing) = state.resolved_by_path.get_mut(&package_root) {
         existing.selected_components =
             union_selected_components(existing.selected_components.clone(), selected_components);
@@ -637,13 +652,15 @@ fn resolve_dependency(
                 resolve_direct_managed_paths(parent_role, alias, dependency, &dependency_root)?;
             resolve_package(
                 context,
-                alias.to_string(),
-                dependency_root,
-                source,
-                PackageRole::Dependency,
-                dependency.effective_selected_components(),
-                direct_managed_paths,
-                extra_package_files,
+                ResolvePackageInput {
+                    alias: alias.to_string(),
+                    package_root: dependency_root,
+                    source,
+                    role: PackageRole::Dependency,
+                    selected_components: dependency.effective_selected_components(),
+                    direct_managed_paths,
+                    extra_package_files,
+                },
                 state,
             )
         }
@@ -690,13 +707,15 @@ fn resolve_dependency(
                 resolve_direct_managed_paths(parent_role, alias, dependency, &checkout.path)?;
             resolve_package(
                 context,
-                alias.to_string(),
-                checkout.path,
-                source,
-                PackageRole::Dependency,
-                dependency.effective_selected_components(),
-                direct_managed_paths,
-                extra_package_files,
+                ResolvePackageInput {
+                    alias: alias.to_string(),
+                    package_root: checkout.path,
+                    source,
+                    role: PackageRole::Dependency,
+                    selected_components: dependency.effective_selected_components(),
+                    direct_managed_paths,
+                    extra_package_files,
+                },
                 state,
             )
         }
