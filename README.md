@@ -37,6 +37,7 @@ nodus outdated
 nodus update
 nodus relay superpowers --repo-path ../superpowers
 nodus doctor
+nodus completion zsh > ~/.zsh/completions/_nodus
 ```
 
 The install flow is designed to stay predictable:
@@ -179,6 +180,14 @@ nodus relay superpowers --repo-path ../superpowers
 ```
 
 After setup, your repo has a pinned dependency in `nodus.toml`, exact resolved state in `nodus.lock`, and managed runtime files under the adapter root you selected.
+
+Generate shell completions when you want tab completion for the CLI:
+
+```bash
+nodus completion bash
+nodus completion zsh
+nodus completion fish
+```
 
 ## Why Teams Use Nodus
 

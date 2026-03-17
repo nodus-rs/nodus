@@ -2,7 +2,8 @@ use std::process::ExitCode;
 
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::{Shell, generate};
 
 use crate::adapters::Adapter;
 use crate::manifest::{DependencyComponent, RequestedGitRef};
@@ -201,6 +202,11 @@ enum Command {
             help = "Preview project changes without writing to the project or linked repo; may still populate the shared store to compute the result"
         )]
         dry_run: bool,
+    },
+    #[command(about = "Generate shell completion scripts")]
+    Completion {
+        #[arg(value_enum, help = "Shell to generate completions for")]
+        shell: Shell,
     },
     #[command(about = "Validate lockfile, shared store, and managed output consistency")]
     Doctor,
@@ -553,6 +559,12 @@ fn run_command_in_dir(
             ))?;
             Ok(())
         }
+        Command::Completion { shell } => {
+            let mut command = Cli::command();
+            let name = command.get_name().to_string();
+            generate(shell, &mut command, name, &mut std::io::stdout());
+            Ok(())
+        }
     }
 }
 
@@ -590,6 +602,7 @@ mod tests {
 
     use super::{Cli, Command, run_command_in_dir};
     use clap::Parser;
+    use clap_complete::Shell;
     use tempfile::TempDir;
     use walkdir::WalkDir;
 
@@ -893,6 +906,7 @@ mod tests {
         assert!(help.contains("Display resolved package metadata"));
         assert!(help.contains("Check direct dependencies for newer tags or branch head changes"));
         assert!(help.contains("Update direct dependencies and resync managed outputs"));
+        assert!(help.contains("Generate shell completion scripts"));
         assert!(help.contains(
             "Use an AI review agent to assess whether a package graph looks safe to use"
         ));
@@ -948,6 +962,30 @@ mod tests {
         ));
         assert!(help.contains("LLM provider to use for the safety review"));
         assert!(help.contains("Specific model id to use"));
+    }
+
+    #[test]
+    fn completion_help_describes_shell_argument() {
+        let mut root = <Cli as clap::CommandFactory>::command();
+        let help = root
+            .find_subcommand_mut("completion")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+
+        assert!(help.contains("Generate shell completion scripts"));
+        assert!(help.contains("Shell to generate completions for"));
+        assert!(help.contains("[possible values: bash, elvish, fish, powershell, zsh]"));
+    }
+
+    #[test]
+    fn parses_completion_shell_argument() {
+        let cli = Cli::try_parse_from(["nodus", "completion", "zsh"]).unwrap();
+
+        match cli.command {
+            Command::Completion { shell } => assert_eq!(shell, Shell::Zsh),
+            other => panic!("expected completion command, got {other:?}"),
+        }
     }
 
     #[test]

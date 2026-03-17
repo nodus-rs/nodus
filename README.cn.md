@@ -35,6 +35,7 @@ nodus add obra/superpowers --adapter codex --component skills
 nodus info obra/superpowers
 nodus relay superpowers --repo-path ../superpowers
 nodus doctor
+nodus completion zsh > ~/.zsh/completions/_nodus
 ```
 
 这套安装流程的设计目标是保持可预测：
