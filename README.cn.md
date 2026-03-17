@@ -429,7 +429,7 @@ nodus info obra/superpowers --branch main
 ### `nodus relay`
 
 ```bash
-nodus relay <dependency> [--repo-path <path>] [--watch]
+nodus relay <dependency> [--repo-path <path>] [--via <adapter>] [--watch]
 ```
 
 把 `.codex/`、`.claude/`、`.cursor/`、`.agents/`、`.opencode/` 等受管理运行时目录中的修改，回写到你本地维护的直接 Git 依赖检出。
@@ -439,6 +439,7 @@ nodus relay <dependency> [--repo-path <path>] [--watch]
 - 只支持 `nodus.toml` 中的直接 Git 依赖
 - 需要当前有效的 `nodus.lock`，并以锁定快照作为回写基线
 - 将维护者本地关联信息持久化到 `.nodus/local.toml`
+- `--via <adapter>` 会在 `.nodus/local.toml` 中持久化一个首选适配器提示，用于在 relay 元数据需要记录哪个适配器应被视为规范来源时使用；别名：`--relay-via`、`--prefer`
 - 自动写入 `.nodus/.gitignore`，保证该本地关联配置默认不纳入版本控制
 - 会校验关联检出是 Git 仓库，且其 `origin` 与依赖 URL 一致
 - 只把变更过的源文件写回本地检出，不会自动 commit 或 push
@@ -449,6 +450,7 @@ nodus relay <dependency> [--repo-path <path>] [--watch]
 
 ```bash
 nodus relay superpowers --repo-path ../superpowers
+nodus relay superpowers --via claude
 nodus relay superpowers --watch
 ```
 

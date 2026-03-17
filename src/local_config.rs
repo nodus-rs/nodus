@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use path_slash::PathBufExt as _;
 use serde::{Deserialize, Serialize};
 
+use crate::adapters::Adapter;
 use crate::paths::display_path;
 use crate::store::write_atomic;
 
@@ -28,6 +29,8 @@ pub struct RelayLink {
     )]
     pub repo_path: PathBuf,
     pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<Adapter>,
 }
 
 impl LocalConfig {
@@ -130,6 +133,7 @@ mod tests {
             RelayLink {
                 repo_path: PathBuf::from("/tmp/playbook-ios"),
                 url: "https://github.com/wenext-limited/playbook-ios".into(),
+                via: Some(Adapter::Claude),
             },
         );
 
@@ -153,6 +157,7 @@ mod tests {
                         r"C:\Users\runneradmin\AppData\Local\Temp\playbook-ios",
                     ),
                     url: "https://github.com/wenext-limited/playbook-ios".into(),
+                    via: Some(Adapter::Codex),
                 },
             )]),
         };
@@ -164,6 +169,10 @@ mod tests {
         assert_eq!(
             decoded["relay"]["playbook_ios"]["repo_path"].as_str(),
             Some(expected.as_str())
+        );
+        assert_eq!(
+            decoded["relay"]["playbook_ios"]["via"].as_str(),
+            Some("codex")
         );
     }
 }

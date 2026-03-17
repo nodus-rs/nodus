@@ -144,6 +144,14 @@ enum Command {
         #[arg(long, help = "Local checkout path to persist and relay into")]
         repo_path: Option<PathBuf>,
         #[arg(
+            long = "via",
+            alias = "relay-via",
+            alias = "prefer",
+            value_enum,
+            help = "Persist the preferred adapter for relay metadata when one adapter should be treated as canonical"
+        )]
+        via: Option<Adapter>,
+        #[arg(
             long,
             help = "Keep watching managed outputs and relay new edits automatically"
         )]
@@ -421,6 +429,7 @@ fn run_command_in_dir(
         Command::Relay {
             package,
             repo_path,
+            via,
             watch,
             dry_run,
         } => {
@@ -430,6 +439,7 @@ fn run_command_in_dir(
                     cache_root,
                     &package,
                     repo_path.as_deref(),
+                    via,
                     reporter,
                 )
             } else {
@@ -439,6 +449,7 @@ fn run_command_in_dir(
                         cache_root,
                         &package,
                         repo_path.as_deref(),
+                        via,
                         reporter,
                     )?
                 } else {
@@ -447,6 +458,7 @@ fn run_command_in_dir(
                         cache_root,
                         &package,
                         repo_path.as_deref(),
+                        via,
                         reporter,
                     )?
                 };
@@ -776,15 +788,51 @@ mod tests {
             Command::Relay {
                 package,
                 repo_path,
+                via,
                 watch,
                 ..
             } => {
                 assert_eq!(package, "wenext-limited/playbook-ios");
                 assert_eq!(repo_path.as_deref(), Some(Path::new("/tmp/playbook-ios")));
+                assert_eq!(via, None);
                 assert!(watch);
             }
             other => panic!("expected relay command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_relay_via_aliases() {
+        let via =
+            Cli::try_parse_from(["nodus", "relay", "example/repo", "--via", "claude"]).unwrap();
+        let relay_via =
+            Cli::try_parse_from(["nodus", "relay", "example/repo", "--relay-via", "codex"])
+                .unwrap();
+        let prefer =
+            Cli::try_parse_from(["nodus", "relay", "example/repo", "--prefer", "opencode"])
+                .unwrap();
+
+        assert!(matches!(
+            via.command,
+            Command::Relay {
+                via: Some(Adapter::Claude),
+                ..
+            }
+        ));
+        assert!(matches!(
+            relay_via.command,
+            Command::Relay {
+                via: Some(Adapter::Codex),
+                ..
+            }
+        ));
+        assert!(matches!(
+            prefer.command,
+            Command::Relay {
+                via: Some(Adapter::OpenCode),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1481,6 +1529,7 @@ justification = "Run checks."
                     .unwrap()
                     .clone(),
                 repo_path: Some(repo.path().to_path_buf()),
+                via: Some(Adapter::Codex),
                 watch: false,
                 dry_run: true,
             },

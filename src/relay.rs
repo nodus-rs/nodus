@@ -14,13 +14,12 @@ use crate::git::{
     resolve_dependency_alias,
 };
 use crate::local_config::{LocalConfig, RelayLink, config_path, local_dir};
-use crate::lockfile::LOCKFILE_NAME;
+use crate::lockfile::{LOCKFILE_NAME, Lockfile};
 use crate::manifest::{DependencySourceKind, MANIFEST_FILE, SkillEntry, load_root_from_dir};
 use crate::report::Reporter;
 use crate::resolver::{
     PackageSource, ResolvedPackage, resolve_project_from_existing_lockfile_in_dir,
 };
-use crate::selection::resolve_adapter_selection;
 use crate::store::snapshot_resolution;
 
 #[derive(Debug, Clone)]
@@ -104,6 +103,7 @@ pub fn relay_dependency_in_dir(
     cache_root: &Path,
     package: &str,
     repo_path_override: Option<&Path>,
+    via_override: Option<Adapter>,
     reporter: &Reporter,
 ) -> Result<RelaySummary> {
     relay_dependency_in_dir_mode(
@@ -111,6 +111,7 @@ pub fn relay_dependency_in_dir(
         cache_root,
         package,
         repo_path_override,
+        via_override,
         ExecutionMode::Apply,
         reporter,
     )
@@ -121,6 +122,7 @@ pub fn relay_dependency_in_dir_dry_run(
     cache_root: &Path,
     package: &str,
     repo_path_override: Option<&Path>,
+    via_override: Option<Adapter>,
     reporter: &Reporter,
 ) -> Result<RelaySummary> {
     relay_dependency_in_dir_mode(
@@ -128,6 +130,7 @@ pub fn relay_dependency_in_dir_dry_run(
         cache_root,
         package,
         repo_path_override,
+        via_override,
         ExecutionMode::DryRun,
         reporter,
     )
@@ -138,16 +141,25 @@ fn relay_dependency_in_dir_mode(
     cache_root: &Path,
     package: &str,
     repo_path_override: Option<&Path>,
+    via_override: Option<Adapter>,
     execution_mode: ExecutionMode,
     reporter: &Reporter,
 ) -> Result<RelaySummary> {
     let mut workspace = load_workspace(project_root, cache_root, reporter)?;
     let dependency = dependency_context(&workspace, package)?;
+    let local_config_changed = relay_link_would_change(
+        &workspace.local_config,
+        &dependency.alias,
+        repo_path_override,
+        via_override,
+        &dependency.url,
+    )?;
     let linked_repo = resolve_linked_repo(
         project_root,
         &mut workspace.local_config,
         &dependency,
         repo_path_override,
+        via_override,
         execution_mode,
     )?;
 
@@ -166,7 +178,7 @@ fn relay_dependency_in_dir_mode(
     }
 
     if execution_mode.is_dry_run() {
-        if repo_path_override.is_some() {
+        if local_config_changed {
             reporter.preview(&PreviewChange::PersistLocalConfig(config_path(
                 project_root,
             )))?;
@@ -224,6 +236,7 @@ pub fn watch_dependency_in_dir(
     cache_root: &Path,
     package: &str,
     repo_path_override: Option<&Path>,
+    via_override: Option<Adapter>,
     reporter: &Reporter,
 ) -> Result<()> {
     watch_dependency_in_dir_with_options(
@@ -231,6 +244,7 @@ pub fn watch_dependency_in_dir(
         cache_root,
         package,
         repo_path_override,
+        via_override,
         reporter,
         RelayWatchOptions::default(),
     )
@@ -294,15 +308,14 @@ fn load_workspace(
     reporter: &Reporter,
 ) -> Result<RelayWorkspace> {
     let root = load_root_from_dir(project_root)?;
-    let selection = resolve_adapter_selection(project_root, &root.manifest, &[], false)?;
-    let selected_adapters = Adapters::from_slice(&selection.adapters);
     let local_config = LocalConfig::load_in_dir(project_root)?;
-    let (resolution, _lockfile) = resolve_project_from_existing_lockfile_in_dir(
+    let (resolution, lockfile) = resolve_project_from_existing_lockfile_in_dir(
         project_root,
         cache_root,
-        selected_adapters,
+        Adapters::NONE,
         reporter,
     )?;
+    let selected_adapters = adapters_from_lockfile(&lockfile);
     let snapshot_roots = snapshot_resolution(cache_root, &resolution)?
         .into_iter()
         .map(|stored| (stored.digest, stored.snapshot_root))
@@ -339,15 +352,13 @@ fn load_workspace_if_linked(
             local_config,
         });
     }
-    let selection = resolve_adapter_selection(project_root, &root.manifest, &[], false)?;
-    let selected_adapters = Adapters::from_slice(&selection.adapters);
-
-    let (resolution, _lockfile) = resolve_project_from_existing_lockfile_in_dir(
+    let (resolution, lockfile) = resolve_project_from_existing_lockfile_in_dir(
         project_root,
         cache_root,
-        selected_adapters,
+        Adapters::NONE,
         reporter,
     )?;
+    let selected_adapters = adapters_from_lockfile(&lockfile);
     let snapshot_roots = snapshot_resolution(cache_root, &resolution)?
         .into_iter()
         .map(|stored| (stored.digest, stored.snapshot_root))
@@ -361,6 +372,30 @@ fn load_workspace_if_linked(
         snapshot_roots,
         local_config,
     })
+}
+
+fn adapters_from_lockfile(lockfile: &Lockfile) -> Adapters {
+    lockfile
+        .managed_files
+        .iter()
+        .filter_map(|path| {
+            if path.starts_with(".agents/") {
+                Some(Adapter::Agents)
+            } else if path.starts_with(".claude/") {
+                Some(Adapter::Claude)
+            } else if path.starts_with(".codex/") {
+                Some(Adapter::Codex)
+            } else if path.starts_with(".cursor/") {
+                Some(Adapter::Cursor)
+            } else if path.starts_with(".opencode/") {
+                Some(Adapter::OpenCode)
+            } else {
+                None
+            }
+        })
+        .fold(Adapters::NONE, |selected, adapter| {
+            selected.union(adapter.into())
+        })
 }
 
 fn dependency_context(workspace: &RelayWorkspace, package: &str) -> Result<DependencyContext> {
@@ -408,17 +443,22 @@ fn resolve_linked_repo(
     local_config: &mut LocalConfig,
     dependency: &DependencyContext,
     repo_path_override: Option<&Path>,
+    via_override: Option<Adapter>,
     execution_mode: ExecutionMode,
 ) -> Result<PathBuf> {
     match repo_path_override {
         Some(path) => {
             let linked_repo = canonicalize_existing_dir(path)?;
             validate_linked_repo(&linked_repo, &dependency.url)?;
+            let existing_via = local_config
+                .relay_link(&dependency.alias)
+                .and_then(|link| link.via);
             local_config.set_relay_link(
                 dependency.alias.clone(),
                 RelayLink {
                     repo_path: linked_repo.clone(),
                     url: dependency.url.clone(),
+                    via: via_override.or(existing_via),
                 },
             );
             if !execution_mode.is_dry_run() {
@@ -426,8 +466,56 @@ fn resolve_linked_repo(
             }
             Ok(linked_repo)
         }
-        None => resolve_existing_link(local_config, dependency),
+        None => {
+            let linked_repo = resolve_existing_link(local_config, dependency)?;
+            if let Some(via) = via_override {
+                let existing = local_config.relay_link(&dependency.alias).ok_or_else(|| {
+                    anyhow!(
+                        "no relay link configured for `{}`; rerun with `--repo-path <path>`",
+                        dependency.alias
+                    )
+                })?;
+                if existing.via != Some(via) {
+                    local_config.set_relay_link(
+                        dependency.alias.clone(),
+                        RelayLink {
+                            repo_path: existing.repo_path.clone(),
+                            url: existing.url.clone(),
+                            via: Some(via),
+                        },
+                    );
+                    if !execution_mode.is_dry_run() {
+                        local_config.save_in_dir(project_root)?;
+                    }
+                }
+            }
+            Ok(linked_repo)
+        }
     }
+}
+
+fn relay_link_would_change(
+    local_config: &LocalConfig,
+    alias: &str,
+    repo_path_override: Option<&Path>,
+    via_override: Option<Adapter>,
+    url: &str,
+) -> Result<bool> {
+    let Some(repo_path_override) = repo_path_override else {
+        return Ok(via_override.is_some_and(|via| {
+            local_config
+                .relay_link(alias)
+                .is_some_and(|link| link.via != Some(via))
+        }));
+    };
+
+    let linked_repo = canonicalize_existing_dir(repo_path_override)?;
+    let existing = local_config.relay_link(alias);
+    let next_via = via_override.or(existing.and_then(|link| link.via));
+
+    Ok(existing.is_none_or(|link| {
+        link.repo_path != linked_repo || link.url != url || link.via != next_via
+    }))
 }
 
 fn resolve_existing_link(
@@ -498,10 +586,8 @@ fn build_relay_plan(
             let current_managed = match fs::read(&mapping.managed_path) {
                 Ok(contents) => contents,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    plan.conflicts.push(format!(
-                        "{} is missing from managed outputs",
-                        mapping.managed_path.display()
-                    ));
+                    // Missing generated outputs do not encode a source edit we can relay.
+                    // Let sync regenerate them instead of blocking on a synthetic conflict.
                     continue;
                 }
                 Err(error) => {
@@ -561,6 +647,7 @@ fn watch_dependency_in_dir_with_options(
     cache_root: &Path,
     package: &str,
     repo_path_override: Option<&Path>,
+    via_override: Option<Adapter>,
     reporter: &Reporter,
     options: RelayWatchOptions,
 ) -> Result<Vec<RelaySummary>> {
@@ -569,6 +656,7 @@ fn watch_dependency_in_dir_with_options(
         cache_root,
         package,
         repo_path_override,
+        via_override,
         reporter,
     )?;
     reporter.finish(format!(
@@ -613,7 +701,8 @@ fn watch_dependency_in_dir_with_options(
         }
 
         reporter.status("Watching", format!("detected managed edits for {package}"))?;
-        let summary = relay_dependency_in_dir(project_root, cache_root, package, None, reporter)?;
+        let summary =
+            relay_dependency_in_dir(project_root, cache_root, package, None, None, reporter)?;
         reporter.finish(format!(
             "relayed {} into {}; updated {} source files",
             summary.alias,
@@ -1229,6 +1318,7 @@ mod tests {
             cache.path(),
             "playbook_ios",
             Some(&linked_repo),
+            None,
             &Reporter::silent(),
         )
         .unwrap();
@@ -1258,6 +1348,37 @@ mod tests {
         let local_config = LocalConfig::load_in_dir(project.path()).unwrap();
         let link = local_config.relay_link("playbook_ios").unwrap();
         assert_eq!(link.repo_path, linked_repo.canonicalize().unwrap());
+        assert_eq!(link.via, None);
+    }
+
+    #[test]
+    fn relay_persists_via_hint() {
+        let (_remote_root, remote_repo) = create_remote_dependency();
+        let linked = clone_linked_repo(&remote_repo);
+        let linked_repo = linked.path().join("linked");
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        install_dependency(
+            project.path(),
+            cache.path(),
+            &remote_repo,
+            &[Adapter::Claude, Adapter::Codex],
+        );
+
+        relay_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "playbook_ios",
+            Some(&linked_repo),
+            Some(Adapter::Claude),
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        let local_config = LocalConfig::load_in_dir(project.path()).unwrap();
+        let link = local_config.relay_link("playbook_ios").unwrap();
+        assert_eq!(link.repo_path, linked_repo.canonicalize().unwrap());
+        assert_eq!(link.via, Some(Adapter::Claude));
     }
 
     #[test]
@@ -1310,6 +1431,7 @@ target = "docs/templates"
             cache.path(),
             "playbook_ios",
             Some(&linked_repo),
+            None,
             &Reporter::silent(),
         )
         .unwrap();
@@ -1373,6 +1495,7 @@ target = ".github/prompts/review.md"
             cache.path(),
             "playbook_ios",
             Some(&linked_repo),
+            None,
             &Reporter::silent(),
         )
         .unwrap_err()
@@ -1428,6 +1551,7 @@ target = ".github/prompts/review.md"
             cache.path(),
             "playbook_ios",
             Some(&linked_repo),
+            None,
             &Reporter::silent(),
         )
         .unwrap_err()
@@ -1452,6 +1576,7 @@ target = ".github/prompts/review.md"
             project.path(),
             cache.path(),
             "playbook_ios",
+            None,
             None,
             &Reporter::silent(),
         )
@@ -1495,6 +1620,7 @@ target = ".github/prompts/review.md"
             cache.path(),
             "shared",
             Some(&project.path().join("vendor/shared")),
+            None,
             &Reporter::silent(),
         )
         .unwrap_err()
@@ -1522,6 +1648,7 @@ target = ".github/prompts/review.md"
             cache.path(),
             "playbook_ios",
             Some(&linked_repo),
+            None,
             &Reporter::silent(),
         )
         .unwrap();
@@ -1568,6 +1695,128 @@ target = ".github/prompts/review.md"
     }
 
     #[test]
+    fn missing_managed_variants_do_not_block_sync_with_relay() {
+        let (_remote_root, remote_repo) = create_remote_dependency();
+        let linked = clone_linked_repo(&remote_repo);
+        let linked_repo = linked.path().join("linked");
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        install_dependency(
+            project.path(),
+            cache.path(),
+            &remote_repo,
+            &[Adapter::Claude, Adapter::Codex],
+        );
+
+        relay_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "playbook_ios",
+            Some(&linked_repo),
+            None,
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        fs::remove_dir_all(project.path().join(".codex")).unwrap();
+
+        crate::resolver::sync_in_dir_with_adapters(
+            project.path(),
+            cache.path(),
+            false,
+            false,
+            &[],
+            false,
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        let package = resolved_package(
+            project.path(),
+            cache.path(),
+            &[Adapter::Claude, Adapter::Codex],
+        );
+        assert!(
+            managed_skill_root(project.path(), Adapter::Codex, &package, "review")
+                .join("SKILL.md")
+                .exists()
+        );
+        assert!(
+            managed_artifact_path(
+                project.path(),
+                Adapter::Codex,
+                ArtifactKind::Rule,
+                &package,
+                "policy",
+            )
+            .unwrap()
+            .exists()
+        );
+    }
+
+    #[test]
+    fn adapter_expansion_does_not_block_sync_with_existing_relay() {
+        let (_remote_root, remote_repo) = create_remote_dependency();
+        let linked = clone_linked_repo(&remote_repo);
+        let linked_repo = linked.path().join("linked");
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        install_dependency(
+            project.path(),
+            cache.path(),
+            &remote_repo,
+            &[Adapter::Claude],
+        );
+
+        relay_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "playbook_ios",
+            Some(&linked_repo),
+            None,
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        write_file(
+            &project.path().join("nodus.toml"),
+            &format!(
+                r#"
+[adapters]
+enabled = ["claude", "codex"]
+
+[dependencies.playbook_ios]
+url = "{}"
+tag = "v0.1.0"
+"#,
+                toml_path_value(&remote_repo)
+            ),
+        );
+
+        crate::resolver::sync_in_dir_with_adapters(
+            project.path(),
+            cache.path(),
+            false,
+            false,
+            &[],
+            false,
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        let package = resolved_package(
+            project.path(),
+            cache.path(),
+            &[Adapter::Claude, Adapter::Codex],
+        );
+        assert!(
+            managed_skill_root(project.path(), Adapter::Codex, &package, "review")
+                .join("SKILL.md")
+                .exists()
+        );
+    }
+
+    #[test]
     fn stale_lockfile_does_not_block_sync_relay_preflight_without_pending_edits() {
         let (_remote_root, remote_repo) = create_remote_dependency();
         let linked = clone_linked_repo(&remote_repo);
@@ -1586,6 +1835,7 @@ target = ".github/prompts/review.md"
             cache.path(),
             "playbook_ios",
             Some(&linked_repo),
+            None,
             &Reporter::silent(),
         )
         .unwrap();
@@ -1636,6 +1886,7 @@ target = ".github/prompts/review.md"
                 &cache_root,
                 "playbook_ios",
                 Some(&linked_repo_for_watch),
+                None,
                 &Reporter::sink(ColorMode::Never, output_for_watch),
                 RelayWatchOptions {
                     poll_interval: Duration::from_millis(20),

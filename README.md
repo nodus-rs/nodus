@@ -451,7 +451,7 @@ Behavior:
 ### `nodus relay`
 
 ```bash
-nodus relay <dependency> [--repo-path <path>] [--watch]
+nodus relay <dependency> [--repo-path <path>] [--via <adapter>] [--watch]
 ```
 
 Relays edits from managed runtime outputs like `.codex/`, `.claude/`, `.cursor/`, `.agents/`, and `.opencode/` back into a maintainer-owned local checkout of the direct Git dependency.
@@ -461,6 +461,7 @@ Behavior:
 - works only for direct Git dependencies from `nodus.toml`
 - requires a current `nodus.lock` and uses the locked snapshot as the relay baseline
 - persists maintainer linkage in `.nodus/local.toml`
+- `--via <adapter>` persists a preferred adapter hint in `.nodus/local.toml` when relay metadata should remember which adapter to treat as canonical; aliases: `--relay-via`, `--prefer`
 - writes `.nodus/.gitignore` so the local relay config stays untracked
 - validates that the linked checkout is a Git repo whose `origin` matches the dependency URL
 - writes only changed source files into the linked checkout; it does not commit or push
@@ -471,6 +472,7 @@ Example:
 
 ```bash
 nodus relay superpowers --repo-path ../superpowers
+nodus relay superpowers --via claude
 nodus relay superpowers --watch
 ```
 
