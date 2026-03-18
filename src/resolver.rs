@@ -361,7 +361,10 @@ fn sync_in_dir_with_adapters_mode(
     let planned_files = &output_plan.files;
     let desired_paths = resolution.managed_paths(cwd, selected_adapters)?;
     let lockfile = resolution.to_lockfile(selected_adapters)?;
-    let owned_paths = load_owned_paths(cwd, existing_lockfile.as_ref())?;
+    let mut owned_paths = load_owned_paths(cwd, existing_lockfile.as_ref())?;
+    if existing_lockfile.is_none() {
+        owned_paths.extend(recover_runtime_owned_paths(cwd, &desired_paths));
+    }
 
     if sync_mode.checks_lockfile() {
         let Some(existing) = existing_lockfile.as_ref() else {
@@ -1602,6 +1605,30 @@ fn load_owned_paths(project_root: &Path, lockfile: Option<&Lockfile>) -> Result<
     }
 
     Ok(HashSet::new())
+}
+
+fn recover_runtime_owned_paths(
+    project_root: &Path,
+    desired_paths: &HashSet<PathBuf>,
+) -> HashSet<PathBuf> {
+    desired_paths
+        .iter()
+        .filter(|path| is_runtime_managed_path(project_root, path))
+        .cloned()
+        .collect()
+}
+
+fn is_runtime_managed_path(project_root: &Path, path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(project_root) else {
+        return false;
+    };
+    let Some(first) = relative.components().next() else {
+        return false;
+    };
+    matches!(
+        first.as_os_str().to_string_lossy().as_ref(),
+        ".agents" | ".claude" | ".codex" | ".cursor" | ".opencode"
+    )
 }
 
 fn prune_empty_parent_dirs(path: &Path, project_root: &Path) -> Result<()> {
@@ -2893,6 +2920,30 @@ shared = { path = "vendor/shared" }
         assert!(cursor_gitignore.contains(&format!("skills/*_{suffix}/")));
         assert!(cursor_gitignore.contains(&format!("commands/*_{command_suffix}.md")));
         assert!(cursor_gitignore.contains(&format!("rules/*_{suffix}.mdc")));
+    }
+
+    #[test]
+    fn sync_recreates_missing_lockfile_for_existing_runtime_outputs() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_manifest(
+            temp.path(),
+            r#"
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+        );
+        write_file(
+            &temp.path().join("vendor/shared/rules/default.rules"),
+            "allow = []\n",
+        );
+
+        sync_all(temp.path(), cache.path());
+        fs::remove_file(temp.path().join(LOCKFILE_NAME)).unwrap();
+
+        sync_all(temp.path(), cache.path());
+
+        assert!(temp.path().join(LOCKFILE_NAME).exists());
     }
 
     #[test]

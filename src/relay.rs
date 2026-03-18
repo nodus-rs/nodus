@@ -271,6 +271,9 @@ pub fn watch_dependencies_in_dir(
 
 pub fn ensure_no_pending_relay_edits_in_dir(project_root: &Path, cache_root: &Path) -> Result<()> {
     let reporter = Reporter::silent();
+    if !project_root.join(LOCKFILE_NAME).exists() {
+        return Ok(());
+    }
     let workspace = load_workspace_if_linked(project_root, cache_root, &reporter)?;
     if workspace.local_config.relay.is_empty() {
         return Ok(());
@@ -1954,6 +1957,46 @@ tag = {:?}
             &Reporter::silent(),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn missing_lockfile_does_not_block_sync_with_relay_links() {
+        let (_remote_root, remote_repo) = create_remote_dependency();
+        let linked = clone_linked_repo(&remote_repo);
+        let linked_repo = linked.path().join("linked");
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        install_dependency(
+            project.path(),
+            cache.path(),
+            &remote_repo,
+            &[Adapter::Codex],
+        );
+
+        relay_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "playbook_ios",
+            Some(&linked_repo),
+            None,
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        fs::remove_file(project.path().join(LOCKFILE_NAME)).unwrap();
+
+        crate::resolver::sync_in_dir_with_adapters(
+            project.path(),
+            cache.path(),
+            false,
+            false,
+            &[],
+            false,
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        assert!(project.path().join(LOCKFILE_NAME).exists());
     }
 
     #[test]
