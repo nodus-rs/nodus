@@ -84,8 +84,17 @@ impl Lockfile {
     pub fn read(path: &Path) -> Result<Self> {
         let contents = fs::read_to_string(path)
             .with_context(|| format!("failed to read lockfile {}", path.display()))?;
-        toml::from_str(&contents)
-            .with_context(|| format!("failed to parse lockfile {}", path.display()))
+        let lockfile: Self = toml::from_str(&contents)
+            .with_context(|| format!("failed to parse lockfile {}", path.display()))?;
+        if lockfile.version != LOCKFILE_VERSION {
+            bail!(
+                "unsupported lockfile version {} in {}; expected {}",
+                lockfile.version,
+                path.display(),
+                LOCKFILE_VERSION
+            );
+        }
+        Ok(lockfile)
     }
 
     #[cfg(test)]
@@ -235,6 +244,8 @@ fn short_source_id(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use tempfile::TempDir;
+
     use super::*;
 
     #[test]
@@ -275,6 +286,25 @@ mod tests {
         let decoded: Lockfile = toml::from_str(&encoded).unwrap();
 
         assert_eq!(decoded, lockfile);
+    }
+
+    #[test]
+    fn rejects_unsupported_lockfile_versions() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join(LOCKFILE_NAME);
+        fs::write(
+            &path,
+            r#"
+version = 5
+packages = []
+managed_files = []
+"#,
+        )
+        .unwrap();
+
+        let error = Lockfile::read(&path).unwrap_err().to_string();
+
+        assert!(error.contains("unsupported lockfile version 5"));
     }
 
     #[test]
