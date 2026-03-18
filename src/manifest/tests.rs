@@ -1,0 +1,933 @@
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+use semver::Version;
+use tempfile::TempDir;
+
+use super::*;
+use crate::adapters::Adapter;
+use crate::report::Reporter;
+
+fn write_file(path: &Path, contents: &str) {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).unwrap();
+    }
+    let mut file = fs::File::create(path).unwrap();
+    file.write_all(contents.as_bytes()).unwrap();
+}
+
+fn write_valid_skill(root: &Path) {
+    write_file(
+        &root.join("skills/review/SKILL.md"),
+        "---\nname: Review\ndescription: Review code safely.\n---\n# Review\n",
+    );
+}
+
+fn write_marketplace(root: &Path, contents: &str) {
+    write_file(&root.join(".claude-plugin/marketplace.json"), contents);
+}
+
+fn write_claude_plugin_json(root: &Path, version: &str) {
+    write_file(
+        &root.join("claude-code.json"),
+        &format!("{{\n  \"name\": \"plugin\",\n  \"version\": \"{version}\"\n}}\n"),
+    );
+}
+
+#[test]
+fn loads_root_manifest_without_required_metadata() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[dependencies]
+playbook_ios = { url = "https://github.com/wenext-limited/playbook-ios", tag = "v0.1.0" }
+"#,
+    );
+
+    let loaded = load_root_from_dir(temp.path()).unwrap();
+
+    assert!(loaded.manifest.api_version.is_none());
+    assert!(loaded.manifest.name.is_none());
+    assert!(loaded.manifest.version.is_none());
+    assert_eq!(loaded.discovered.skills[0].id, "review");
+}
+
+#[test]
+fn accepts_root_project_with_only_dependencies() {
+    let temp = TempDir::new().unwrap();
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[dependencies]
+playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.1.0" }
+"#,
+    );
+
+    let loaded = load_root_from_dir(temp.path()).unwrap();
+    assert!(loaded.discovered.is_empty());
+    assert_eq!(loaded.manifest.dependencies.len(), 1);
+    assert_eq!(
+        loaded
+            .manifest
+            .dependencies
+            .get("playbook_ios")
+            .unwrap()
+            .resolved_git_url()
+            .unwrap(),
+        "https://github.com/wenext-limited/playbook-ios"
+    );
+}
+
+#[test]
+fn rejects_dependency_repo_without_supported_directories() {
+    let temp = TempDir::new().unwrap();
+    let error = load_dependency_from_dir(temp.path())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("must contain at least one of"));
+}
+
+#[test]
+fn accepts_dependency_repo_with_only_nested_dependencies() {
+    let temp = TempDir::new().unwrap();
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[dependencies]
+playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.1.0" }
+"#,
+    );
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    assert!(loaded.discovered.is_empty());
+    assert_eq!(loaded.manifest.dependencies.len(), 1);
+}
+
+#[test]
+fn accepts_dependency_repo_with_claude_marketplace_wrapper() {
+    let temp = TempDir::new().unwrap();
+    write_marketplace(
+        temp.path(),
+        r#"{
+  "plugins": [
+    {
+      "name": "Axiom",
+      "version": "2.34.0",
+      "source": "./.claude-plugin/plugins/axiom"
+    }
+  ]
+}"#,
+    );
+    write_file(
+        &temp
+            .path()
+            .join(".claude-plugin/plugins/axiom/agents/reviewer.md"),
+        "# Reviewer\n",
+    );
+    write_file(
+        &temp
+            .path()
+            .join(".claude-plugin/plugins/axiom/commands/build.md"),
+        "# Build\n",
+    );
+    write_file(
+        &temp
+            .path()
+            .join(".claude-plugin/plugins/axiom/skills/review/SKILL.md"),
+        "---\nname: Review\ndescription: Review code safely.\n---\n# Review\n",
+    );
+    write_claude_plugin_json(&temp.path().join(".claude-plugin/plugins/axiom"), "2.34.0");
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    assert!(loaded.discovered.is_empty());
+    let dependency = loaded.manifest.dependencies.get("axiom").unwrap();
+    assert_eq!(
+        dependency.path.as_deref(),
+        Some(Path::new("./.claude-plugin/plugins/axiom"))
+    );
+    assert_eq!(dependency.tag, None);
+    assert_eq!(
+        dependency
+            .version
+            .as_ref()
+            .map(ToString::to_string)
+            .as_deref(),
+        Some("2.34.0")
+    );
+    assert_eq!(
+        loaded.manifest.version,
+        Some(Version::parse("2.34.0").unwrap())
+    );
+
+    let package_files = loaded.package_files().unwrap();
+    assert!(
+        package_files.contains(
+            &temp
+                .path()
+                .join(".claude-plugin/marketplace.json")
+                .canonicalize()
+                .unwrap()
+        )
+    );
+}
+
+#[test]
+fn imports_all_marketplace_plugins_in_sorted_alias_order() {
+    let temp = TempDir::new().unwrap();
+    write_marketplace(
+        temp.path(),
+        r#"{
+  "plugins": [
+    {
+      "name": "Zeta Plugin",
+      "source": "./plugins/zeta"
+    },
+    {
+      "name": "Alpha Plugin",
+      "source": "./plugins/alpha"
+    }
+  ]
+}"#,
+    );
+    write_file(
+        &temp.path().join("plugins/zeta/skills/zeta/SKILL.md"),
+        "---\nname: Zeta\ndescription: Zeta skill.\n---\n# Zeta\n",
+    );
+    write_file(
+        &temp.path().join("plugins/alpha/skills/alpha/SKILL.md"),
+        "---\nname: Alpha\ndescription: Alpha skill.\n---\n# Alpha\n",
+    );
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    assert_eq!(
+        loaded
+            .manifest
+            .dependencies
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec!["alpha_plugin", "zeta_plugin"]
+    );
+}
+
+#[test]
+fn marketplace_sources_are_resolved_from_repo_root() {
+    let temp = TempDir::new().unwrap();
+    write_marketplace(
+        temp.path(),
+        r#"{
+  "plugins": [
+    {
+      "name": "Axiom",
+      "source": "./plugins/axiom"
+    }
+  ]
+}"#,
+    );
+    write_file(
+        &temp.path().join("plugins/axiom/skills/review/SKILL.md"),
+        "---\nname: Review\ndescription: Review code safely.\n---\n# Review\n",
+    );
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    assert_eq!(
+        loaded
+            .manifest
+            .dependencies
+            .get("axiom")
+            .and_then(|dependency| dependency.path.as_deref()),
+        Some(Path::new("./plugins/axiom"))
+    );
+}
+
+#[test]
+fn reads_claude_plugin_version_from_json() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_claude_plugin_json(temp.path(), "2.34.0");
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    assert_eq!(
+        loaded.manifest.version,
+        Some(Version::parse("2.34.0").unwrap())
+    );
+}
+
+#[test]
+fn rejects_marketplace_with_invalid_json() {
+    let temp = TempDir::new().unwrap();
+    write_marketplace(temp.path(), "{");
+
+    let error = load_dependency_from_dir(temp.path())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("failed to parse JSON"));
+}
+
+#[test]
+fn rejects_marketplace_without_plugins() {
+    let temp = TempDir::new().unwrap();
+    write_marketplace(temp.path(), r#"{ "plugins": [] }"#);
+
+    let error = load_dependency_from_dir(temp.path())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("must declare at least one plugin"));
+}
+
+#[test]
+fn rejects_marketplace_with_duplicate_plugin_aliases() {
+    let temp = TempDir::new().unwrap();
+    write_marketplace(
+        temp.path(),
+        r#"{
+  "plugins": [
+    {
+      "name": "Axiom",
+      "source": "./plugins/one"
+    },
+    {
+      "name": "axiom",
+      "source": "./plugins/two"
+    }
+  ]
+}"#,
+    );
+    write_file(
+        &temp.path().join("plugins/one/skills/one/SKILL.md"),
+        "---\nname: One\ndescription: One skill.\n---\n# One\n",
+    );
+    write_file(
+        &temp.path().join("plugins/two/skills/two/SKILL.md"),
+        "---\nname: Two\ndescription: Two skill.\n---\n# Two\n",
+    );
+
+    let error = load_dependency_from_dir(temp.path())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("duplicate plugin alias `axiom`"));
+}
+
+#[test]
+fn rejects_marketplace_with_escaping_source_path() {
+    let temp = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    write_file(
+        &outside.path().join("skills/review/SKILL.md"),
+        "---\nname: Review\ndescription: Review code safely.\n---\n# Review\n",
+    );
+    let escaping_source = format!(
+        "../{}",
+        outside.path().file_name().unwrap().to_string_lossy()
+    );
+    write_marketplace(
+        temp.path(),
+        &format!(
+            r#"{{
+  "plugins": [
+    {{
+      "name": "Axiom",
+      "source": "{escaping_source}"
+    }}
+  ]
+}}"#
+        ),
+    );
+
+    let error = load_dependency_from_dir(temp.path())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("plugin `Axiom` has invalid source"));
+}
+
+#[test]
+fn rejects_marketplace_with_missing_source_directory() {
+    let temp = TempDir::new().unwrap();
+    write_marketplace(
+        temp.path(),
+        r#"{
+  "plugins": [
+    {
+      "name": "Axiom",
+      "source": "./plugins/missing"
+    }
+  ]
+}"#,
+    );
+
+    let error = load_dependency_from_dir(temp.path())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("has invalid source `./plugins/missing`"));
+}
+
+#[test]
+fn rejects_marketplace_with_plugin_source_that_is_not_a_directory() {
+    let temp = TempDir::new().unwrap();
+    write_marketplace(
+        temp.path(),
+        r#"{
+  "plugins": [
+    {
+      "name": "Axiom",
+      "source": "./plugins/axiom"
+    }
+  ]
+}"#,
+    );
+    write_file(&temp.path().join("plugins/axiom"), "not a directory\n");
+
+    let error = load_dependency_from_dir(temp.path())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("must point to a directory"));
+}
+
+#[test]
+fn rejects_marketplace_with_plugin_source_that_is_not_a_nodus_package() {
+    let temp = TempDir::new().unwrap();
+    write_marketplace(
+        temp.path(),
+        r#"{
+  "plugins": [
+    {
+      "name": "Axiom",
+      "source": "./plugins/axiom"
+    }
+  ]
+}"#,
+    );
+    write_file(
+        &temp.path().join("plugins/axiom/README.md"),
+        "# Not a package\n",
+    );
+
+    let error = load_dependency_from_dir(temp.path())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("does not match the Nodus package layout"));
+}
+
+#[test]
+fn prefers_standard_layout_over_marketplace_fallback() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_marketplace(
+        temp.path(),
+        r#"{
+  "plugins": [
+    {
+      "name": "Axiom",
+      "source": "./plugins/axiom"
+    }
+  ]
+}"#,
+    );
+    write_file(
+        &temp.path().join("plugins/axiom/skills/axiom/SKILL.md"),
+        "---\nname: Axiom\ndescription: Axiom skill.\n---\n# Axiom\n",
+    );
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    assert_eq!(
+        loaded
+            .discovered
+            .skills
+            .iter()
+            .map(|skill| skill.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["review"]
+    );
+    assert!(loaded.manifest.dependencies.is_empty());
+}
+
+#[test]
+fn rejects_invalid_git_dependency_without_tag() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[dependencies]
+playbook_ios = { url = "https://github.com/wenext-limited/playbook-ios" }
+"#,
+    );
+
+    let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+    assert!(error.contains("must declare `tag`"));
+}
+
+#[test]
+fn rejects_invalid_github_dependency_reference() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[dependencies]
+playbook_ios = { github = "wenext-limited", tag = "v0.1.0" }
+"#,
+    );
+
+    let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+    assert!(error.contains("must use the format `owner/repo`"));
+}
+
+#[test]
+fn rejects_invalid_skill_frontmatter() {
+    let temp = TempDir::new().unwrap();
+    write_file(
+        &temp.path().join("skills/review/SKILL.md"),
+        "---\nname: Review\n---\n# Review\n",
+    );
+
+    let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+    assert!(error.contains("skill `review` is invalid"));
+}
+
+#[test]
+fn accepts_unquoted_description_with_colon() {
+    let temp = TempDir::new().unwrap();
+    write_file(
+        &temp.path().join("skills/ios-websocket/SKILL.md"),
+        "---\nname: ios-websocket\ndescription: Use when a task involves WebSocket push-notification subscriptions. Trigger this skill for any of: subscribing to a new server push URI.\n---\n# iOS WebSocket\n",
+    );
+
+    let loaded = load_root_from_dir(temp.path()).unwrap();
+
+    assert_eq!(loaded.discovered.skills[0].id, "ios-websocket");
+}
+
+#[test]
+fn discovers_agents_rules_and_commands() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(&temp.path().join("agents/security.md"), "# Security\n");
+    write_file(&temp.path().join("rules/default.rules"), "allow = []\n");
+    write_file(&temp.path().join("commands/build.txt"), "cargo test\n");
+
+    let loaded = load_root_from_dir(temp.path()).unwrap();
+
+    assert_eq!(loaded.discovered.skills[0].id, "review");
+    assert_eq!(loaded.discovered.agents[0].id, "security");
+    assert_eq!(loaded.discovered.rules[0].id, "default");
+    assert_eq!(loaded.discovered.commands[0].id, "build");
+}
+
+#[test]
+fn discovers_nested_rules_with_stable_ids() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join("rules/common/coding-style.md"),
+        "# Common\n",
+    );
+    write_file(&temp.path().join("rules/swift/patterns.md"), "# Swift\n");
+
+    let loaded = load_root_from_dir(temp.path()).unwrap();
+
+    let ids = loaded
+        .discovered
+        .rules
+        .iter()
+        .map(|entry| entry.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(ids, vec!["common__coding-style", "swift__patterns"]);
+}
+
+#[test]
+fn ignores_readme_and_dotfiles_in_discovery_directories() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(&temp.path().join("skills/README.md"), "# Skills\n");
+    write_file(&temp.path().join("skills/.DS_Store"), "binary\n");
+    write_file(&temp.path().join("agents/.DS_Store"), "binary\n");
+    write_file(&temp.path().join("agents/README.md"), "# Agents\n");
+    write_file(&temp.path().join("agents/security.md"), "# Security\n");
+
+    let loaded = load_root_from_dir(temp.path()).unwrap();
+
+    assert_eq!(loaded.discovered.skills.len(), 1);
+    assert_eq!(loaded.discovered.skills[0].id, "review");
+    assert_eq!(loaded.discovered.agents.len(), 1);
+    assert_eq!(loaded.discovered.agents[0].id, "security");
+}
+
+#[test]
+fn init_scaffolds_a_minimal_manifest_and_example_skill() {
+    let temp = TempDir::new().unwrap();
+    let reporter = Reporter::silent();
+
+    scaffold_init_in_dir(temp.path(), &reporter).unwrap();
+
+    assert!(temp.path().join(MANIFEST_FILE).exists());
+    assert!(temp.path().join("skills/example/SKILL.md").exists());
+    let loaded = load_root_from_dir(temp.path()).unwrap();
+    assert_eq!(loaded.discovered.skills[0].id, "example");
+}
+
+#[test]
+fn serializes_dependencies_as_inline_tables() {
+    let mut manifest = Manifest::default();
+    manifest.dependencies.insert(
+        "playbook_ios".into(),
+        DependencySpec {
+            github: Some("wenext-limited/playbook-ios".into()),
+            url: None,
+            path: None,
+            tag: Some("v0.1.0".into()),
+            branch: None,
+            revision: None,
+            version: Some(Version::parse("0.1.0").unwrap()),
+            components: Some(vec![
+                DependencyComponent::Rules,
+                DependencyComponent::Skills,
+            ]),
+            managed: None,
+        },
+    );
+
+    let encoded = serialize_manifest(&manifest).unwrap();
+
+    assert!(encoded.contains("[dependencies]"));
+    assert!(encoded.contains("playbook_ios = {"));
+    assert!(encoded.contains("github = \"wenext-limited/playbook-ios\""));
+    assert!(encoded.contains("version = \"0.1.0\""));
+    assert!(encoded.contains("components = [\"skills\", \"rules\"]"));
+    assert!(!encoded.contains("url = "));
+}
+
+#[test]
+fn serializes_managed_dependencies_as_expanded_tables() {
+    let mut manifest = Manifest::default();
+    manifest.dependencies.insert(
+        "superpowers".into(),
+        DependencySpec {
+            github: Some("org/superpowers".into()),
+            url: None,
+            path: None,
+            tag: Some("v1.2.3".into()),
+            branch: None,
+            revision: None,
+            version: None,
+            components: None,
+            managed: Some(vec![
+                ManagedPathSpec {
+                    source: PathBuf::from("prompts/review.md"),
+                    target: PathBuf::from(".github/prompts/review.md"),
+                },
+                ManagedPathSpec {
+                    source: PathBuf::from("templates"),
+                    target: PathBuf::from("docs/templates"),
+                },
+            ]),
+        },
+    );
+
+    let encoded = serialize_manifest(&manifest).unwrap();
+
+    assert!(encoded.contains("[dependencies]"));
+    assert!(encoded.contains("[dependencies.superpowers]"));
+    assert!(encoded.contains("github = \"org/superpowers\""));
+    assert!(encoded.contains("[[dependencies.superpowers.managed]]"));
+    assert!(encoded.contains("source = \"prompts/review.md\""));
+    assert!(encoded.contains("target = \".github/prompts/review.md\""));
+    assert!(!encoded.contains("superpowers = {"));
+}
+
+#[test]
+fn serializes_adapters_in_stable_sorted_order() {
+    let manifest = Manifest {
+        adapters: Some(AdapterConfig {
+            enabled: vec![Adapter::OpenCode, Adapter::Claude, Adapter::Codex],
+        }),
+        ..Manifest::default()
+    };
+
+    let encoded = serialize_manifest(&manifest).unwrap();
+
+    assert!(encoded.contains("[adapters]"));
+    assert!(encoded.contains("enabled = [\"claude\", \"codex\", \"opencode\"]"));
+}
+
+#[test]
+fn serializes_launch_hooks() {
+    let manifest = Manifest {
+        launch_hooks: Some(LaunchHookConfig {
+            sync_on_startup: true,
+        }),
+        ..Manifest::default()
+    };
+
+    let encoded = serialize_manifest(&manifest).unwrap();
+
+    assert!(encoded.contains("[launch_hooks]"));
+    assert!(encoded.contains("sync_on_startup = true"));
+}
+
+#[test]
+fn rejects_empty_adapter_selection() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[adapters]
+enabled = []
+"#,
+    );
+
+    let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+    assert!(error.contains("adapters.enabled"));
+}
+
+#[test]
+fn rejects_duplicate_adapter_selection() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[adapters]
+enabled = ["codex", "codex"]
+"#,
+    );
+
+    let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+    assert!(error.contains("must not contain duplicates"));
+}
+
+#[test]
+fn rejects_unknown_adapter_selection() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[adapters]
+enabled = ["unknown"]
+"#,
+    );
+
+    let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+    assert!(error.contains("unknown variant"));
+}
+
+#[test]
+fn rejects_disabled_launch_hook_config() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[launch_hooks]
+sync_on_startup = false
+"#,
+    );
+
+    let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+    assert!(error.contains("launch_hooks.sync_on_startup"));
+}
+
+#[test]
+fn rejects_dependencies_with_multiple_git_sources() {
+    let dependency = DependencySpec {
+        github: Some("wenext-limited/playbook-ios".into()),
+        url: Some("https://github.com/wenext-limited/playbook-ios".into()),
+        path: None,
+        tag: Some("v0.1.0".into()),
+        branch: None,
+        revision: None,
+        version: None,
+        components: None,
+        managed: None,
+    };
+
+    let error = dependency.source_kind().unwrap_err().to_string();
+    assert!(error.contains("must not declare both `github` and `url`"));
+}
+
+#[test]
+fn parses_dependency_components() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[dependencies]
+playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.1.0", components = ["skills", "agents"] }
+"#,
+    );
+
+    let loaded = load_root_from_dir(temp.path()).unwrap();
+    let dependency = loaded.manifest.dependencies.get("playbook_ios").unwrap();
+    assert_eq!(
+        dependency.explicit_components_sorted().unwrap(),
+        vec![DependencyComponent::Skills, DependencyComponent::Agents]
+    );
+}
+
+#[test]
+fn parses_managed_dependency_tables() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[dependencies.superpowers]
+github = "org/superpowers"
+tag = "v1.2.3"
+
+[[dependencies.superpowers.managed]]
+source = "prompts/review.md"
+target = ".github/prompts/review.md"
+
+[[dependencies.superpowers.managed]]
+source = "templates"
+target = "docs/templates"
+"#,
+    );
+
+    let loaded = load_root_from_dir(temp.path()).unwrap();
+    let dependency = loaded.manifest.dependencies.get("superpowers").unwrap();
+    assert_eq!(
+        dependency.resolved_git_url().unwrap(),
+        "https://github.com/org/superpowers"
+    );
+    assert_eq!(dependency.managed_mappings().len(), 2);
+    assert_eq!(
+        dependency.managed_mappings()[0],
+        ManagedPathSpec {
+            source: PathBuf::from("prompts/review.md"),
+            target: PathBuf::from(".github/prompts/review.md"),
+        }
+    );
+    assert_eq!(
+        dependency.managed_mappings()[1],
+        ManagedPathSpec {
+            source: PathBuf::from("templates"),
+            target: PathBuf::from("docs/templates"),
+        }
+    );
+}
+
+#[test]
+fn rejects_empty_dependency_components() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[dependencies]
+playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.1.0", components = [] }
+"#,
+    );
+
+    let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+    assert!(error.contains("field `components` must not be empty"));
+}
+
+#[test]
+fn rejects_duplicate_dependency_components() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[dependencies]
+playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.1.0", components = ["skills", "skills"] }
+"#,
+    );
+
+    let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+    assert!(error.contains("must not contain duplicates"));
+}
+
+#[test]
+fn rejects_empty_dependency_managed_paths() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[dependencies.superpowers]
+github = "org/superpowers"
+tag = "v1.2.3"
+managed = []
+"#,
+    );
+
+    let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+    assert!(error.contains("field `managed` must not be empty"));
+}
+
+#[test]
+fn rejects_duplicate_dependency_managed_pairs() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[dependencies.superpowers]
+github = "org/superpowers"
+tag = "v1.2.3"
+
+[[dependencies.superpowers.managed]]
+source = "prompts/review.md"
+target = "docs/review.md"
+
+[[dependencies.superpowers.managed]]
+source = "./prompts/review.md"
+target = "./docs/review.md"
+"#,
+    );
+
+    let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+    assert!(error.contains("must not contain duplicate source/target pairs"));
+}
+
+#[test]
+fn rejects_dependency_managed_paths_with_parent_segments() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[dependencies.superpowers]
+github = "org/superpowers"
+tag = "v1.2.3"
+
+[[dependencies.superpowers.managed]]
+source = "../prompts/review.md"
+target = "docs/review.md"
+"#,
+    );
+
+    let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+    assert!(error.contains("managed.source"));
+}
+
+#[test]
+fn rejects_unknown_dependency_component() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[dependencies]
+playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.1.0", components = ["widgets"] }
+"#,
+    );
+
+    let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+    assert!(error.contains("unknown variant"));
+}
