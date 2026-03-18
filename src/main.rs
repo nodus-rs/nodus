@@ -4,6 +4,7 @@ mod cli;
 mod execution;
 mod git;
 mod info;
+mod list;
 mod local_config;
 mod lockfile;
 mod manifest;

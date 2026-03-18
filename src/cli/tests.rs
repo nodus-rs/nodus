@@ -127,6 +127,16 @@ fn parses_remove_subcommand() {
 }
 
 #[test]
+fn parses_list_subcommand() {
+    let cli = Cli::try_parse_from(["nodus", "list"]).unwrap();
+
+    match cli.command {
+        Command::List { json } => assert!(!json),
+        other => panic!("expected list command, got {other:?}"),
+    }
+}
+
+#[test]
 fn rejects_uninstall_subcommand() {
     let error = Cli::try_parse_from(["nodus", "uninstall", "playbook_ios"]).unwrap_err();
 
@@ -333,6 +343,7 @@ fn root_help_describes_commands() {
 
     assert!(help.contains("Nodus resolves agent packages from local paths and Git tags"));
     assert!(help.contains("Add a dependency and run sync"));
+    assert!(help.contains("List configured direct dependencies and any locked metadata"));
     assert!(help.contains("Display resolved package metadata"));
     assert!(help.contains("Check direct dependencies for newer tags or branch head changes"));
     assert!(help.contains("Update direct dependencies and resync managed outputs"));
@@ -397,7 +408,7 @@ fn review_help_describes_arguments() {
 #[test]
 fn read_only_help_mentions_json() {
     let mut root = <Cli as clap::CommandFactory>::command();
-    for name in ["info", "outdated", "doctor"] {
+    for name in ["list", "info", "outdated", "doctor"] {
         let help = root
             .find_subcommand_mut(name)
             .unwrap()
@@ -409,6 +420,72 @@ fn read_only_help_mentions_json() {
             "{name} help missing JSON description"
         );
     }
+}
+
+#[test]
+fn list_command_emits_human_readable_dependencies() {
+    let temp = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    write_file(
+        &temp.path().join("nodus.toml"),
+        r#"
+[dependencies]
+local_playbook = { path = "vendor/playbook", components = ["skills"] }
+"#,
+    );
+    write_skill(&temp.path().join("vendor/playbook/skills/review"), "Review");
+
+    let output = run_command_output(Command::List { json: false }, temp.path(), cache.path());
+
+    assert!(output.contains("local_playbook"));
+    assert!(output.contains("path vendor/playbook"));
+    assert!(output.contains("components skills"));
+    assert!(output.contains("unlocked"));
+    assert!(!output.contains("Finished"));
+}
+
+#[test]
+fn list_command_emits_json_with_locked_metadata() {
+    let temp = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    let (_repo, url) = create_git_dependency();
+
+    run_command_in_dir(
+        Command::Add {
+            url,
+            tag: Some("v0.1.0".into()),
+            branch: None,
+            revision: None,
+            adapter: vec![Adapter::Codex],
+            component: vec![],
+            sync_on_launch: false,
+            dry_run: false,
+        },
+        temp.path(),
+        cache.path(),
+        &Reporter::silent(),
+    )
+    .unwrap();
+    let alias = crate::manifest::load_root_from_dir(temp.path())
+        .unwrap()
+        .manifest
+        .dependencies
+        .keys()
+        .next()
+        .unwrap()
+        .clone();
+
+    let output = run_command_output(Command::List { json: true }, temp.path(), cache.path());
+
+    let json: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(json["dependencies"][0]["alias"], alias);
+    assert_eq!(json["dependencies"][0]["source"]["kind"], "git");
+    assert_eq!(json["dependencies"][0]["requested_ref"]["kind"], "tag");
+    assert_eq!(json["dependencies"][0]["requested_ref"]["value"], "v0.1.0");
+    assert_eq!(json["dependencies"][0]["locked"]["version_tag"], "v0.1.0");
+    assert!(json["dependencies"][0]["locked"]["rev"].as_str().is_some());
+    assert!(!output.contains("Finished"));
+    assert!(!output.contains("Checking"));
 }
 
 #[test]

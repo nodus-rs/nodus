@@ -130,6 +130,13 @@ pub(super) fn run_command_in_dir(
             reporter.finish(message)?;
             Ok(())
         }
+        Command::List { json } => {
+            if json {
+                write_json(reporter, &crate::list::list_dependencies_json_in_dir(cwd)?)
+            } else {
+                crate::list::list_dependencies_in_dir(cwd, reporter)
+            }
+        }
         Command::Info {
             package,
             tag,
@@ -440,7 +447,10 @@ pub(super) fn run_command_in_dir(
 
 fn uses_json_output(command: &Command) -> bool {
     match command {
-        Command::Info { json, .. } | Command::Outdated { json } | Command::Doctor { json } => *json,
+        Command::List { json }
+        | Command::Info { json, .. }
+        | Command::Outdated { json }
+        | Command::Doctor { json } => *json,
         _ => false,
     }
 }

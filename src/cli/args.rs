@@ -84,6 +84,14 @@ pub(super) enum Command {
         )]
         dry_run: bool,
     },
+    #[command(about = "List configured direct dependencies and any locked metadata")]
+    List {
+        #[arg(
+            long,
+            help = "Emit machine-readable JSON instead of human-readable text"
+        )]
+        json: bool,
+    },
     #[command(about = "Display resolved package metadata")]
     Info {
         #[arg(
