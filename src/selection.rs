@@ -1,7 +1,10 @@
-use std::io::{self, BufRead, IsTerminal, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::Path;
 
+use anstream::{AutoStream, ColorChoice};
+use anstyle::{AnsiColor, Style};
 use anyhow::{Result, bail};
+use dialoguer::{Select, theme::ColorfulTheme};
 
 use crate::adapters::{Adapter, Adapters};
 use crate::manifest::Manifest;
@@ -101,46 +104,80 @@ fn normalize_adapters(adapters: &[Adapter]) -> Vec<Adapter> {
 }
 
 fn prompt_for_adapter(project_root: &Path) -> Result<Adapter> {
-    let stdin = io::stdin();
-    let mut stdin = stdin.lock();
-    let stderr = io::stderr();
-    let mut stderr = stderr.lock();
-    prompt_for_adapter_from(project_root, &mut stdin, &mut stderr)
+    render_missing_adapter_notice(project_root)?;
+
+    let selection = Select::with_theme(&adapter_prompt_theme())
+        .with_prompt("Select an adapter to install")
+        .items(adapter_prompt_items())
+        .default(0)
+        .interact_on_opt(&dialoguer::console::Term::stderr())?;
+
+    let Some(index) = selection else {
+        bail!("adapter selection cancelled");
+    };
+
+    Ok(Adapter::ALL[index])
 }
 
-fn prompt_for_adapter_from(
+fn render_missing_adapter_notice(project_root: &Path) -> Result<()> {
+    let mut output = AutoStream::new(io::stderr().lock(), ColorChoice::Auto);
+    render_missing_adapter_notice_to(project_root, output.current_choice(), &mut output)
+}
+
+fn render_missing_adapter_notice_to(
     project_root: &Path,
-    input: &mut impl BufRead,
+    color_choice: ColorChoice,
     output: &mut impl Write,
-) -> Result<Adapter> {
+) -> Result<()> {
     writeln!(
         output,
-        "No adapter configuration found in {}.",
-        project_root.display()
+        "{} no adapter configuration found in {}",
+        paint("warning:", warning_style(), color_choice),
+        project_root.display(),
     )?;
-    writeln!(output, "Select an adapter to install:")?;
-    writeln!(output, "  1. agents")?;
-    writeln!(output, "  2. claude")?;
-    writeln!(output, "  3. codex")?;
-    writeln!(output, "  4. cursor")?;
-    writeln!(output, "  5. opencode")?;
-    write!(output, "> ")?;
+    writeln!(
+        output,
+        "{} use arrow keys to choose an adapter, then press Enter",
+        paint("note:", note_style(), color_choice),
+    )?;
     output.flush()?;
-
-    let mut line = String::new();
-    input.read_line(&mut line)?;
-    parse_prompt_answer(&line)
+    Ok(())
 }
 
-fn parse_prompt_answer(answer: &str) -> Result<Adapter> {
-    match answer.trim().to_ascii_lowercase().as_str() {
-        "1" | "agents" => Ok(Adapter::Agents),
-        "2" | "claude" => Ok(Adapter::Claude),
-        "3" | "codex" => Ok(Adapter::Codex),
-        "4" | "cursor" => Ok(Adapter::Cursor),
-        "5" | "opencode" | "open-code" => Ok(Adapter::OpenCode),
-        other => bail!("invalid adapter selection `{other}`"),
+fn adapter_prompt_items() -> &'static [&'static str; Adapter::ALL.len()] {
+    &["agents", "claude", "codex", "cursor", "opencode"]
+}
+
+fn adapter_prompt_theme() -> ColorfulTheme {
+    ColorfulTheme {
+        active_item_style: dialoguer::console::Style::new().cyan().bold(),
+        active_item_prefix: dialoguer::console::Style::new()
+            .cyan()
+            .bold()
+            .apply_to(">".to_string()),
+        checked_item_prefix: dialoguer::console::Style::new()
+            .cyan()
+            .bold()
+            .apply_to(">".to_string()),
+        prompt_style: dialoguer::console::Style::new().cyan().bold(),
+        ..ColorfulTheme::default()
     }
+}
+
+fn paint(value: &str, style: Style, choice: ColorChoice) -> String {
+    if matches!(choice, ColorChoice::Never) {
+        value.to_string()
+    } else {
+        format!("{style}{value}{style:#}")
+    }
+}
+
+fn warning_style() -> Style {
+    Style::new().bold().fg_color(Some(AnsiColor::Yellow.into()))
+}
+
+fn note_style() -> Style {
+    Style::new().bold().fg_color(Some(AnsiColor::Cyan.into()))
 }
 
 #[cfg(test)]
@@ -192,9 +229,26 @@ mod tests {
     }
 
     #[test]
-    fn prompt_parser_accepts_numeric_choices() {
-        assert_eq!(parse_prompt_answer("3\n").unwrap(), Adapter::Codex);
-        assert_eq!(parse_prompt_answer("cursor").unwrap(), Adapter::Cursor);
-        assert_eq!(parse_prompt_answer("open-code").unwrap(), Adapter::OpenCode);
+    fn adapter_prompt_items_follow_supported_adapter_order() {
+        assert_eq!(
+            adapter_prompt_items(),
+            &["agents", "claude", "codex", "cursor", "opencode"]
+        );
+        assert_eq!(adapter_prompt_items().len(), Adapter::ALL.len());
+    }
+
+    #[test]
+    fn missing_adapter_notice_mentions_project_root_and_guidance() {
+        let temp = TempDir::new().unwrap();
+        let mut output = Vec::new();
+
+        render_missing_adapter_notice_to(temp.path(), ColorChoice::Never, &mut output).unwrap();
+
+        let rendered = String::from_utf8(output).unwrap();
+        assert!(rendered.contains(&format!(
+            "warning: no adapter configuration found in {}",
+            temp.path().display()
+        )));
+        assert!(rendered.contains("note: use arrow keys to choose an adapter, then press Enter"));
     }
 }
