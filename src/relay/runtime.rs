@@ -894,6 +894,7 @@ fn build_mappings(
         for adapter in [
             Adapter::Agents,
             Adapter::Claude,
+            Adapter::Codex,
             Adapter::Cursor,
             Adapter::OpenCode,
         ] {
@@ -946,7 +947,6 @@ fn build_mappings(
         }
         for (adapter, kind) in [
             (Adapter::Claude, ArtifactKind::Rule),
-            (Adapter::Codex, ArtifactKind::Rule),
             (Adapter::Cursor, ArtifactKind::Rule),
             (Adapter::OpenCode, ArtifactKind::Rule),
         ] {
@@ -1367,12 +1367,7 @@ mod tests {
             );
         }
         let rule_suffix = "\nRelay rule update.\n";
-        for adapter in [
-            Adapter::Claude,
-            Adapter::Codex,
-            Adapter::Cursor,
-            Adapter::OpenCode,
-        ] {
+        for adapter in [Adapter::Claude, Adapter::Cursor, Adapter::OpenCode] {
             append_file(
                 &managed_artifact_path(
                     project.path(),
@@ -1616,25 +1611,13 @@ target = ".github/prompts/review.md"
             &[Adapter::Claude, Adapter::Codex],
         );
         append_file(
-            &managed_artifact_path(
-                project.path(),
-                Adapter::Claude,
-                ArtifactKind::Rule,
-                &package,
-                "policy",
-            )
-            .unwrap(),
+            &managed_skill_root(project.path(), Adapter::Claude, &package, "review")
+                .join("SKILL.md"),
             "\nClaude change.\n",
         );
         append_file(
-            &managed_artifact_path(
-                project.path(),
-                Adapter::Codex,
-                ArtifactKind::Rule,
-                &package,
-                "policy",
-            )
-            .unwrap(),
+            &managed_skill_root(project.path(), Adapter::Codex, &package, "review")
+                .join("SKILL.md"),
             "\nCodex change.\n",
         );
 
@@ -1829,15 +1812,9 @@ target = ".github/prompts/review.md"
             &[Adapter::Claude, Adapter::Codex],
         );
         assert!(
-            managed_artifact_path(
-                project.path(),
-                Adapter::Codex,
-                ArtifactKind::Rule,
-                &package,
-                "policy",
-            )
-            .unwrap()
-            .exists()
+            managed_skill_root(project.path(), Adapter::Codex, &package, "review")
+                .join("SKILL.md")
+                .exists()
         );
     }
 
@@ -1907,15 +1884,9 @@ tag = {:?}
             &[Adapter::Claude, Adapter::Codex],
         );
         assert!(
-            managed_artifact_path(
-                project.path(),
-                Adapter::Codex,
-                ArtifactKind::Rule,
-                &package,
-                "policy",
-            )
-            .unwrap()
-            .exists()
+            managed_skill_root(project.path(), Adapter::Codex, &package, "review")
+                .join("SKILL.md")
+                .exists()
         );
     }
 

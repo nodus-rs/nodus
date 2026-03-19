@@ -3086,7 +3086,6 @@ shared = { path = "vendor/shared" }
         let managed_agent_file = namespaced_file_name(dependency, "shared", "md");
         let managed_command_file = namespaced_file_name(dependency, "build", "md");
         let managed_claude_rule_file = namespaced_file_name(dependency, "default", "md");
-        let managed_codex_rule_file = namespaced_file_name(dependency, "default", "rules");
         let managed_cursor_rule_file = namespaced_file_name(dependency, "default", "mdc");
 
         assert!(
@@ -3111,7 +3110,7 @@ shared = { path = "vendor/shared" }
         );
         assert!(
             temp.path()
-                .join(format!(".codex/rules/{managed_codex_rule_file}"))
+                .join(format!(".codex/skills/{managed_skill_id}/SKILL.md"))
                 .exists()
         );
         assert!(
@@ -3207,7 +3206,6 @@ shared = { path = "vendor/shared", components = ["skills"] }
         let managed_agent_file = namespaced_file_name(dependency, "shared", "md");
         let managed_command_file = namespaced_file_name(dependency, "build", "md");
         let managed_claude_rule_file = namespaced_file_name(dependency, "default", "md");
-        let managed_codex_rule_file = namespaced_file_name(dependency, "default", "rules");
 
         assert_eq!(
             dependency.selected_components,
@@ -3248,15 +3246,14 @@ shared = { path = "vendor/shared", components = ["skills"] }
                 .exists()
         );
         assert!(
-            !temp
-                .path()
-                .join(format!(".claude/rules/{managed_claude_rule_file}"))
+            temp.path()
+                .join(format!(".codex/skills/{managed_skill_id}/SKILL.md"))
                 .exists()
         );
         assert!(
             !temp
                 .path()
-                .join(format!(".codex/rules/{managed_codex_rule_file}"))
+                .join(format!(".claude/rules/{managed_claude_rule_file}"))
                 .exists()
         );
         assert!(
@@ -3323,7 +3320,6 @@ shared = { path = "vendor/shared", components = ["skills"] }
             .find(|package| matches!(package.source, PackageSource::Root))
             .unwrap();
         let managed_skill_id = namespaced_skill_id(root_package, "review");
-        let managed_codex_rule_file = namespaced_file_name(root_package, "default", "rules");
         let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
 
         assert!(
@@ -3335,7 +3331,7 @@ shared = { path = "vendor/shared", components = ["skills"] }
         assert!(
             !temp
                 .path()
-                .join(format!(".codex/rules/{managed_codex_rule_file}"))
+                .join(format!(".codex/skills/{managed_skill_id}/SKILL.md"))
                 .exists()
         );
         assert!(
@@ -3346,7 +3342,7 @@ shared = { path = "vendor/shared", components = ["skills"] }
         assert!(
             !lockfile
                 .managed_files
-                .contains(&".codex/rules/default.rules".into())
+                .contains(&".codex/skills/review".into())
         );
     }
 
@@ -3373,7 +3369,6 @@ publish_root = true
             .unwrap();
         let managed_skill_id = namespaced_skill_id(root_package, "review");
         let managed_claude_rule_file = namespaced_file_name(root_package, "default", "md");
-        let managed_codex_rule_file = namespaced_file_name(root_package, "default", "rules");
         let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
 
         assert!(
@@ -3398,12 +3393,6 @@ publish_root = true
         );
         assert!(
             temp.path()
-                .join(format!(".codex/rules/{managed_codex_rule_file}"))
-                .exists()
-        );
-        assert!(
-            !temp
-                .path()
                 .join(format!(".codex/skills/{managed_skill_id}/SKILL.md"))
                 .exists()
         );
@@ -3415,7 +3404,7 @@ publish_root = true
         assert!(
             lockfile
                 .managed_files
-                .contains(&".codex/rules/default.rules".into())
+                .contains(&".codex/skills/review".into())
         );
     }
 
@@ -3457,7 +3446,7 @@ shared = { path = "vendor/shared" }
         assert!(codex_gitignore.contains("# Managed by nodus"));
         assert!(codex_gitignore.contains(".gitignore"));
         let (_, suffix) = managed_skill_id.rsplit_once('_').unwrap();
-        assert!(codex_gitignore.contains(&format!("rules/*_{suffix}.rules")));
+        assert!(codex_gitignore.contains(&format!("skills/*_{suffix}/")));
         let (_, command_suffix) = managed_command_file
             .trim_end_matches(".md")
             .rsplit_once('_')
@@ -5001,13 +4990,10 @@ other = { path = "vendor/other" }
         let other_command_file = namespaced_file_name(other, "build", "md");
         let shared_claude_rule_file = namespaced_file_name(shared, "default", "md");
         let other_claude_rule_file = namespaced_file_name(other, "default", "md");
-        let shared_codex_rule_file = namespaced_file_name(shared, "default", "rules");
-        let other_codex_rule_file = namespaced_file_name(other, "default", "rules");
 
         assert_ne!(shared_agent_file, other_agent_file);
         assert_ne!(shared_command_file, other_command_file);
         assert_ne!(shared_claude_rule_file, other_claude_rule_file);
-        assert_ne!(shared_codex_rule_file, other_codex_rule_file);
 
         assert!(
             temp.path()
@@ -5037,16 +5023,6 @@ other = { path = "vendor/other" }
         assert!(
             temp.path()
                 .join(format!(".claude/rules/{other_claude_rule_file}"))
-                .exists()
-        );
-        assert!(
-            temp.path()
-                .join(format!(".codex/rules/{shared_codex_rule_file}"))
-                .exists()
-        );
-        assert!(
-            temp.path()
-                .join(format!(".codex/rules/{other_codex_rule_file}"))
                 .exists()
         );
         assert!(

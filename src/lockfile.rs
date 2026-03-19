@@ -331,7 +331,7 @@ mod tests {
             }],
             vec![
                 ".claude/skills/review".into(),
-                ".codex/rules/safe-shell.rules".into(),
+                ".codex/skills/review".into(),
             ],
         );
 
@@ -504,7 +504,6 @@ managed_files = []
                 ".claude/agents/security.md".into(),
                 ".claude/commands/build.md".into(),
                 ".claude/rules/default.md".into(),
-                ".codex/rules/default.rules".into(),
                 ".cursor/commands/build.md".into(),
                 ".cursor/rules/default.mdc".into(),
                 ".opencode/agents/security.md".into(),
@@ -526,9 +525,6 @@ managed_files = []
         )));
         assert!(managed_paths.contains(&PathBuf::from(
             "/tmp/project/.claude/rules/default_01f556.md"
-        )));
-        assert!(managed_paths.contains(&PathBuf::from(
-            "/tmp/project/.codex/rules/default_01f556.rules"
         )));
         assert!(managed_paths.contains(&PathBuf::from(
             "/tmp/project/.cursor/commands/build_01f556.md"

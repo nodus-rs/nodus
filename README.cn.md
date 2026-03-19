@@ -585,7 +585,7 @@ Nodus 只管理它自己写入的文件。
 - Claude：发现到的 agents 会复制到 `.claude/agents/<agent-id>_<source-id>.md`
 - Claude：发现到的 commands 会复制到 `.claude/commands/<command-id>_<source-id>.md`
 - Claude：发现到的 rules 会复制到 `.claude/rules/<rule-id>_<source-id>.md`
-- Codex：发现到的 rules 会复制到 `.codex/rules/<rule-id>_<source-id>.rules`
+- Codex：发现到的 skills 会复制到 `.codex/skills/<skill-id>_<source-id>/`
 - Cursor：发现到的 skills 会复制到 `.cursor/skills/<skill-id>_<source-id>/`
 - Cursor：发现到的 commands 会复制到 `.cursor/commands/<command-id>_<source-id>.md`
 - Cursor：发现到的 rules 会复制到 `.cursor/rules/<rule-id>_<source-id>.mdc`
@@ -599,7 +599,7 @@ Nodus 只管理它自己写入的文件。
 - Git 依赖使用锁定提交 SHA 的前 6 个字符
 - 根包和本地路径包使用包内容摘要的前 6 个字符
 
-在 `nodus.lock` 中，受管理运行时输出会用稳定的逻辑根路径来跟踪，例如 `.agents/skills/<skill-id>`、`.agents/commands/<command-id>.md`、`.claude/skills/<skill-id>`、`.codex/rules/<rule-id>.rules`、`.cursor/rules/<rule-id>.mdc` 以及 `.opencode/commands/<command-id>.md`。在同步和 doctor 期间，Nodus 会根据锁定的包来源，把这些逻辑路径重新展开为带后缀的具体目录或文件。
+在 `nodus.lock` 中，受管理运行时输出会用稳定的逻辑根路径来跟踪，例如 `.agents/skills/<skill-id>`、`.agents/commands/<command-id>.md`、`.claude/skills/<skill-id>`、`.codex/skills/<skill-id>`、`.cursor/rules/<rule-id>.mdc` 以及 `.opencode/commands/<command-id>.md`。在同步和 doctor 期间，Nodus 会根据锁定的包来源，把这些逻辑路径重新展开为带后缀的具体目录或文件。
 
 对于每个选中的运行时根目录，Nodus 还会写入一个受管理的 `.gitignore` 文件，用来忽略它自己以及该根目录下生成的运行时输出。
 
