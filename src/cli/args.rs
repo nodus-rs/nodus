@@ -35,6 +35,11 @@ pub(super) enum Command {
         url: String,
         #[arg(
             long,
+            help = "Record the dependency under `[dev-dependencies]` instead of `[dependencies]`"
+        )]
+        dev: bool,
+        #[arg(
+            long,
             conflicts_with_all = ["branch", "revision"],
             help = "Pin a specific Git tag instead of resolving the latest tag"
         )]
@@ -84,7 +89,7 @@ pub(super) enum Command {
         )]
         dry_run: bool,
     },
-    #[command(about = "List configured direct dependencies and any locked metadata")]
+    #[command(about = "List configured dependencies and any locked metadata")]
     List {
         #[arg(
             long,
@@ -132,7 +137,7 @@ pub(super) enum Command {
         )]
         model: Option<String>,
     },
-    #[command(about = "Check direct dependencies for newer tags or branch head changes")]
+    #[command(about = "Check configured dependencies for newer tags or branch head changes")]
     Outdated {
         #[arg(
             long,
@@ -140,7 +145,7 @@ pub(super) enum Command {
         )]
         json: bool,
     },
-    #[command(about = "Update direct dependencies and resync managed outputs")]
+    #[command(about = "Update configured dependencies and resync managed outputs")]
     Update {
         #[arg(
             long = "allow-high-sensitivity",

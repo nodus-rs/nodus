@@ -9,8 +9,8 @@ use crate::execution::ExecutionMode;
 use crate::git::{ensure_git_dependency, latest_tag, prepare_repository_mirror};
 use crate::lockfile::Lockfile;
 use crate::manifest::{
-    DependencySourceKind, DependencySpec, PackageRole, RequestedGitRef, load_dependency_from_dir,
-    load_root_from_dir,
+    DependencyKind, DependencySourceKind, DependencySpec, PackageRole, RequestedGitRef,
+    load_dependency_from_dir, load_root_from_dir,
 };
 use crate::report::Reporter;
 use crate::resolver::sync_in_dir_with_loaded_root;
@@ -82,75 +82,76 @@ fn update_direct_dependencies_in_dir_mode(
 ) -> Result<UpdateSummary> {
     crate::relay::ensure_no_pending_relay_edits_in_dir(cwd, cache_root)?;
     let mut root = load_root_from_dir(cwd)?;
-    let dependency_count = root.manifest.dependencies.len();
+    let dependency_count = root.manifest.all_dependency_entries().len();
     if dependency_count == 0 {
-        reporter.note("no direct dependencies configured")?;
+        reporter.note("no dependencies configured")?;
         return Ok(UpdateSummary {
             updated_count: 0,
             managed_file_count: 0,
         });
     }
 
-    reporter.status(
-        "Checking",
-        format!("{dependency_count} direct dependencies"),
-    )?;
+    reporter.status("Checking", format!("{dependency_count} dependencies"))?;
     let existing_lockfile = load_lockfile(cwd)?;
     let dependencies = root
         .manifest
-        .dependencies
-        .iter()
-        .map(|(alias, spec)| DependencySnapshot {
-            alias: alias.clone(),
-            spec: spec.clone(),
+        .all_dependency_entries()
+        .into_iter()
+        .map(|entry| DependencySnapshot {
+            alias: entry.alias.to_string(),
+            spec: entry.spec.clone(),
         })
         .collect::<Vec<_>>();
     let plans = plan_dependency_updates(&dependencies, existing_lockfile.as_ref(), cache_root)?;
     let mut updated_count = 0;
     let mut manifest_changed = false;
 
-    for (alias, dependency) in &mut root.manifest.dependencies {
-        let plan = plans
-            .get(alias.as_str())
-            .ok_or_else(|| anyhow::anyhow!("missing dependency update plan for `{alias}`"))?;
-        match plan {
-            DependencyUpdatePlan::Path => {}
-            DependencyUpdatePlan::GitTag {
-                current_tag,
-                latest_tag,
-            } => {
-                if latest_tag != current_tag {
-                    reporter.note(format!(
-                        "updating {alias} tag {current_tag} -> {latest_tag}"
-                    ))?;
-                    dependency.tag = Some(latest_tag.clone());
-                    updated_count += 1;
-                    manifest_changed = true;
+    for kind in [DependencyKind::Dependency, DependencyKind::DevDependency] {
+        for (alias, dependency) in root.manifest.dependency_section_mut(kind) {
+            let plan = plans
+                .get(alias.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing dependency update plan for `{alias}`"))?;
+            match plan {
+                DependencyUpdatePlan::Path => {}
+                DependencyUpdatePlan::GitTag {
+                    current_tag,
+                    latest_tag,
+                } => {
+                    if latest_tag != current_tag {
+                        reporter.note(format!(
+                            "updating {} tag {current_tag} -> {latest_tag}",
+                            display_alias(alias, kind)
+                        ))?;
+                        dependency.tag = Some(latest_tag.clone());
+                        updated_count += 1;
+                        manifest_changed = true;
+                    }
                 }
+                DependencyUpdatePlan::GitBranch {
+                    branch,
+                    locked_rev,
+                    latest_rev,
+                    latest_version,
+                } => {
+                    if locked_rev.as_deref() != Some(latest_rev.as_str()) {
+                        let previous = locked_rev
+                            .as_ref()
+                            .map(|rev| short_rev(rev))
+                            .unwrap_or_else(|| "none".into());
+                        reporter.note(format!(
+                            "updating {} branch {branch} {previous} -> {}",
+                            display_alias(alias, kind),
+                            short_rev(latest_rev)
+                        ))?;
+                        updated_count += 1;
+                    }
+                    if &dependency.version != latest_version {
+                        dependency.version = latest_version.clone();
+                        manifest_changed = true;
+                    }
+                }
+                DependencyUpdatePlan::GitRevision => {}
             }
-            DependencyUpdatePlan::GitBranch {
-                branch,
-                locked_rev,
-                latest_rev,
-                latest_version,
-            } => {
-                if locked_rev.as_deref() != Some(latest_rev.as_str()) {
-                    let previous = locked_rev
-                        .as_ref()
-                        .map(|rev| short_rev(rev))
-                        .unwrap_or_else(|| "none".into());
-                    reporter.note(format!(
-                        "updating {alias} branch {branch} {previous} -> {}",
-                        short_rev(latest_rev)
-                    ))?;
-                    updated_count += 1;
-                }
-                if &dependency.version != latest_version {
-                    dependency.version = latest_version.clone();
-                    manifest_changed = true;
-                }
-            }
-            DependencyUpdatePlan::GitRevision => {}
         }
     }
 
@@ -305,6 +306,14 @@ fn short_rev(rev: &str) -> String {
     rev.chars().take(12).collect()
 }
 
+fn display_alias(alias: &str, kind: DependencyKind) -> String {
+    if kind.is_dev() {
+        format!("{alias} [dev]")
+    } else {
+        alias.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -373,6 +382,7 @@ mod tests {
             &repo.path().to_string_lossy(),
             crate::git::AddDependencyOptions {
                 git_ref: Some(RequestedGitRef::Tag("v0.1.0")),
+                kind: DependencyKind::Dependency,
                 adapters: &[Adapter::Codex],
                 components: &[],
                 sync_on_launch: false,
@@ -422,6 +432,7 @@ mod tests {
             &repo.path().to_string_lossy(),
             crate::git::AddDependencyOptions {
                 git_ref: None,
+                kind: DependencyKind::Dependency,
                 adapters: &[Adapter::Codex],
                 components: &[],
                 sync_on_launch: false,
@@ -480,6 +491,7 @@ mod tests {
             &repo.path().to_string_lossy(),
             crate::git::AddDependencyOptions {
                 git_ref: Some(RequestedGitRef::Revision(revision.as_str())),
+                kind: DependencyKind::Dependency,
                 adapters: &[Adapter::Codex],
                 components: &[],
                 sync_on_launch: false,
@@ -513,6 +525,47 @@ mod tests {
         assert_eq!(summary.updated_count, 0);
         assert_eq!(dependency.revision.as_deref(), Some(revision.as_str()));
         assert_eq!(locked.source.rev.as_deref(), Some(revision.as_str()));
+    }
+
+    #[test]
+    fn updates_dev_dependencies() {
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        let repo = TempDir::new().unwrap();
+        write_skill(&repo.path().join("skills/review"), "Review");
+        init_git_repo(repo.path());
+        run_git(repo.path(), &["tag", "v0.1.0"]);
+
+        add_dependency_in_dir_with_adapters(
+            project.path(),
+            cache.path(),
+            &repo.path().to_string_lossy(),
+            crate::git::AddDependencyOptions {
+                git_ref: Some(RequestedGitRef::Tag("v0.1.0")),
+                kind: DependencyKind::DevDependency,
+                adapters: &[Adapter::Codex],
+                components: &[],
+                sync_on_launch: false,
+            },
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        run_git(repo.path(), &["tag", "v0.2.0"]);
+
+        let summary = update_direct_dependencies_in_dir(
+            project.path(),
+            cache.path(),
+            false,
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        let root = load_root_from_dir(project.path()).unwrap();
+        let dependency = root.manifest.dev_dependencies.values().next().unwrap();
+
+        assert_eq!(summary.updated_count, 1);
+        assert_eq!(dependency.tag.as_deref(), Some("v0.2.0"));
     }
 
     #[test]

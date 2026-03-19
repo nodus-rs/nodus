@@ -366,6 +366,7 @@ pub(super) fn collect_ignored_field_warnings(table: &Table) -> Vec<String> {
         "adapters",
         "launch_hooks",
         "dependencies",
+        "dev-dependencies",
     ];
 
     let mut warnings = Vec::new();

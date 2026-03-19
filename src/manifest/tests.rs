@@ -82,6 +82,23 @@ playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.1.0" }
 }
 
 #[test]
+fn accepts_root_project_with_only_dev_dependencies() {
+    let temp = TempDir::new().unwrap();
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[dev-dependencies]
+playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.1.0" }
+"#,
+    );
+
+    let loaded = load_root_from_dir(temp.path()).unwrap();
+    assert!(loaded.discovered.is_empty());
+    assert!(loaded.manifest.dependencies.is_empty());
+    assert_eq!(loaded.manifest.dev_dependencies.len(), 1);
+}
+
+#[test]
 fn does_not_warn_for_supported_launch_hook_config() {
     let temp = TempDir::new().unwrap();
     write_valid_skill(temp.path());
@@ -469,6 +486,38 @@ fn prefers_standard_layout_over_marketplace_fallback() {
 }
 
 #[test]
+fn marketplace_fallback_still_runs_with_only_dev_dependencies() {
+    let temp = TempDir::new().unwrap();
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[dev-dependencies]
+tooling = { github = "example/tooling", tag = "v0.1.0" }
+"#,
+    );
+    write_marketplace(
+        temp.path(),
+        r#"{
+  "plugins": [
+    {
+      "name": "Axiom",
+      "source": "./plugins/axiom"
+    }
+  ]
+}"#,
+    );
+    write_file(
+        &temp.path().join("plugins/axiom/skills/axiom/SKILL.md"),
+        "---\nname: Axiom\ndescription: Axiom skill.\n---\n# Axiom\n",
+    );
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    assert!(loaded.manifest.dev_dependencies.contains_key("tooling"));
+    assert!(loaded.manifest.dependencies.contains_key("axiom"));
+}
+
+#[test]
 fn rejects_invalid_git_dependency_without_tag() {
     let temp = TempDir::new().unwrap();
     write_valid_skill(temp.path());
@@ -663,6 +712,31 @@ fn serializes_managed_dependencies_as_expanded_tables() {
 }
 
 #[test]
+fn serializes_dev_dependencies() {
+    let mut manifest = Manifest::default();
+    manifest.dev_dependencies.insert(
+        "tooling".into(),
+        DependencySpec {
+            github: Some("org/tooling".into()),
+            url: None,
+            path: None,
+            tag: Some("v1.2.3".into()),
+            branch: None,
+            revision: None,
+            version: None,
+            components: Some(vec![DependencyComponent::Skills]),
+            managed: None,
+        },
+    );
+
+    let encoded = serialize_manifest(&manifest).unwrap();
+
+    assert!(encoded.contains("[dev-dependencies]"));
+    assert!(encoded.contains("tooling = {"));
+    assert!(encoded.contains("components = [\"skills\"]"));
+}
+
+#[test]
 fn serializes_adapters_in_stable_sorted_order() {
     let manifest = Manifest {
         adapters: Some(AdapterConfig {
@@ -835,6 +909,46 @@ target = "docs/templates"
             source: PathBuf::from("templates"),
             target: PathBuf::from("docs/templates"),
         }
+    );
+}
+
+#[test]
+fn rejects_duplicate_aliases_across_dependency_sections() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[dependencies]
+playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.1.0" }
+
+[dev-dependencies]
+playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.1.0" }
+"#,
+    );
+
+    let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+    assert!(error.contains("more than one dependency section"));
+}
+
+#[test]
+fn parses_dev_dependency_tables() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[dev-dependencies.tooling]
+github = "org/tooling"
+tag = "v1.2.3"
+"#,
+    );
+
+    let loaded = load_root_from_dir(temp.path()).unwrap();
+    let dependency = loaded.manifest.dev_dependencies.get("tooling").unwrap();
+    assert_eq!(
+        dependency.resolved_git_url().unwrap(),
+        "https://github.com/org/tooling"
     );
 }
 

@@ -7,7 +7,9 @@ use serde::Serialize;
 
 use crate::git::{ensure_git_dependency, latest_tag, prepare_repository_mirror};
 use crate::lockfile::Lockfile;
-use crate::manifest::{DependencySourceKind, DependencySpec, RequestedGitRef, load_root_from_dir};
+use crate::manifest::{
+    DependencyKind, DependencySourceKind, DependencySpec, RequestedGitRef, load_root_from_dir,
+};
 use crate::paths::display_path;
 use crate::report::Reporter;
 
@@ -58,6 +60,7 @@ enum DependencyStatus {
 #[derive(Debug, Clone, Serialize)]
 pub struct DependencyReport {
     alias: String,
+    kind: DependencyKind,
     #[serde(flatten)]
     status: DependencyStatus,
 }
@@ -65,6 +68,7 @@ pub struct DependencyReport {
 #[derive(Debug, Clone)]
 struct DependencySnapshot {
     alias: String,
+    kind: DependencyKind,
     spec: DependencySpec,
 }
 
@@ -122,7 +126,7 @@ impl DependencyReport {
                 format!("pinned to revision {}", short_rev(rev))
             }
         };
-        format!("{:<20} {}", self.alias, status)
+        format!("{:<20} {}", display_alias(&self.alias, self.kind), status)
     }
 }
 
@@ -133,7 +137,7 @@ pub fn check_outdated_in_dir(
 ) -> Result<OutdatedSummary> {
     let report = collect_outdated_reports_in_dir(cwd, cache_root)?;
     if report.dependency_count == 0 {
-        reporter.note("no direct dependencies configured")?;
+        reporter.note("no dependencies configured")?;
         return Ok(OutdatedSummary {
             dependency_count: report.dependency_count,
             outdated_count: 0,
@@ -142,7 +146,7 @@ pub fn check_outdated_in_dir(
 
     reporter.status(
         "Checking",
-        format!("{} direct dependencies", report.dependency_count),
+        format!("{} dependencies", report.dependency_count),
     )?;
     for report in &report.dependencies {
         reporter.line(report.render())?;
@@ -160,7 +164,7 @@ pub fn check_outdated_json_in_dir(cwd: &Path, cache_root: &Path) -> Result<Outda
 
 fn collect_outdated_reports_in_dir(cwd: &Path, cache_root: &Path) -> Result<OutdatedReportSet> {
     let root = load_root_from_dir(cwd)?;
-    let dependency_count = root.manifest.dependencies.len();
+    let dependency_count = root.manifest.all_dependency_entries().len();
     if dependency_count == 0 {
         return Ok(OutdatedReportSet {
             dependency_count,
@@ -172,11 +176,12 @@ fn collect_outdated_reports_in_dir(cwd: &Path, cache_root: &Path) -> Result<Outd
     let lockfile = load_lockfile(cwd)?;
     let dependencies = root
         .manifest
-        .dependencies
-        .iter()
-        .map(|(alias, spec)| DependencySnapshot {
-            alias: alias.clone(),
-            spec: spec.clone(),
+        .all_dependency_entries()
+        .into_iter()
+        .map(|entry| DependencySnapshot {
+            alias: entry.alias.to_string(),
+            kind: entry.kind,
+            spec: entry.spec.clone(),
         })
         .collect::<Vec<_>>();
     let probes = probe_dependencies(&dependencies, lockfile.as_ref(), cache_root)?;
@@ -185,6 +190,7 @@ fn collect_outdated_reports_in_dir(cwd: &Path, cache_root: &Path) -> Result<Outd
         .map(|dependency| {
             report_for_dependency(
                 &dependency.alias,
+                dependency.kind,
                 probes.get(&dependency.alias).with_context(|| {
                     format!("missing dependency probe for `{}`", dependency.alias)
                 })?,
@@ -292,7 +298,11 @@ fn probe_dependencies(
     Ok(probes)
 }
 
-fn report_for_dependency(alias: &str, probe: &DependencyProbe) -> Result<DependencyReport> {
+fn report_for_dependency(
+    alias: &str,
+    kind: DependencyKind,
+    probe: &DependencyProbe,
+) -> Result<DependencyReport> {
     let status = match probe {
         DependencyProbe::Path { path } => DependencyStatus::Path { path: path.clone() },
         DependencyProbe::GitTag {
@@ -336,8 +346,17 @@ fn report_for_dependency(alias: &str, probe: &DependencyProbe) -> Result<Depende
 
     Ok(DependencyReport {
         alias: alias.to_string(),
+        kind,
         status,
     })
+}
+
+fn display_alias(alias: &str, kind: DependencyKind) -> String {
+    if kind.is_dev() {
+        format!("{alias} [dev]")
+    } else {
+        alias.to_string()
+    }
 }
 
 fn load_lockfile(cwd: &Path) -> Result<Option<Lockfile>> {
@@ -456,6 +475,7 @@ mod tests {
             &repo.path().to_string_lossy(),
             crate::git::AddDependencyOptions {
                 git_ref: Some(RequestedGitRef::Tag("v0.1.0")),
+                kind: DependencyKind::Dependency,
                 adapters: &[Adapter::Codex],
                 components: &[],
                 sync_on_launch: false,
@@ -488,6 +508,7 @@ mod tests {
             &repo.path().to_string_lossy(),
             crate::git::AddDependencyOptions {
                 git_ref: Some(RequestedGitRef::Tag("v0.1.0")),
+                kind: DependencyKind::Dependency,
                 adapters: &[Adapter::Codex],
                 components: &[],
                 sync_on_launch: false,
@@ -521,6 +542,7 @@ mod tests {
             &repo.path().to_string_lossy(),
             crate::git::AddDependencyOptions {
                 git_ref: None,
+                kind: DependencyKind::Dependency,
                 adapters: &[Adapter::Codex],
                 components: &[],
                 sync_on_launch: false,
@@ -556,6 +578,7 @@ mod tests {
             &repo.path().to_string_lossy(),
             crate::git::AddDependencyOptions {
                 git_ref: Some(RequestedGitRef::Revision(revision.as_str())),
+                kind: DependencyKind::Dependency,
                 adapters: &[Adapter::Codex],
                 components: &[],
                 sync_on_launch: false,
@@ -576,6 +599,37 @@ mod tests {
     }
 
     #[test]
+    fn json_reports_include_dev_dependency_kind() {
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        let repo = TempDir::new().unwrap();
+        write_skill(&repo.path().join("skills/review"), "Review");
+        init_git_repo(repo.path());
+        run_git(repo.path(), &["tag", "v0.1.0"]);
+
+        let (reporter, _) = make_reporter();
+        add_dependency_in_dir_with_adapters(
+            project.path(),
+            cache.path(),
+            &repo.path().to_string_lossy(),
+            crate::git::AddDependencyOptions {
+                git_ref: Some(RequestedGitRef::Tag("v0.1.0")),
+                kind: DependencyKind::DevDependency,
+                adapters: &[Adapter::Codex],
+                components: &[],
+                sync_on_launch: false,
+            },
+            &reporter,
+        )
+        .unwrap();
+
+        let report = check_outdated_json_in_dir(project.path(), cache.path()).unwrap();
+
+        assert_eq!(report.dependencies.len(), 1);
+        assert_eq!(report.dependencies[0].kind, DependencyKind::DevDependency);
+    }
+
+    #[test]
     fn notes_when_no_direct_dependencies_are_configured() {
         let project = TempDir::new().unwrap();
         let cache = TempDir::new().unwrap();
@@ -585,10 +639,6 @@ mod tests {
 
         assert_eq!(summary.dependency_count, 0);
         assert_eq!(summary.outdated_count, 0);
-        assert!(
-            output
-                .contents()
-                .contains("no direct dependencies configured")
-        );
+        assert!(output.contents().contains("no dependencies configured"));
     }
 }

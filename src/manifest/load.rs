@@ -7,7 +7,7 @@ use super::discover::{
     canonicalize_existing_path, discover_package_contents, load_claude_marketplace_wrapper,
     load_claude_plugin_version, load_manifest_str, quote, should_try_claude_marketplace_fallback,
 };
-use super::{LoadedManifest, MANIFEST_FILE, Manifest, PackageRole};
+use super::{DependencyKind, LoadedManifest, MANIFEST_FILE, Manifest, PackageRole};
 use crate::paths::display_path;
 
 pub fn load_root_from_dir(root: &Path) -> Result<LoadedManifest> {
@@ -113,24 +113,34 @@ pub fn serialize_manifest(manifest: &Manifest) -> Result<String> {
         ));
     }
 
-    if !manifest.dependencies.is_empty() {
-        if !output.is_empty() && !output.ends_with('\n') {
-            output.push('\n');
-        }
-        output.push_str("[dependencies]\n");
-        for (alias, dependency) in &manifest.dependencies {
-            if dependency.managed.is_some() {
-                continue;
-            }
+    append_dependency_section(&mut output, manifest, DependencyKind::Dependency);
+    append_dependency_section(&mut output, manifest, DependencyKind::DevDependency);
 
-            output.push_str(&format!(
-                "{alias} = {{ {} }}\n",
-                dependency.inline_fields().join(", ")
-            ));
-        }
+    Ok(output)
+}
+
+fn append_dependency_section(output: &mut String, manifest: &Manifest, kind: DependencyKind) {
+    let dependencies = manifest.dependency_section(kind);
+    if dependencies.is_empty() {
+        return;
     }
 
-    for (alias, dependency) in &manifest.dependencies {
+    if !output.is_empty() && !output.ends_with('\n') {
+        output.push('\n');
+    }
+    output.push_str(&format!("[{}]\n", kind.manifest_section()));
+    for (alias, dependency) in dependencies {
+        if dependency.managed.is_some() {
+            continue;
+        }
+
+        output.push_str(&format!(
+            "{alias} = {{ {} }}\n",
+            dependency.inline_fields().join(", ")
+        ));
+    }
+
+    for (alias, dependency) in dependencies {
         let Some(managed) = &dependency.managed else {
             continue;
         };
@@ -138,14 +148,17 @@ pub fn serialize_manifest(manifest: &Manifest) -> Result<String> {
         if !output.is_empty() && !output.ends_with('\n') {
             output.push('\n');
         }
-        output.push_str(&format!("[dependencies.{alias}]\n"));
+        output.push_str(&format!("[{}.{alias}]\n", kind.manifest_section()));
         for field in dependency.key_value_fields() {
             output.push_str(&field);
             output.push('\n');
         }
         for mapping in managed {
             output.push('\n');
-            output.push_str(&format!("[[dependencies.{alias}.managed]]\n"));
+            output.push_str(&format!(
+                "[[{}.{alias}.managed]]\n",
+                kind.manifest_section()
+            ));
             output.push_str(&format!(
                 "source = {}\n",
                 quote(&display_path(&mapping.source))
@@ -156,6 +169,4 @@ pub fn serialize_manifest(manifest: &Manifest) -> Result<String> {
             ));
         }
     }
-
-    Ok(output)
 }

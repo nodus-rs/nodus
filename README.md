@@ -31,6 +31,7 @@ Point it at a GitHub repo or local path and Nodus will resolve the package, pin 
 
 ```bash
 nodus add obra/superpowers --adapter codex
+nodus add obra/superpowers --dev --adapter codex
 nodus add obra/superpowers --adapter claude --component skills
 nodus info obra/superpowers
 nodus outdated
@@ -252,6 +253,13 @@ You can also use local path dependencies:
 local_playbook = { path = "vendor/playbook" }
 ```
 
+Use `[dev-dependencies]` for packages that should resolve in the current repo but stay private when this package is consumed by another Nodus workspace:
+
+```toml
+[dev-dependencies]
+tooling = { path = "vendor/tooling" }
+```
+
 When a dependency is synced from a branch rather than a Git tag, you can optionally retain the
 package's own semantic version separately from the transport ref:
 
@@ -302,6 +310,7 @@ justification = "Run repository checks."
 - `[adapters]`
 - `adapters.enabled`
 - `[dependencies]`
+- `[dev-dependencies]`
 - `dependencies.<alias>.github`
 - `dependencies.<alias>.url`
 - `dependencies.<alias>.path`
@@ -460,7 +469,7 @@ dependency alias or a repository reference like `owner/repo`.
 
 ### `nodus outdated`
 
-Checks direct dependencies from `nodus.toml` for newer upstream tags or branch head changes.
+Checks configured dependencies from `nodus.toml`, including `[dev-dependencies]`, for newer upstream tags or branch head changes.
 
 Behavior:
 
@@ -470,7 +479,7 @@ Behavior:
 
 ### `nodus update`
 
-Updates direct dependencies from `nodus.toml` and then runs the normal sync flow.
+Updates configured dependencies from `nodus.toml`, including `[dev-dependencies]`, and then runs the normal sync flow.
 
 Behavior:
 

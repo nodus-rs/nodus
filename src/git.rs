@@ -8,8 +8,8 @@ use sha2::{Digest, Sha256};
 use crate::adapters::Adapter;
 use crate::execution::ExecutionMode;
 use crate::manifest::{
-    DependencyComponent, DependencySpec, MANIFEST_FILE, PackageRole, RequestedGitRef,
-    load_dependency_from_dir, load_from_dir, normalize_dependency_alias,
+    DependencyComponent, DependencyKind, DependencySpec, MANIFEST_FILE, Manifest, PackageRole,
+    RequestedGitRef, load_dependency_from_dir, load_from_dir, normalize_dependency_alias,
 };
 use crate::paths::display_path;
 use crate::report::Reporter;
@@ -28,6 +28,7 @@ pub struct GitCheckout {
 #[derive(Debug, Clone)]
 pub struct AddSummary {
     pub alias: String,
+    pub kind: DependencyKind,
     pub reference: String,
     pub adapters: Vec<Adapter>,
     pub managed_file_count: usize,
@@ -36,12 +37,14 @@ pub struct AddSummary {
 #[derive(Debug, Clone)]
 pub struct RemoveSummary {
     pub alias: String,
+    pub kind: DependencyKind,
     pub managed_file_count: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct AddDependencyOptions<'a> {
     pub git_ref: Option<RequestedGitRef<'a>>,
+    pub kind: DependencyKind,
     pub adapters: &'a [Adapter],
     pub components: &'a [DependencyComponent],
     pub sync_on_launch: bool,
@@ -107,7 +110,7 @@ fn add_dependency_in_dir_with_adapters_mode(
         .with_context(|| format!("dependency `{alias}` does not match the Nodus package layout"))?;
 
     let mut root = load_from_dir(project_root, PackageRole::Root)?;
-    if root.manifest.dependencies.contains_key(&alias) {
+    if root.manifest.contains_dependency_alias(&alias) {
         bail!(
             "dependency `{alias}` already exists in {}",
             project_root.display()
@@ -121,7 +124,7 @@ fn add_dependency_in_dir_with_adapters_mode(
             project_root.join(MANIFEST_FILE).display()
         ),
     )?;
-    root.manifest.dependencies.insert(
+    root.manifest.dependency_section_mut(options.kind).insert(
         alias.clone(),
         DependencySpec {
             github: github.clone(),
@@ -173,6 +176,7 @@ fn add_dependency_in_dir_with_adapters_mode(
 
     Ok(AddSummary {
         alias,
+        kind: options.kind,
         reference: checkout.reference_display(),
         adapters: sync_summary.adapters,
         managed_file_count: sync_summary.managed_file_count,
@@ -218,7 +222,11 @@ fn remove_dependency_in_dir_mode(
 ) -> Result<RemoveSummary> {
     crate::relay::ensure_no_pending_relay_edits_in_dir(project_root, cache_root)?;
     let mut root = load_from_dir(project_root, PackageRole::Root)?;
-    let alias = resolve_dependency_alias(&root.manifest.dependencies, package)?;
+    let alias = resolve_dependency_alias(&root.manifest, package)?;
+    let kind = root
+        .manifest
+        .dependency_kind(&alias)
+        .ok_or_else(|| anyhow!("dependency `{alias}` does not exist"))?;
     reporter.status(
         "Removing",
         format!(
@@ -226,7 +234,7 @@ fn remove_dependency_in_dir_mode(
             project_root.join(MANIFEST_FILE).display()
         ),
     )?;
-    root.manifest.dependencies.remove(&alias);
+    root.manifest.dependency_section_mut(kind).remove(&alias);
     let root = root.with_manifest(root.manifest.clone(), PackageRole::Root)?;
     let sync_summary = sync_in_dir_with_loaded_root(
         project_root,
@@ -242,6 +250,7 @@ fn remove_dependency_in_dir_mode(
 
     Ok(RemoveSummary {
         alias,
+        kind,
         managed_file_count: sync_summary.managed_file_count,
     })
 }
@@ -478,16 +487,13 @@ fn looks_like_windows_path(value: &str) -> bool {
         && (bytes[2] == b'\\' || bytes[2] == b'/')
 }
 
-pub fn resolve_dependency_alias(
-    dependencies: &std::collections::BTreeMap<String, DependencySpec>,
-    package: &str,
-) -> Result<String> {
-    if dependencies.contains_key(package) {
+pub fn resolve_dependency_alias(manifest: &Manifest, package: &str) -> Result<String> {
+    if manifest.contains_dependency_alias(package) {
         return Ok(package.to_string());
     }
 
     let normalized = normalize_alias_from_url(package)?;
-    if dependencies.contains_key(&normalized) {
+    if manifest.contains_dependency_alias(&normalized) {
         return Ok(normalized);
     }
 
@@ -982,8 +988,8 @@ mod tests {
 
     #[test]
     fn resolves_dependency_alias_from_exact_name() {
-        let mut dependencies = std::collections::BTreeMap::new();
-        dependencies.insert(
+        let mut manifest = Manifest::default();
+        manifest.dependencies.insert(
             "playbook_ios".into(),
             DependencySpec {
                 github: None,
@@ -999,15 +1005,15 @@ mod tests {
         );
 
         assert_eq!(
-            resolve_dependency_alias(&dependencies, "playbook_ios").unwrap(),
+            resolve_dependency_alias(&manifest, "playbook_ios").unwrap(),
             "playbook_ios"
         );
     }
 
     #[test]
     fn resolves_dependency_alias_from_repository_reference() {
-        let mut dependencies = std::collections::BTreeMap::new();
-        dependencies.insert(
+        let mut manifest = Manifest::default();
+        manifest.dependencies.insert(
             "playbook_ios".into(),
             DependencySpec {
                 github: None,
@@ -1023,7 +1029,7 @@ mod tests {
         );
 
         assert_eq!(
-            resolve_dependency_alias(&dependencies, "wenext-limited/playbook-ios").unwrap(),
+            resolve_dependency_alias(&manifest, "wenext-limited/playbook-ios").unwrap(),
             "playbook_ios"
         );
     }

@@ -17,9 +17,9 @@ use tempfile::TempDir;
 
 use crate::git::{ensure_git_dependency, normalize_alias_from_url, normalize_git_url};
 use crate::manifest::{
-    DependencyComponent, DependencySourceKind, DependencySpec, LoadedManifest,
-    RequestedGitRef as ManifestRequestedGitRef, load_dependency_from_dir, load_root_from_dir,
-    normalize_dependency_alias,
+    DependencyComponent, DependencyKind, DependencySourceKind, DependencySpec, LoadedManifest,
+    PackageRole, RequestedGitRef as ManifestRequestedGitRef, load_dependency_from_dir,
+    load_root_from_dir, normalize_dependency_alias,
 };
 use crate::report::Reporter;
 
@@ -90,6 +90,7 @@ struct ReviewPackage {
 #[derive(Debug, Clone)]
 struct ReviewDependency {
     alias: String,
+    kind: DependencyKind,
     package_index: usize,
 }
 
@@ -112,6 +113,7 @@ struct ResolvedReviewTarget {
     manifest: LoadedManifest,
     source: ReviewSource,
     selected_components: Option<Vec<DependencyComponent>>,
+    role: PackageRole,
 }
 
 #[derive(Default)]
@@ -349,12 +351,13 @@ fn resolve_review_target(
         if tag.is_some() || branch.is_some() {
             bail!("`--tag` and `--branch` cannot be used when reviewing a local package path");
         }
-        let manifest = load_dependency_from_dir(&package_root)?;
+        let (manifest, role) = load_review_manifest_for_inspection(&package_root)?;
         return Ok(ResolvedReviewTarget {
             alias: normalize_dependency_alias(&manifest.effective_name())?,
             manifest,
             source: ReviewSource::Path { path: package_root },
             selected_components: None,
+            role,
         });
     }
 
@@ -372,7 +375,7 @@ fn resolve_review_target(
         true,
         reporter,
     )?;
-    let manifest = load_dependency_from_dir(&checkout.path)
+    let (manifest, role) = load_review_manifest_for_inspection(&checkout.path)
         .with_context(|| format!("dependency `{alias}` does not match the Nodus package layout"))?;
 
     Ok(ResolvedReviewTarget {
@@ -385,6 +388,7 @@ fn resolve_review_target(
             rev: checkout.rev,
         },
         selected_components: None,
+        role,
     })
 }
 
@@ -393,18 +397,22 @@ fn resolve_direct_dependency(
     package: &str,
 ) -> Result<Option<(String, DependencySpec, LoadedManifest)>> {
     let root_manifest = load_root_from_dir(cwd)?;
-    if let Some(spec) = root_manifest.manifest.dependencies.get(package) {
-        return Ok(Some((package.to_string(), spec.clone(), root_manifest)));
+    if let Some(entry) = root_manifest.manifest.get_dependency(package) {
+        return Ok(Some((
+            package.to_string(),
+            entry.spec.clone(),
+            root_manifest,
+        )));
     }
 
     let normalized = match normalize_alias_from_url(package) {
         Ok(alias) => alias,
         Err(_) => return Ok(None),
     };
-    let Some(spec) = root_manifest.manifest.dependencies.get(&normalized) else {
+    let Some(entry) = root_manifest.manifest.get_dependency(&normalized) else {
         return Ok(None);
     };
-    Ok(Some((normalized, spec.clone(), root_manifest)))
+    Ok(Some((normalized, entry.spec.clone(), root_manifest)))
 }
 
 fn resolve_local_package_path(cwd: &Path, package: &str) -> Result<Option<PathBuf>> {
@@ -427,6 +435,15 @@ fn resolve_local_package_path(cwd: &Path, package: &str) -> Result<Option<PathBu
     Ok(Some(canonical))
 }
 
+fn load_review_manifest_for_inspection(root: &Path) -> Result<(LoadedManifest, PackageRole)> {
+    match load_root_from_dir(root) {
+        Ok(manifest) => Ok((manifest, PackageRole::Root)),
+        Err(_) => {
+            load_dependency_from_dir(root).map(|manifest| (manifest, PackageRole::Dependency))
+        }
+    }
+}
+
 fn resolve_from_dependency_spec(
     alias: &str,
     dependency: &DependencySpec,
@@ -447,6 +464,7 @@ fn resolve_from_dependency_spec(
                 manifest,
                 source: ReviewSource::Path { path: package_root },
                 selected_components: dependency.effective_selected_components(),
+                role: PackageRole::Dependency,
             })
         }
         DependencySourceKind::Git => {
@@ -487,6 +505,7 @@ fn resolve_from_dependency_spec(
                     rev: checkout.rev,
                 },
                 selected_components: dependency.effective_selected_components(),
+                role: PackageRole::Dependency,
             })
         }
     }
@@ -528,11 +547,11 @@ impl ReviewCollector {
         let dependencies = self.packages[index]
             .manifest
             .manifest
-            .dependencies
-            .iter()
-            .map(|(alias, spec)| (alias.clone(), spec.clone()))
+            .dependency_entries_for_role(target.role)
+            .into_iter()
+            .map(|entry| (entry.alias.to_string(), entry.kind, entry.spec.clone()))
             .collect::<Vec<_>>();
-        for (alias, spec) in dependencies {
+        for (alias, kind, spec) in dependencies {
             let resolved = resolve_from_dependency_spec(
                 &alias,
                 &spec,
@@ -543,6 +562,7 @@ impl ReviewCollector {
             let dependency_index = self.collect(resolved, cache_root, reporter)?;
             self.packages[index].dependencies.push(ReviewDependency {
                 alias,
+                kind,
                 package_index: dependency_index,
             });
         }
@@ -581,6 +601,16 @@ impl ReviewPackage {
             .next()
             .map(String::as_str)
             .unwrap_or("package")
+    }
+}
+
+impl ReviewDependency {
+    fn display_alias(&self) -> String {
+        if self.kind.is_dev() {
+            format!("{} (dev)", self.alias)
+        } else {
+            self.alias.clone()
+        }
     }
 }
 
@@ -773,7 +803,7 @@ fn build_review_prompt(scope: &ReviewScope) -> String {
                 package
                     .dependencies
                     .iter()
-                    .map(|dependency| dependency.alias.as_str())
+                    .map(|dependency| dependency.display_alias())
                     .collect::<Vec<_>>()
                     .join(", ")
             );
@@ -808,7 +838,7 @@ fn render_dependency_tree(scope: &ReviewScope, index: usize, depth: usize, outpu
             output,
             "{}alias `{}` -> {}",
             child_indent,
-            dependency.alias,
+            dependency.display_alias(),
             child.root.display()
         );
         render_dependency_tree(scope, dependency.package_index, depth + 2, output);
@@ -987,6 +1017,32 @@ mod tests {
         assert_eq!(scope.target().primary_alias(), "root");
         assert_eq!(scope.packages[0].dependencies.len(), 1);
         assert_eq!(scope.packages[1].primary_alias(), "child");
+    }
+
+    #[test]
+    fn review_marks_root_dev_dependencies_in_the_prompt() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+
+        write_file(
+            &root.join("nodus.toml"),
+            "[dev-dependencies]\nchild = { path = \"vendor/child\" }\n",
+        );
+        write_file(
+            &root.join("skills/root/SKILL.md"),
+            "---\nname: Root\ndescription: Root skill.\n---\n# Root\n",
+        );
+        write_file(
+            &root.join("vendor/child/skills/review/SKILL.md"),
+            "---\nname: Review\ndescription: Review safely.\n---\n# Review\n",
+        );
+
+        let reporter = Reporter::silent();
+        let scope = collect_review_scope(&root, cache.path(), ".", None, None, &reporter).unwrap();
+        let prompt = build_review_prompt(&scope);
+
+        assert!(prompt.contains("dependencies = child (dev)"));
     }
 
     #[test]

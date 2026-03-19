@@ -343,10 +343,10 @@ fn root_help_describes_commands() {
 
     assert!(help.contains("Nodus resolves agent packages from local paths and Git tags"));
     assert!(help.contains("Add a dependency and run sync"));
-    assert!(help.contains("List configured direct dependencies and any locked metadata"));
+    assert!(help.contains("List configured dependencies and any locked metadata"));
     assert!(help.contains("Display resolved package metadata"));
-    assert!(help.contains("Check direct dependencies for newer tags or branch head changes"));
-    assert!(help.contains("Update direct dependencies and resync managed outputs"));
+    assert!(help.contains("Check configured dependencies for newer tags or branch head changes"));
+    assert!(help.contains("Update configured dependencies and resync managed outputs"));
     assert!(help.contains("Generate shell completion scripts"));
     assert!(
         help.contains("Use an AI review agent to assess whether a package graph looks safe to use")
@@ -364,6 +364,7 @@ fn add_help_describes_arguments() {
         .to_string();
 
     assert!(help.contains("Git URL, local path, or GitHub shortcut like owner/repo"));
+    assert!(help.contains("Record the dependency under `[dev-dependencies]`"));
     assert!(help.contains("Pin a specific Git tag instead of resolving the latest tag"));
     assert!(help.contains("Track a specific Git branch instead of resolving the latest tag"));
     assert!(help.contains("Pin a specific Git commit revision"));
@@ -453,6 +454,7 @@ fn list_command_emits_json_with_locked_metadata() {
     run_command_in_dir(
         Command::Add {
             url,
+            dev: false,
             tag: Some("v0.1.0".into()),
             branch: None,
             revision: None,
@@ -486,6 +488,31 @@ fn list_command_emits_json_with_locked_metadata() {
     assert!(json["dependencies"][0]["locked"]["rev"].as_str().is_some());
     assert!(!output.contains("Finished"));
     assert!(!output.contains("Checking"));
+}
+
+#[test]
+fn list_command_labels_dev_dependencies() {
+    let temp = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    write_file(
+        &temp.path().join("nodus.toml"),
+        r#"
+[dev-dependencies]
+tooling = { path = "vendor/tooling" }
+"#,
+    );
+    write_skill(
+        &temp.path().join("vendor/tooling/skills/tooling"),
+        "Tooling",
+    );
+
+    let output = run_command_output(Command::List { json: false }, temp.path(), cache.path());
+    assert!(output.contains("tooling [dev]"));
+
+    let output = run_command_output(Command::List { json: true }, temp.path(), cache.path());
+    let json: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(json["dependencies"][0]["alias"], "tooling");
+    assert_eq!(json["dependencies"][0]["kind"], "dev_dependency");
 }
 
 #[test]
@@ -529,6 +556,16 @@ fn parses_repeatable_add_adapter_flags() {
         Command::Add { adapter, .. } => {
             assert_eq!(adapter, vec![Adapter::Codex, Adapter::OpenCode]);
         }
+        other => panic!("expected add command, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_add_dev_flag() {
+    let cli = Cli::try_parse_from(["nodus", "add", "example/repo", "--dev"]).unwrap();
+
+    match cli.command {
+        Command::Add { dev, .. } => assert!(dev),
         other => panic!("expected add command, got {other:?}"),
     }
 }
@@ -723,6 +760,7 @@ fn add_command_emits_resolving_and_adding_lines() {
     let output = run_command_output(
         Command::Add {
             url,
+            dev: false,
             tag: None,
             branch: None,
             revision: None,
@@ -750,6 +788,7 @@ fn add_dry_run_previews_without_writing_project_files() {
     let output = run_command_output(
         Command::Add {
             url,
+            dev: false,
             tag: None,
             branch: None,
             revision: None,
@@ -890,6 +929,7 @@ fn outdated_command_emits_json_without_status_lines() {
     run_command_in_dir(
         Command::Add {
             url,
+            dev: false,
             tag: Some("v0.1.0".into()),
             branch: None,
             revision: None,
@@ -932,6 +972,7 @@ fn update_command_emits_updating_and_finished_lines() {
     run_command_in_dir(
         Command::Add {
             url,
+            dev: false,
             tag: Some("v0.1.0".into()),
             branch: None,
             revision: None,
@@ -969,6 +1010,7 @@ fn remove_dry_run_keeps_manifest_and_lockfile_unchanged() {
     run_command_in_dir(
         Command::Add {
             url,
+            dev: false,
             tag: None,
             branch: None,
             revision: None,
@@ -1023,6 +1065,7 @@ fn update_dry_run_keeps_manifest_and_lockfile_unchanged() {
     run_command_in_dir(
         Command::Add {
             url,
+            dev: false,
             tag: Some("v0.1.0".into()),
             branch: None,
             revision: None,
@@ -1080,6 +1123,7 @@ fn sync_dry_run_locked_and_frozen_leave_state_unchanged() {
     run_command_in_dir(
         Command::Add {
             url,
+            dev: false,
             tag: None,
             branch: None,
             revision: None,
@@ -1154,6 +1198,7 @@ fn relay_dry_run_does_not_persist_local_config_or_repo_edits() {
     run_command_in_dir(
         Command::Add {
             url,
+            dev: false,
             tag: None,
             branch: None,
             revision: None,
@@ -1278,6 +1323,7 @@ fn relay_supports_multiple_dependencies_in_one_command() {
     run_command_in_dir(
         Command::Add {
             url: url_one,
+            dev: false,
             tag: None,
             branch: None,
             revision: None,
@@ -1302,6 +1348,7 @@ fn relay_supports_multiple_dependencies_in_one_command() {
     run_command_in_dir(
         Command::Add {
             url: url_two,
+            dev: false,
             tag: Some("v0.2.0".into()),
             branch: None,
             revision: None,

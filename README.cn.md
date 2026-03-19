@@ -31,6 +31,7 @@ Nodus 面向这样一类仓库：希望消费 agent package，但不想手动拼
 
 ```bash
 nodus add obra/superpowers --adapter codex
+nodus add obra/superpowers --dev --adapter codex
 nodus add obra/superpowers --adapter claude --component skills
 nodus info obra/superpowers
 nodus relay superpowers --repo-path ../superpowers
@@ -245,6 +246,13 @@ superpowers = { github = "obra/superpowers", tag = "v5.0.2", components = ["skil
 local_playbook = { path = "vendor/playbook" }
 ```
 
+如果某个包只需要在当前仓库里被 Nodus 解析，但不希望在这个包被其他 Nodus 工作区消费时继续向外暴露，可以使用 `[dev-dependencies]`：
+
+```toml
+[dev-dependencies]
+tooling = { path = "vendor/tooling" }
+```
+
 当依赖是从 branch 而不是 Git tag 同步时，你还可以选择单独保留该包自己的语义化版本，而不是仅依赖传输引用：
 
 ```toml
@@ -294,6 +302,7 @@ justification = "Run repository checks."
 - `[adapters]`
 - `adapters.enabled`
 - `[dependencies]`
+- `[dev-dependencies]`
 - `dependencies.<alias>.github`
 - `dependencies.<alias>.url`
 - `dependencies.<alias>.path`

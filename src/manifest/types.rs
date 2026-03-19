@@ -25,6 +25,12 @@ pub struct Manifest {
     pub launch_hooks: Option<LaunchHookConfig>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub dependencies: BTreeMap<String, DependencySpec>,
+    #[serde(
+        default,
+        rename = "dev-dependencies",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub dev_dependencies: BTreeMap<String, DependencySpec>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,6 +99,40 @@ pub enum DependencyComponent {
     Rules,
     #[value(name = "commands")]
     Commands,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DependencyKind {
+    Dependency,
+    DevDependency,
+}
+
+impl DependencyKind {
+    pub const fn manifest_section(self) -> &'static str {
+        match self {
+            Self::Dependency => "dependencies",
+            Self::DevDependency => "dev-dependencies",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Dependency => "dependency",
+            Self::DevDependency => "dev-dependency",
+        }
+    }
+
+    pub const fn is_dev(self) -> bool {
+        matches!(self, Self::DevDependency)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DependencyEntry<'a> {
+    pub alias: &'a str,
+    pub spec: &'a DependencySpec,
+    pub kind: DependencyKind,
 }
 
 impl DependencyComponent {

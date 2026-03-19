@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use super::args::{Cli, Command};
 use crate::adapters::Adapter;
-use crate::manifest::RequestedGitRef;
+use crate::manifest::{DependencyKind, RequestedGitRef};
 use crate::paths::display_path;
 use crate::report::Reporter;
 
@@ -47,6 +47,7 @@ pub(super) fn run_command_in_dir(
     match command {
         Command::Add {
             url,
+            dev,
             tag,
             branch,
             revision,
@@ -66,6 +67,11 @@ pub(super) fn run_command_in_dir(
                             branch.as_deref(),
                             revision.as_deref(),
                         )?,
+                        kind: if dev {
+                            DependencyKind::DevDependency
+                        } else {
+                            DependencyKind::Dependency
+                        },
                         adapters: &adapter,
                         components: &component,
                         sync_on_launch,
@@ -83,6 +89,11 @@ pub(super) fn run_command_in_dir(
                             branch.as_deref(),
                             revision.as_deref(),
                         )?,
+                        kind: if dev {
+                            DependencyKind::DevDependency
+                        } else {
+                            DependencyKind::Dependency
+                        },
                         adapters: &adapter,
                         components: &component,
                         sync_on_launch,
@@ -93,7 +104,7 @@ pub(super) fn run_command_in_dir(
             let message = if dry_run {
                 format!(
                     "dry run: would add {} {} with adapters [{}]; would write {} managed files",
-                    summary.alias,
+                    display_dependency(summary.kind, &summary.alias),
                     summary.reference,
                     format_adapters(&summary.adapters),
                     summary.managed_file_count,
@@ -101,7 +112,7 @@ pub(super) fn run_command_in_dir(
             } else {
                 format!(
                     "added {} {} with adapters [{}]; wrote {} managed files",
-                    summary.alias,
+                    display_dependency(summary.kind, &summary.alias),
                     summary.reference,
                     format_adapters(&summary.adapters),
                     summary.managed_file_count,
@@ -119,12 +130,14 @@ pub(super) fn run_command_in_dir(
             let message = if dry_run {
                 format!(
                     "dry run: would remove {} and would write {} managed files",
-                    summary.alias, summary.managed_file_count,
+                    display_dependency(summary.kind, &summary.alias),
+                    summary.managed_file_count,
                 )
             } else {
                 format!(
                     "removed {} and wrote {} managed files",
-                    summary.alias, summary.managed_file_count,
+                    display_dependency(summary.kind, &summary.alias),
+                    summary.managed_file_count,
                 )
             };
             reporter.finish(message)?;
@@ -200,12 +213,12 @@ pub(super) fn run_command_in_dir(
                 let summary = crate::outdated::check_outdated_in_dir(cwd, cache_root, reporter)?;
                 let outcome = if summary.outdated_count == 0 {
                     format!(
-                        "checked {} direct dependencies; all current",
+                        "checked {} dependencies; all current",
                         summary.dependency_count
                     )
                 } else {
                     format!(
-                        "checked {} direct dependencies; {} outdated",
+                        "checked {} dependencies; {} outdated",
                         summary.dependency_count, summary.outdated_count
                     )
                 };
@@ -234,12 +247,12 @@ pub(super) fn run_command_in_dir(
             };
             let message = if dry_run {
                 format!(
-                    "dry run: would update {} direct dependencies; would write {} managed files",
+                    "dry run: would update {} dependencies; would write {} managed files",
                     summary.updated_count, summary.managed_file_count
                 )
             } else {
                 format!(
-                    "updated {} direct dependencies; wrote {} managed files",
+                    "updated {} dependencies; wrote {} managed files",
                     summary.updated_count, summary.managed_file_count
                 )
             };
@@ -465,6 +478,14 @@ fn format_adapters(adapters: &[Adapter]) -> String {
         .map(|adapter| adapter.as_str())
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn display_dependency(kind: DependencyKind, alias: &str) -> String {
+    if kind.is_dev() {
+        format!("{alias} [dev]")
+    } else {
+        alias.to_string()
+    }
 }
 
 fn requested_git_ref<'a>(

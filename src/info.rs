@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::adapters::Adapter;
 use crate::git::{ensure_git_dependency, normalize_alias_from_url, normalize_git_url};
 use crate::manifest::{
-    DependencyComponent, DependencySourceKind, DependencySpec, LoadedManifest,
+    DependencyComponent, DependencySourceKind, DependencySpec, LoadedManifest, PackageRole,
     load_dependency_from_dir, load_root_from_dir, normalize_dependency_alias,
 };
 use crate::paths::display_path;
@@ -38,8 +38,11 @@ pub struct PackageInfo {
     rules: Vec<String>,
     commands: Vec<String>,
     dependencies: Vec<String>,
+    dev_dependencies: Vec<String>,
     capabilities: Vec<PackageCapability>,
     warnings: Vec<String>,
+    #[serde(skip)]
+    show_dev_dependencies: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -165,7 +168,7 @@ fn load_package_info(
         && branch.is_none()
         && let Some(package_root) = resolve_local_package_path(cwd, trimmed)?
     {
-        let manifest = load_package_manifest(&package_root)?;
+        let (manifest, role) = load_package_manifest_for_inspection(&package_root)?;
         let alias = alias_from_loaded_manifest(&manifest)?;
         return Ok(package_info_from_loaded(
             alias,
@@ -175,6 +178,7 @@ fn load_package_info(
                 tag: None,
             },
             None,
+            role,
         ));
     }
 
@@ -192,7 +196,7 @@ fn load_package_info(
         true,
         reporter,
     )?;
-    let manifest = load_package_manifest(&checkout.path)
+    let (manifest, role) = load_package_manifest_for_inspection(&checkout.path)
         .with_context(|| format!("dependency `{alias}` does not match the Nodus package layout"))?;
 
     Ok(package_info_from_loaded(
@@ -205,6 +209,7 @@ fn load_package_info(
             rev: checkout.rev,
         },
         None,
+        role,
     ))
 }
 
@@ -213,18 +218,22 @@ fn resolve_direct_dependency(
     package: &str,
 ) -> Result<Option<(String, DependencySpec, LoadedManifest)>> {
     let root_manifest = load_root_from_dir(cwd)?;
-    if let Some(spec) = root_manifest.manifest.dependencies.get(package) {
-        return Ok(Some((package.to_string(), spec.clone(), root_manifest)));
+    if let Some(entry) = root_manifest.manifest.get_dependency(package) {
+        return Ok(Some((
+            package.to_string(),
+            entry.spec.clone(),
+            root_manifest,
+        )));
     }
 
     let normalized = match normalize_alias_from_url(package) {
         Ok(alias) => alias,
         Err(_) => return Ok(None),
     };
-    let Some(spec) = root_manifest.manifest.dependencies.get(&normalized) else {
+    let Some(entry) = root_manifest.manifest.get_dependency(&normalized) else {
         return Ok(None);
     };
-    Ok(Some((normalized, spec.clone(), root_manifest)))
+    Ok(Some((normalized, entry.spec.clone(), root_manifest)))
 }
 
 fn resolve_local_package_path(cwd: &Path, package: &str) -> Result<Option<PathBuf>> {
@@ -261,7 +270,7 @@ fn load_from_dependency_spec(
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("dependency `{alias}` must declare `path`"))?;
             let package_root = root_manifest.resolve_path(declared_path)?;
-            let manifest = load_package_manifest(&package_root)?;
+            let manifest = load_dependency_from_dir(&package_root)?;
             Ok(package_info_from_loaded(
                 alias.to_string(),
                 manifest,
@@ -270,6 +279,7 @@ fn load_from_dependency_spec(
                     tag: dependency.tag.clone(),
                 },
                 dependency.effective_selected_components(),
+                PackageRole::Dependency,
             ))
         }
         DependencySourceKind::Git => {
@@ -297,7 +307,7 @@ fn load_from_dependency_spec(
                     reporter,
                 )?,
             };
-            let manifest = load_package_manifest(&checkout.path).with_context(|| {
+            let manifest = load_dependency_from_dir(&checkout.path).with_context(|| {
                 format!("dependency `{alias}` does not match the Nodus package layout")
             })?;
             Ok(package_info_from_loaded(
@@ -310,13 +320,19 @@ fn load_from_dependency_spec(
                     rev: checkout.rev,
                 },
                 dependency.effective_selected_components(),
+                PackageRole::Dependency,
             ))
         }
     }
 }
 
-fn load_package_manifest(root: &Path) -> Result<LoadedManifest> {
-    load_dependency_from_dir(root).or_else(|_| load_root_from_dir(root))
+fn load_package_manifest_for_inspection(root: &Path) -> Result<(LoadedManifest, PackageRole)> {
+    match load_root_from_dir(root) {
+        Ok(manifest) => Ok((manifest, PackageRole::Root)),
+        Err(_) => {
+            load_dependency_from_dir(root).map(|manifest| (manifest, PackageRole::Dependency))
+        }
+    }
 }
 
 fn package_info_from_loaded(
@@ -324,6 +340,7 @@ fn package_info_from_loaded(
     manifest: LoadedManifest,
     source: PackageInfoSource,
     selected_components: Option<Vec<DependencyComponent>>,
+    role: PackageRole,
 ) -> PackageInfo {
     let mut warnings = manifest.warnings.clone();
     let cargo_metadata = load_cargo_metadata(&manifest.root, &mut warnings);
@@ -341,6 +358,17 @@ fn package_info_from_loaded(
         .cloned()
         .collect::<Vec<_>>();
     dependencies.sort();
+    let mut dev_dependencies = if role == PackageRole::Root {
+        manifest
+            .manifest
+            .dev_dependencies
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    dev_dependencies.sort();
 
     PackageInfo {
         alias,
@@ -392,6 +420,7 @@ fn package_info_from_loaded(
             .map(|entry| entry.id.clone())
             .collect(),
         dependencies,
+        dev_dependencies,
         capabilities: manifest
             .manifest
             .capabilities
@@ -403,6 +432,7 @@ fn package_info_from_loaded(
             })
             .collect(),
         warnings,
+        show_dev_dependencies: role == PackageRole::Root,
     }
 }
 
@@ -508,6 +538,13 @@ impl PackageInfo {
             paint_label(reporter, "dependencies:"),
             render_items(&self.dependencies)
         ));
+        if self.show_dev_dependencies {
+            lines.push(format!(
+                "{} {}",
+                paint_label(reporter, "dev-dependencies:"),
+                render_items(&self.dev_dependencies)
+            ));
+        }
 
         let artifacts = [
             ("skills", &self.skills),
@@ -904,6 +941,31 @@ api_version = "1"
     }
 
     #[test]
+    fn info_shows_dev_dependencies_for_local_package_inspection() {
+        let package = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+
+        write_file(
+            &package.path().join("nodus.toml"),
+            r#"
+[dependencies]
+shared = { path = "vendor/shared" }
+
+[dev-dependencies]
+tooling = { path = "vendor/tooling" }
+"#,
+        );
+        write_skill(package.path(), "Review");
+        write_skill(&package.path().join("vendor/shared"), "Shared");
+        write_skill(&package.path().join("vendor/tooling"), "Tooling");
+
+        let output = capture_info_output(package.path(), cache.path(), ".", None, None);
+
+        assert!(output.contains("dependencies: shared"));
+        assert!(output.contains("dev-dependencies: tooling"));
+    }
+
+    #[test]
     fn info_reads_a_direct_dependency_alias_from_the_root_manifest() {
         let root = TempDir::new().unwrap();
         let cache = TempDir::new().unwrap();
@@ -922,11 +984,14 @@ components = ["skills", "rules"]
             r#"
 name = "playbook-ios"
 version = "0.2.0"
+[dev-dependencies]
+tooling = { path = "vendor/tooling" }
 [adapters]
 enabled = ["codex"]
 "#,
         );
         write_skill(&dependency, "Review");
+        write_skill(&dependency.join("vendor/tooling"), "Tooling");
         write_file(&dependency.join("rules/safe.md"), "# safe\n");
 
         let output = capture_info_output(root.path(), cache.path(), "playbook_ios", None, None);
@@ -937,6 +1002,7 @@ enabled = ["codex"]
         assert!(output.contains("adapters: codex"));
         assert!(output.contains("artifacts:"));
         assert!(output.contains("rules  = [safe]"));
+        assert!(!output.contains("dev-dependencies:"));
     }
 
     #[test]

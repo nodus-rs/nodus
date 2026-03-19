@@ -979,18 +979,9 @@ fn resolve_package(
 
     let dependencies = manifest
         .manifest
-        .dependencies
-        .iter()
-        .map(|(dependency_alias, dependency)| {
-            resolve_dependency(
-                &manifest,
-                role,
-                dependency_alias,
-                dependency,
-                context,
-                state,
-            )
-        })
+        .dependency_entries_for_role(role)
+        .into_iter()
+        .map(|entry| resolve_dependency(&manifest, role, entry.alias, entry.spec, context, state))
         .collect::<Result<Vec<_>>>()?;
 
     let digest = compute_package_digest(&manifest, &extra_package_files)?;
@@ -1432,12 +1423,16 @@ impl Resolution {
                 },
             };
 
+            let package_role = match package.source {
+                PackageSource::Root => PackageRole::Root,
+                _ => PackageRole::Dependency,
+            };
             let mut dependencies: Vec<_> = package
                 .manifest
                 .manifest
-                .dependencies
-                .keys()
-                .cloned()
+                .dependency_entries_for_role(package_role)
+                .into_iter()
+                .map(|entry| entry.alias.to_string())
                 .collect();
             dependencies.sort();
 
@@ -1922,7 +1917,7 @@ mod tests {
         shared_checkout_path, shared_repository_path,
     };
     use crate::manifest::{
-        DependencyComponent, MANIFEST_FILE, RequestedGitRef, load_root_from_dir,
+        DependencyComponent, DependencyKind, MANIFEST_FILE, RequestedGitRef, load_root_from_dir,
     };
     use crate::report::{ColorMode, Reporter};
 
@@ -2201,6 +2196,7 @@ mod tests {
             url,
             AddDependencyOptions {
                 git_ref: tag.map(RequestedGitRef::Tag),
+                kind: DependencyKind::Dependency,
                 adapters,
                 components,
                 sync_on_launch: false,
@@ -2224,6 +2220,7 @@ mod tests {
             url,
             AddDependencyOptions {
                 git_ref: Some(git_ref),
+                kind: DependencyKind::Dependency,
                 adapters,
                 components,
                 sync_on_launch: false,
@@ -2815,6 +2812,100 @@ bundled = { path = "vendor/bundled" }
                 .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
                 .exists()
         );
+    }
+
+    #[test]
+    fn root_resolution_includes_dev_dependencies() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_file(
+            &temp.path().join(MANIFEST_FILE),
+            r#"
+[dev-dependencies]
+tooling = { path = "vendor/tooling" }
+"#,
+        );
+        write_skill(
+            &temp.path().join("vendor/tooling/skills/tooling"),
+            "Tooling",
+        );
+
+        let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+
+        assert!(
+            resolution
+                .packages
+                .iter()
+                .any(|package| package.alias == "tooling")
+        );
+        let lockfile = resolution
+            .to_lockfile(Adapters::from_slice(&Adapter::ALL))
+            .unwrap();
+        let root_package = lockfile
+            .packages
+            .iter()
+            .find(|package| package.alias == "root")
+            .unwrap();
+        assert_eq!(root_package.dependencies, vec!["tooling"]);
+    }
+
+    #[test]
+    fn consumed_packages_do_not_export_dev_dependencies() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_file(
+            &temp.path().join(MANIFEST_FILE),
+            r#"
+[dependencies]
+wrapper = { path = "vendor/wrapper" }
+"#,
+        );
+        write_file(
+            &temp.path().join("vendor/wrapper/nodus.toml"),
+            r#"
+[dependencies]
+shared = { path = "vendor/shared" }
+
+[dev-dependencies]
+tooling = { path = "vendor/tooling" }
+"#,
+        );
+        write_skill(
+            &temp
+                .path()
+                .join("vendor/wrapper/vendor/shared/skills/shared"),
+            "Shared",
+        );
+        write_skill(
+            &temp
+                .path()
+                .join("vendor/wrapper/vendor/tooling/skills/tooling"),
+            "Tooling",
+        );
+
+        let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+
+        assert!(
+            resolution
+                .packages
+                .iter()
+                .any(|package| package.alias == "shared")
+        );
+        assert!(
+            !resolution
+                .packages
+                .iter()
+                .any(|package| package.alias == "tooling")
+        );
+        let lockfile = resolution
+            .to_lockfile(Adapters::from_slice(&Adapter::ALL))
+            .unwrap();
+        let wrapper_package = lockfile
+            .packages
+            .iter()
+            .find(|package| package.alias == "wrapper")
+            .unwrap();
+        assert_eq!(wrapper_package.dependencies, vec!["shared"]);
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -56,72 +57,16 @@ impl LoadedManifest {
             );
         }
 
-        for (alias, dependency) in &self.manifest.dependencies {
-            if alias.trim().is_empty() {
-                bail!("dependency names must not be empty");
+        let mut aliases = HashSet::new();
+        for entry in self.manifest.all_dependency_entries() {
+            if !aliases.insert(entry.alias) {
+                bail!(
+                    "manifest must not declare `{}` `{}` in more than one dependency section",
+                    entry.kind.label(),
+                    entry.alias
+                );
             }
-            match dependency.source_kind()? {
-                DependencySourceKind::Git => {
-                    let url = dependency.resolved_git_url()?;
-                    if url.trim().is_empty() {
-                        bail!("dependency `{alias}` has an empty git source");
-                    }
-                    let tag = dependency.tag.as_deref().map(str::trim).unwrap_or_default();
-                    let branch = dependency
-                        .branch
-                        .as_deref()
-                        .map(str::trim)
-                        .unwrap_or_default();
-                    let revision = dependency
-                        .revision
-                        .as_deref()
-                        .map(str::trim)
-                        .unwrap_or_default();
-                    let requested_ref_count = usize::from(!tag.is_empty())
-                        + usize::from(!branch.is_empty())
-                        + usize::from(!revision.is_empty());
-                    match requested_ref_count {
-                        0 => {
-                            bail!(
-                                "dependency `{alias}` must declare `tag`, `branch`, or `revision` for git sources"
-                            )
-                        }
-                        1 => {}
-                        _ => {
-                            bail!(
-                                "dependency `{alias}` must not declare more than one of `tag`, `branch`, or `revision`"
-                            )
-                        }
-                    }
-                }
-                DependencySourceKind::Path => {
-                    let Some(path) = &dependency.path else {
-                        bail!("dependency `{alias}` must declare `path`");
-                    };
-                    let dependency_root = self.resolve_existing_path(path)?;
-                    if !dependency_root.is_dir() {
-                        bail!(
-                            "dependency `{alias}` path must point to a directory, found {}",
-                            dependency_root.display()
-                        );
-                    }
-                }
-            }
-
-            if let Some(components) = &dependency.components {
-                if components.is_empty() {
-                    bail!("dependency `{alias}` field `components` must not be empty");
-                }
-
-                let mut sorted = components.clone();
-                sorted.sort();
-                sorted.dedup();
-                if sorted.len() != components.len() {
-                    bail!("dependency `{alias}` field `components` must not contain duplicates");
-                }
-            }
-
-            validate_dependency_managed_specs(alias, dependency.managed.as_deref())?;
+            validate_dependency_entry(self, entry)?;
         }
 
         Ok(())
@@ -198,6 +143,94 @@ impl LoadedManifest {
 }
 
 impl Manifest {
+    pub fn dependency_section(
+        &self,
+        kind: DependencyKind,
+    ) -> &std::collections::BTreeMap<String, DependencySpec> {
+        match kind {
+            DependencyKind::Dependency => &self.dependencies,
+            DependencyKind::DevDependency => &self.dev_dependencies,
+        }
+    }
+
+    pub fn dependency_section_mut(
+        &mut self,
+        kind: DependencyKind,
+    ) -> &mut std::collections::BTreeMap<String, DependencySpec> {
+        match kind {
+            DependencyKind::Dependency => &mut self.dependencies,
+            DependencyKind::DevDependency => &mut self.dev_dependencies,
+        }
+    }
+
+    pub fn contains_dependency_alias(&self, alias: &str) -> bool {
+        self.dependencies.contains_key(alias) || self.dev_dependencies.contains_key(alias)
+    }
+
+    pub fn dependency_kind(&self, alias: &str) -> Option<DependencyKind> {
+        if self.dependencies.contains_key(alias) {
+            Some(DependencyKind::Dependency)
+        } else if self.dev_dependencies.contains_key(alias) {
+            Some(DependencyKind::DevDependency)
+        } else {
+            None
+        }
+    }
+
+    pub fn get_dependency(&self, alias: &str) -> Option<DependencyEntry<'_>> {
+        self.dependencies
+            .get_key_value(alias)
+            .map(|(alias, spec)| DependencyEntry {
+                alias,
+                spec,
+                kind: DependencyKind::Dependency,
+            })
+            .or_else(|| {
+                self.dev_dependencies
+                    .get_key_value(alias)
+                    .map(|(alias, spec)| DependencyEntry {
+                        alias,
+                        spec,
+                        kind: DependencyKind::DevDependency,
+                    })
+            })
+    }
+
+    pub fn all_dependency_entries(&self) -> Vec<DependencyEntry<'_>> {
+        self.dependencies
+            .iter()
+            .map(|(alias, spec)| DependencyEntry {
+                alias,
+                spec,
+                kind: DependencyKind::Dependency,
+            })
+            .chain(
+                self.dev_dependencies
+                    .iter()
+                    .map(|(alias, spec)| DependencyEntry {
+                        alias,
+                        spec,
+                        kind: DependencyKind::DevDependency,
+                    }),
+            )
+            .collect()
+    }
+
+    pub fn dependency_entries_for_role(&self, role: PackageRole) -> Vec<DependencyEntry<'_>> {
+        match role {
+            PackageRole::Root => self.all_dependency_entries(),
+            PackageRole::Dependency => self
+                .dependencies
+                .iter()
+                .map(|(alias, spec)| DependencyEntry {
+                    alias,
+                    spec,
+                    kind: DependencyKind::Dependency,
+                })
+                .collect(),
+        }
+    }
+
     pub fn enabled_adapters(&self) -> Option<&[Adapter]> {
         self.adapters
             .as_ref()
@@ -221,7 +254,10 @@ impl Manifest {
     }
 
     pub fn remove_managed_mapping(&mut self, alias: &str, target_root: &Path) -> Result<bool> {
-        let Some(dependency) = self.dependencies.get_mut(alias) else {
+        let Some(kind) = self.dependency_kind(alias) else {
+            return Ok(false);
+        };
+        let Some(dependency) = self.dependency_section_mut(kind).get_mut(alias) else {
             return Ok(false);
         };
         let Some(managed) = dependency.managed.as_mut() else {
@@ -242,6 +278,79 @@ impl Manifest {
 
         Ok(removed)
     }
+}
+
+fn validate_dependency_entry(package: &LoadedManifest, entry: DependencyEntry<'_>) -> Result<()> {
+    let alias = entry.alias;
+    let dependency = entry.spec;
+    let label = entry.kind.label();
+
+    if alias.trim().is_empty() {
+        bail!("{label} names must not be empty");
+    }
+    match dependency.source_kind()? {
+        DependencySourceKind::Git => {
+            let url = dependency.resolved_git_url()?;
+            if url.trim().is_empty() {
+                bail!("{label} `{alias}` has an empty git source");
+            }
+            let tag = dependency.tag.as_deref().map(str::trim).unwrap_or_default();
+            let branch = dependency
+                .branch
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default();
+            let revision = dependency
+                .revision
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default();
+            let requested_ref_count = usize::from(!tag.is_empty())
+                + usize::from(!branch.is_empty())
+                + usize::from(!revision.is_empty());
+            match requested_ref_count {
+                0 => {
+                    bail!(
+                        "{label} `{alias}` must declare `tag`, `branch`, or `revision` for git sources"
+                    )
+                }
+                1 => {}
+                _ => {
+                    bail!(
+                        "{label} `{alias}` must not declare more than one of `tag`, `branch`, or `revision`"
+                    )
+                }
+            }
+        }
+        DependencySourceKind::Path => {
+            let Some(path) = &dependency.path else {
+                bail!("{label} `{alias}` must declare `path`");
+            };
+            let dependency_root = package.resolve_existing_path(path)?;
+            if !dependency_root.is_dir() {
+                bail!(
+                    "{label} `{alias}` path must point to a directory, found {}",
+                    dependency_root.display()
+                );
+            }
+        }
+    }
+
+    if let Some(components) = &dependency.components {
+        if components.is_empty() {
+            bail!("{label} `{alias}` field `components` must not be empty");
+        }
+
+        let mut sorted = components.clone();
+        sorted.sort();
+        sorted.dedup();
+        if sorted.len() != components.len() {
+            bail!("{label} `{alias}` field `components` must not contain duplicates");
+        }
+    }
+
+    validate_dependency_managed_specs(alias, dependency.managed.as_deref())?;
+    Ok(())
 }
 
 impl DependencySpec {

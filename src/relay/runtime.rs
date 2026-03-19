@@ -420,12 +420,12 @@ fn adapters_from_lockfile(lockfile: &Lockfile) -> Adapters {
 }
 
 fn dependency_context(workspace: &RelayWorkspace, package: &str) -> Result<DependencyContext> {
-    let alias = resolve_dependency_alias(&workspace.root.manifest.dependencies, package)?;
+    let alias = resolve_dependency_alias(&workspace.root.manifest, package)?;
     let spec = workspace
         .root
         .manifest
-        .dependencies
-        .get(&alias)
+        .get_dependency(&alias)
+        .map(|entry| entry.spec)
         .ok_or_else(|| anyhow!("dependency `{alias}` does not exist"))?;
     if spec.source_kind()? != DependencySourceKind::Git {
         bail!("relay supports direct git dependencies only; `{alias}` is a path dependency");
@@ -1291,6 +1291,7 @@ mod tests {
             &remote.to_string_lossy(),
             AddDependencyOptions {
                 git_ref: Some(crate::manifest::RequestedGitRef::Tag("v0.1.0")),
+                kind: crate::manifest::DependencyKind::Dependency,
                 adapters,
                 components: &[],
                 sync_on_launch: false,
@@ -2094,6 +2095,7 @@ tag = {:?}
             &remote_repo_two.to_string_lossy(),
             AddDependencyOptions {
                 git_ref: Some(crate::manifest::RequestedGitRef::Tag("v0.2.0")),
+                kind: crate::manifest::DependencyKind::Dependency,
                 adapters: &[Adapter::Claude],
                 components: &[],
                 sync_on_launch: false,

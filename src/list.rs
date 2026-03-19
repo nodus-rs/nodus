@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use crate::lockfile::{LOCKFILE_NAME, LockedPackage, Lockfile};
 use crate::manifest::{
-    DependencyComponent, DependencySourceKind, RequestedGitRef, load_root_from_dir,
+    DependencyComponent, DependencyKind, DependencySourceKind, RequestedGitRef, load_root_from_dir,
 };
 use crate::paths::display_path;
 use crate::report::Reporter;
@@ -18,6 +18,7 @@ pub struct DependencyList {
 #[derive(Debug, Clone, Serialize)]
 pub struct DependencyListEntry {
     pub alias: String,
+    pub kind: DependencyKind,
     pub source: DependencyListSource,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requested_ref: Option<DependencyListRequestedRef>,
@@ -52,7 +53,7 @@ pub struct DependencyListLocked {
 pub fn list_dependencies_in_dir(cwd: &Path, reporter: &Reporter) -> Result<()> {
     let list = list_dependencies_json_in_dir(cwd)?;
     if list.dependencies.is_empty() {
-        reporter.note("no direct dependencies configured")?;
+        reporter.note("no dependencies configured")?;
         return Ok(());
     }
 
@@ -67,9 +68,11 @@ pub fn list_dependencies_json_in_dir(cwd: &Path) -> Result<DependencyList> {
     let lockfile = load_lockfile(cwd)?;
     let mut dependencies = root
         .manifest
-        .dependencies
-        .iter()
-        .map(|(alias, spec)| {
+        .all_dependency_entries()
+        .into_iter()
+        .map(|entry| {
+            let alias = entry.alias;
+            let spec = entry.spec;
             let source = match spec.source_kind()? {
                 DependencySourceKind::Path => DependencyListSource::Path {
                     path: display_path(spec.path.as_deref().ok_or_else(|| {
@@ -99,7 +102,8 @@ pub fn list_dependencies_json_in_dir(cwd: &Path) -> Result<DependencyList> {
             };
 
             Ok(DependencyListEntry {
-                alias: alias.clone(),
+                alias: alias.to_string(),
+                kind: entry.kind,
                 source,
                 requested_ref,
                 selected_components: spec.effective_selected_components(),
@@ -144,9 +148,17 @@ fn find_locked_package<'a>(lockfile: &'a Lockfile, alias: &str) -> Option<&'a Lo
 fn render_dependency_line(dependency: &DependencyListEntry) -> String {
     format!(
         "{:<20} {}",
-        dependency.alias,
+        display_alias(dependency),
         dependency_summary(dependency)
     )
+}
+
+fn display_alias(dependency: &DependencyListEntry) -> String {
+    if dependency.kind.is_dev() {
+        format!("{} [dev]", dependency.alias)
+    } else {
+        dependency.alias.clone()
+    }
 }
 
 fn dependency_summary(dependency: &DependencyListEntry) -> String {

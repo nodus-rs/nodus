@@ -6,6 +6,7 @@
 # You can start smaller than this. In practice, most consumers only need:
 # - `[adapters] enabled = [...]`
 # - one or more entries under `[dependencies]`
+# - optionally, local-only entries under `[dev-dependencies]`
 
 # Optional manifest version string for your package or workspace metadata.
 # Leave it out if you do not need it.
@@ -103,6 +104,11 @@ target = "docs/templates"
 # - source paths must stay inside the dependency root
 # - overlapping managed targets are rejected
 # - unmanaged file collisions are rejected instead of overwritten
+
+[dev-dependencies]
+# Use this section for packages you want Nodus to resolve in the current repo,
+# but not re-export when this package is consumed by another Nodus workspace.
+tooling = { path = "vendor/tooling", components = ["skills"] }
 
 # [dependencies.exact_pin]
 # Uncomment this style when you want a Git dependency fixed to one exact commit.
