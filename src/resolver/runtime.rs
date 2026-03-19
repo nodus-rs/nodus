@@ -2326,6 +2326,58 @@ shared = { path = "vendor/shared" }
     }
 
     #[test]
+    fn resolves_local_path_dependencies_with_configured_content_roots() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_skill(&temp.path().join("skills/review"), "Review");
+        write_file(
+            &temp.path().join(MANIFEST_FILE),
+            r#"
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+        );
+        write_manifest(
+            &temp.path().join("vendor/shared"),
+            r#"
+content_roots = ["nodus-development"]
+"#,
+        );
+        write_skill(
+            &temp
+                .path()
+                .join("vendor/shared/nodus-development/skills/checks"),
+            "Checks",
+        );
+
+        sync_all(temp.path(), cache.path());
+
+        let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+        let dependency = resolution
+            .packages
+            .iter()
+            .find(|package| package.alias == "shared")
+            .unwrap();
+        let managed_skill_id = namespaced_skill_id(dependency, "checks");
+
+        assert!(
+            temp.path()
+                .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".cursor/skills/{managed_skill_id}/SKILL.md"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".opencode/skills/{managed_skill_id}/SKILL.md"))
+                .exists()
+        );
+    }
+
+    #[test]
     fn add_dependency_clones_repo_and_updates_manifest() {
         let temp = TempDir::new().unwrap();
         let cache = cache_dir();
@@ -3253,6 +3305,118 @@ shared = { path = "vendor/shared", components = ["skills"] }
         assert!(!temp.path().join(".codex/skills").exists());
         assert!(!temp.path().join(".claude/skills").exists());
         assert!(!temp.path().join(".opencode/skills").exists());
+    }
+
+    #[test]
+    fn sync_does_not_publish_root_assets_by_default() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_skill(&temp.path().join("skills/review"), "Review");
+        write_file(&temp.path().join("rules/default.rules"), "allow = []\n");
+
+        sync_all(temp.path(), cache.path());
+
+        let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+        let root_package = resolution
+            .packages
+            .iter()
+            .find(|package| matches!(package.source, PackageSource::Root))
+            .unwrap();
+        let managed_skill_id = namespaced_skill_id(root_package, "review");
+        let managed_codex_rule_file = namespaced_file_name(root_package, "default", "rules");
+        let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+
+        assert!(
+            !temp
+                .path()
+                .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
+                .exists()
+        );
+        assert!(
+            !temp
+                .path()
+                .join(format!(".codex/rules/{managed_codex_rule_file}"))
+                .exists()
+        );
+        assert!(
+            !lockfile
+                .managed_files
+                .contains(&".claude/skills/review".into())
+        );
+        assert!(
+            !lockfile
+                .managed_files
+                .contains(&".codex/rules/default.rules".into())
+        );
+    }
+
+    #[test]
+    fn sync_publishes_root_assets_when_enabled() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_manifest(
+            temp.path(),
+            r#"
+publish_root = true
+"#,
+        );
+        write_skill(&temp.path().join("skills/review"), "Review");
+        write_file(&temp.path().join("rules/default.rules"), "allow = []\n");
+
+        sync_all(temp.path(), cache.path());
+
+        let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+        let root_package = resolution
+            .packages
+            .iter()
+            .find(|package| matches!(package.source, PackageSource::Root))
+            .unwrap();
+        let managed_skill_id = namespaced_skill_id(root_package, "review");
+        let managed_claude_rule_file = namespaced_file_name(root_package, "default", "md");
+        let managed_codex_rule_file = namespaced_file_name(root_package, "default", "rules");
+        let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+
+        assert!(
+            temp.path()
+                .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".cursor/skills/{managed_skill_id}/SKILL.md"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".opencode/skills/{managed_skill_id}/SKILL.md"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".claude/rules/{managed_claude_rule_file}"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".codex/rules/{managed_codex_rule_file}"))
+                .exists()
+        );
+        assert!(
+            !temp
+                .path()
+                .join(format!(".codex/skills/{managed_skill_id}/SKILL.md"))
+                .exists()
+        );
+        assert!(
+            lockfile
+                .managed_files
+                .contains(&".claude/skills/review".into())
+        );
+        assert!(
+            lockfile
+                .managed_files
+                .contains(&".codex/rules/default.rules".into())
+        );
     }
 
     #[test]

@@ -318,7 +318,8 @@ pub fn build_output_plan(
     let mut plan = OutputAccumulator::default();
 
     for (package, snapshot_root) in packages {
-        if matches!(package.source, PackageSource::Root) {
+        if matches!(package.source, PackageSource::Root) && !package.manifest.manifest.publish_root
+        {
             continue;
         }
 
