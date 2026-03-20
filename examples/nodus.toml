@@ -83,9 +83,8 @@ nodus = { github = "WendellXY/nodus", tag = "v0.3.2", components = ["skills", "r
 # Common case: local path dependency relative to the repo root.
 local_playbook = { path = "vendor/playbook" }
 
-# Common case: follow a branch head, while optionally keeping the package's own
-# semantic version metadata in the manifest.
-axiom = { github = "CharlesWiltgen/Axiom", branch = "main", version = "2.34.0" }
+# Common case: follow compatible release tags instead of pinning one exact tag.
+axiom = { github = "CharlesWiltgen/Axiom", version = "^2.34.0" }
 
 [dependencies.shared]
 # Use the expanded table form when you want more room for comments or when you

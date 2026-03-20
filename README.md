@@ -133,6 +133,7 @@ nodus add WendellXY/nodus --adapter claude --component skills --component rules
 That one command:
 
 - resolves the latest tag unless you pass `--tag`, `--branch`, or `--revision`
+- resolves the highest compatible semver tag when you pass `--version`
 - writes the dependency to `nodus.toml`
 - persists adapter selection when needed
 - locks exact state in `nodus.lock`
@@ -273,13 +274,16 @@ Use `[dev-dependencies]` for packages that should resolve in the current repo bu
 tooling = { path = "vendor/tooling" }
 ```
 
-When a dependency is synced from a branch rather than a Git tag, you can optionally retain the
-package's own semantic version separately from the transport ref:
+You can also manage a Git dependency by a Cargo-style semver requirement instead of pinning an
+exact tag:
 
 ```toml
 [dependencies]
-axiom = { github = "CharlesWiltgen/Axiom", branch = "main", version = "2.34.0" }
+axiom = { github = "CharlesWiltgen/Axiom", version = "^2.34.0" }
 ```
+
+Nodus resolves the highest compatible Git tag, records the exact resolved tag and revision in
+`nodus.lock`, and leaves the manifest requirement unchanged on future compatible updates.
 
 You can also pin a dependency to an exact Git commit:
 
@@ -412,6 +416,12 @@ nodus add <url> --branch <branch>
 nodus add <url> --revision <commit>
 ```
 
+Or declare a semver requirement and let Nodus resolve the highest compatible tag:
+
+```bash
+nodus add <url> --version '^1.2.0'
+```
+
 You can explicitly choose one or more adapters:
 
 ```bash
@@ -439,7 +449,7 @@ Behavior:
 - fetches a shared bare mirror into the shared store root
 - materializes a shared checkout for the resolved revision under the shared store root
 - resolves the latest tag when no Git selector is provided
-- writes either `tag`, `branch`, or `revision` into `nodus.toml`
+- writes either `tag`, `branch`, `revision`, or `version` into `nodus.toml`
 - validates the discovered package layout or dependency wrapper manifest
 - creates or updates `nodus.toml`
 - records only the direct dependency you added in the caller manifest
@@ -482,7 +492,7 @@ Behavior:
 - inspects local package directories directly when no Git ref override is provided
 - resolves the latest Git tag when inspecting a Git reference without `--tag` or `--branch`
 - falls back to the default branch when a Git repository has no tags
-- prints the resolved source, package root, selected components, discovered artifact ids, dependencies, adapters, and declared capabilities
+- prints the resolved source, package root, selected components, discovered artifact ids, dependencies, adapters, declared capabilities, and any dependency semver requirement recorded in the current repo
 
 ### `nodus remove`
 
@@ -497,6 +507,7 @@ Checks configured dependencies from `nodus.toml`, including `[dev-dependencies]`
 Behavior:
 
 - tagged Git dependencies are compared against the newest available tag in the shared mirror
+- semver-managed Git dependencies report the locked tag, the highest compatible tag, and the latest overall semver tag
 - branch Git dependencies are compared against the currently locked revision in `nodus.lock`
 - path dependencies are reported as local paths and are never marked outdated
 
@@ -507,7 +518,8 @@ Updates configured dependencies from `nodus.toml`, including `[dev-dependencies]
 Behavior:
 
 - tagged Git dependencies are rewritten to the newest available tag
-- branch Git dependencies keep their branch pin, refresh to the latest branch head, and update the optional semantic `version` field when present
+- semver-managed Git dependencies keep their manifest `version` requirement and update only the locked tag and revision to the highest compatible release
+- branch Git dependencies keep their branch pin and refresh to the latest branch head
 - path dependencies are left as local paths and included in the normal sync pass
 - `--allow-high-sensitivity` mirrors `nodus sync` for projects that already opt into high-sensitivity capabilities
 
