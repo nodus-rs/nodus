@@ -31,6 +31,15 @@ pub struct RelayLink {
     pub url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub via: Option<Adapter>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub files: BTreeMap<String, RelayedFileState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayedFileState {
+    pub source_sha256: String,
 }
 
 impl LocalConfig {
@@ -60,6 +69,10 @@ impl LocalConfig {
 
     pub fn relay_link(&self, alias: &str) -> Option<&RelayLink> {
         self.relay.get(alias)
+    }
+
+    pub fn relay_link_mut(&mut self, alias: &str) -> Option<&mut RelayLink> {
+        self.relay.get_mut(alias)
     }
 
     pub fn set_relay_link(&mut self, alias: impl Into<String>, link: RelayLink) {
@@ -134,6 +147,13 @@ mod tests {
                 repo_path: PathBuf::from("/tmp/playbook-ios"),
                 url: "https://github.com/wenext-limited/playbook-ios".into(),
                 via: Some(Adapter::Claude),
+                package_digest: Some("sha256:relay-state".into()),
+                files: BTreeMap::from([(
+                    "skills/review/SKILL.md".into(),
+                    RelayedFileState {
+                        source_sha256: "abc123".into(),
+                    },
+                )]),
             },
         );
 
@@ -158,6 +178,13 @@ mod tests {
                     ),
                     url: "https://github.com/wenext-limited/playbook-ios".into(),
                     via: Some(Adapter::Codex),
+                    package_digest: Some("sha256:def".into()),
+                    files: BTreeMap::from([(
+                        "skills/review/SKILL.md".into(),
+                        RelayedFileState {
+                            source_sha256: "123456".into(),
+                        },
+                    )]),
                 },
             )]),
         };
@@ -173,6 +200,15 @@ mod tests {
         assert_eq!(
             decoded["relay"]["playbook_ios"]["via"].as_str(),
             Some("codex")
+        );
+        assert_eq!(
+            decoded["relay"]["playbook_ios"]["package_digest"].as_str(),
+            Some("sha256:def")
+        );
+        assert_eq!(
+            decoded["relay"]["playbook_ios"]["files"]["skills/review/SKILL.md"]["source_sha256"]
+                .as_str(),
+            Some("123456")
         );
     }
 }

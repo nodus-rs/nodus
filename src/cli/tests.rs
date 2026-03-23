@@ -1377,6 +1377,95 @@ fn relay_dry_run_does_not_persist_local_config_or_repo_edits() {
 }
 
 #[test]
+fn relay_dry_run_previews_state_only_local_config_changes() {
+    let temp = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    let (repo, url) = create_git_dependency();
+
+    let output = ProcessCommand::new("git")
+        .args(["remote", "add", "origin", &repo.path().to_string_lossy()])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    run_command_in_dir(
+        Command::Add {
+            url,
+            dev: false,
+            tag: None,
+            branch: None,
+            version: None,
+            revision: None,
+            adapter: vec![Adapter::Claude],
+            component: vec![],
+            sync_on_launch: false,
+            dry_run: false,
+        },
+        temp.path(),
+        cache.path(),
+        &Reporter::silent(),
+    )
+    .unwrap();
+
+    let alias = crate::manifest::load_root_from_dir(temp.path())
+        .unwrap()
+        .manifest
+        .dependencies
+        .keys()
+        .next()
+        .unwrap()
+        .clone();
+    run_command_in_dir(
+        Command::Relay {
+            packages: vec![alias.clone()],
+            repo_path: Some(repo.path().to_path_buf()),
+            via: None,
+            watch: false,
+            dry_run: false,
+        },
+        temp.path(),
+        cache.path(),
+        &Reporter::silent(),
+    )
+    .unwrap();
+
+    let managed_skill = first_file_under(&temp.path().join(".claude"), "SKILL.md");
+    write_file(
+        &managed_skill,
+        "---\nname: Review\ndescription: Example skill.\n---\n# Edited\n",
+    );
+    let repo_skill = repo.path().join("skills/review/SKILL.md");
+    let repo_before = read_optional(&repo_skill).unwrap();
+    let local_config_path = temp.path().join(".nodus/local.toml");
+    let local_config_before = fs::read_to_string(&local_config_path).unwrap();
+
+    let output = run_command_output(
+        Command::Relay {
+            packages: vec![alias],
+            repo_path: None,
+            via: None,
+            watch: false,
+            dry_run: true,
+        },
+        temp.path(),
+        cache.path(),
+    );
+
+    assert!(output.contains("would persist local config"));
+    assert!(output.contains("would relay"));
+    assert_eq!(read_optional(&repo_skill).unwrap(), repo_before);
+    assert_eq!(
+        fs::read_to_string(&local_config_path).unwrap(),
+        local_config_before
+    );
+}
+
+#[test]
 fn relay_rejects_repo_path_for_multiple_dependencies() {
     let temp = TempDir::new().unwrap();
     let cache = TempDir::new().unwrap();

@@ -13,7 +13,7 @@ use crate::git::{
     git_urls_match, is_git_repository, normalize_git_url, repository_origin_url,
     resolve_dependency_alias,
 };
-use crate::local_config::{LocalConfig, RelayLink, config_path, local_dir};
+use crate::local_config::{LocalConfig, RelayLink, RelayedFileState, config_path, local_dir};
 use crate::lockfile::{LOCKFILE_NAME, Lockfile};
 use crate::manifest::{DependencySourceKind, MANIFEST_FILE, SkillEntry, load_root_from_dir};
 use crate::report::Reporter;
@@ -65,6 +65,7 @@ enum RelayTransform {
 struct RelayPlan {
     updates: BTreeMap<PathBuf, Vec<u8>>,
     noops: BTreeSet<PathBuf>,
+    state_files: BTreeMap<String, RelayedFileState>,
     conflicts: Vec<String>,
 }
 
@@ -146,27 +147,20 @@ fn relay_dependency_in_dir_mode(
     reporter: &Reporter,
 ) -> Result<RelaySummary> {
     let mut workspace = load_workspace(project_root, cache_root, reporter)?;
+    let original_local_config = workspace.local_config.clone();
     let dependency = dependency_context(&workspace, package)?;
-    let local_config_changed = relay_link_would_change(
-        &workspace.local_config,
-        &dependency.alias,
-        repo_path_override,
-        via_override,
-        &dependency.url,
-    )?;
     let linked_repo = resolve_linked_repo(
-        project_root,
         &mut workspace.local_config,
         &dependency,
         repo_path_override,
         via_override,
-        execution_mode,
     )?;
 
     let plan = build_relay_plan(
         &dependency,
         &workspace.project_root,
         workspace.selected_adapters,
+        workspace.local_config.relay_link(&dependency.alias),
         &linked_repo,
     )?;
     if !plan.conflicts.is_empty() {
@@ -176,6 +170,8 @@ fn relay_dependency_in_dir_mode(
             plan.conflicts.join("\n")
         );
     }
+    update_relay_link_state(&mut workspace.local_config, &dependency, &plan)?;
+    let local_config_changed = workspace.local_config != original_local_config;
 
     if execution_mode.is_dry_run() {
         if local_config_changed {
@@ -299,6 +295,7 @@ pub fn ensure_no_pending_relay_edits_in_dir(project_root: &Path, cache_root: &Pa
             &dependency,
             &workspace.project_root,
             workspace.selected_adapters,
+            workspace.local_config.relay_link(&alias),
             &linked,
         )?;
         if !plan.conflicts.is_empty() {
@@ -460,31 +457,39 @@ fn dependency_context(workspace: &RelayWorkspace, package: &str) -> Result<Depen
 }
 
 fn resolve_linked_repo(
-    project_root: &Path,
     local_config: &mut LocalConfig,
     dependency: &DependencyContext,
     repo_path_override: Option<&Path>,
     via_override: Option<Adapter>,
-    execution_mode: ExecutionMode,
 ) -> Result<PathBuf> {
     match repo_path_override {
         Some(path) => {
             let linked_repo = canonicalize_existing_dir(path)?;
             validate_linked_repo(&linked_repo, &dependency.url)?;
-            let existing_via = local_config
-                .relay_link(&dependency.alias)
-                .and_then(|link| link.via);
+            let existing = local_config.relay_link(&dependency.alias).cloned();
+            let reuses_state = existing
+                .as_ref()
+                .is_some_and(|link| link.repo_path == linked_repo && link.url == dependency.url);
             local_config.set_relay_link(
                 dependency.alias.clone(),
                 RelayLink {
                     repo_path: linked_repo.clone(),
                     url: dependency.url.clone(),
-                    via: via_override.or(existing_via),
+                    via: via_override.or(existing.as_ref().and_then(|link| link.via)),
+                    package_digest: reuses_state
+                        .then(|| {
+                            existing
+                                .as_ref()
+                                .and_then(|link| link.package_digest.clone())
+                        })
+                        .flatten(),
+                    files: if reuses_state {
+                        existing.map(|link| link.files).unwrap_or_default()
+                    } else {
+                        BTreeMap::new()
+                    },
                 },
             );
-            if !execution_mode.is_dry_run() {
-                local_config.save_in_dir(project_root)?;
-            }
             Ok(linked_repo)
         }
         None => {
@@ -503,40 +508,15 @@ fn resolve_linked_repo(
                             repo_path: existing.repo_path.clone(),
                             url: existing.url.clone(),
                             via: Some(via),
+                            package_digest: existing.package_digest.clone(),
+                            files: existing.files.clone(),
                         },
                     );
-                    if !execution_mode.is_dry_run() {
-                        local_config.save_in_dir(project_root)?;
-                    }
                 }
             }
             Ok(linked_repo)
         }
     }
-}
-
-fn relay_link_would_change(
-    local_config: &LocalConfig,
-    alias: &str,
-    repo_path_override: Option<&Path>,
-    via_override: Option<Adapter>,
-    url: &str,
-) -> Result<bool> {
-    let Some(repo_path_override) = repo_path_override else {
-        return Ok(via_override.is_some_and(|via| {
-            local_config
-                .relay_link(alias)
-                .is_some_and(|link| link.via != Some(via))
-        }));
-    };
-
-    let linked_repo = canonicalize_existing_dir(repo_path_override)?;
-    let existing = local_config.relay_link(alias);
-    let next_via = via_override.or(existing.and_then(|link| link.via));
-
-    Ok(existing.is_none_or(|link| {
-        link.repo_path != linked_repo || link.url != url || link.via != next_via
-    }))
 }
 
 fn resolve_existing_link(
@@ -579,6 +559,7 @@ fn build_relay_plan(
     dependency: &DependencyContext,
     project_root: &Path,
     selected_adapters: Adapters,
+    relay_link: Option<&RelayLink>,
     linked_repo: &Path,
 ) -> Result<RelayPlan> {
     let mappings = build_mappings(dependency, project_root, selected_adapters, linked_repo)?;
@@ -594,16 +575,19 @@ fn build_relay_plan(
     for (linked_source_path, group) in grouped {
         let mut candidate_source: Option<Vec<u8>> = None;
         let linked_current = fs::read(&linked_source_path).ok();
-        let mut linked_changed = false;
+        let mut baseline_source: Option<Vec<u8>> = None;
 
         for mapping in group {
-            let baseline_source = fs::read(&mapping.snapshot_path).with_context(|| {
+            let mapping_baseline = fs::read(&mapping.snapshot_path).with_context(|| {
                 format!(
                     "failed to read relay baseline {}",
                     mapping.snapshot_path.display()
                 )
             })?;
-            let baseline_managed = mapping.transform.to_managed_bytes(&baseline_source)?;
+            if baseline_source.is_none() {
+                baseline_source = Some(mapping_baseline.clone());
+            }
+            let baseline_managed = mapping.transform.to_managed_bytes(&mapping_baseline)?;
             let current_managed = match fs::read(&mapping.managed_path) {
                 Ok(contents) => contents,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -626,10 +610,7 @@ fn build_relay_plan(
 
             let candidate = mapping
                 .transform
-                .to_source_bytes(&current_managed, &baseline_source)?;
-            if linked_current.as_deref() != Some(baseline_source.as_slice()) {
-                linked_changed = true;
-            }
+                .to_source_bytes(&current_managed, &mapping_baseline)?;
             if let Some(existing) = &candidate_source {
                 if existing != &candidate {
                     plan.conflicts.push(format!(
@@ -646,21 +627,68 @@ fn build_relay_plan(
         let Some(candidate_source) = candidate_source else {
             continue;
         };
+        let relative_path = display_relative(linked_repo, &linked_source_path);
+        let linked_hash_matches_state = relay_link
+            .filter(|link| {
+                link.package_digest.as_deref() == Some(dependency.package.digest.as_str())
+            })
+            .and_then(|link| link.files.get(&relative_path))
+            .zip(linked_current.as_deref())
+            .is_some_and(|(state, current)| state.source_sha256 == sha256_hex(current));
         if linked_current.as_deref() == Some(candidate_source.as_slice()) {
             plan.noops.insert(linked_source_path);
+            plan.state_files.insert(
+                relative_path,
+                RelayedFileState {
+                    source_sha256: sha256_hex(&candidate_source),
+                },
+            );
             continue;
         }
-        if linked_changed {
+        if baseline_source
+            .as_deref()
+            .is_some_and(|baseline| linked_current.as_deref() != Some(baseline))
+            && !linked_hash_matches_state
+        {
             plan.conflicts.push(format!(
                 "{} changed in both managed outputs and linked source",
                 linked_source_path.display()
             ));
             continue;
         }
+        plan.state_files.insert(
+            relative_path,
+            RelayedFileState {
+                source_sha256: sha256_hex(&candidate_source),
+            },
+        );
         plan.updates.insert(linked_source_path, candidate_source);
     }
 
     Ok(plan)
+}
+
+fn update_relay_link_state(
+    local_config: &mut LocalConfig,
+    dependency: &DependencyContext,
+    plan: &RelayPlan,
+) -> Result<()> {
+    let link = local_config
+        .relay_link_mut(&dependency.alias)
+        .ok_or_else(|| {
+            anyhow!(
+                "no relay link configured for `{}`; rerun with `--repo-path <path>`",
+                dependency.alias
+            )
+        })?;
+    if plan.state_files.is_empty() {
+        link.package_digest = None;
+        link.files.clear();
+    } else {
+        link.package_digest = Some(dependency.package.digest.clone());
+        link.files = plan.state_files.clone();
+    }
+    Ok(())
 }
 
 fn watch_dependency_in_dir_with_options(
@@ -874,6 +902,10 @@ fn path_fingerprint(path: &Path) -> Result<PathFingerprint> {
     let mut hash = [0u8; 32];
     hash.copy_from_slice(&digest);
     Ok(PathFingerprint::File(hash))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 fn build_mappings(
@@ -1214,6 +1246,16 @@ mod tests {
         fs::write(path, contents).unwrap();
     }
 
+    fn wait_until(mut predicate: impl FnMut() -> bool, message: &str) {
+        for _ in 0..500 {
+            if predicate() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        panic!("{message}");
+    }
+
     fn run_git(path: &Path, args: &[&str]) {
         let output = Command::new("git")
             .args(args)
@@ -1470,6 +1512,72 @@ mod tests {
     }
 
     #[test]
+    fn relay_allows_successive_managed_edits_after_successful_relay() {
+        let (_remote_root, remote_repo) = create_remote_dependency();
+        let linked = clone_linked_repo(&remote_repo);
+        let linked_repo = linked.path().join("linked");
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        install_dependency(
+            project.path(),
+            cache.path(),
+            &remote_repo,
+            &[Adapter::Claude],
+        );
+
+        let package = resolved_package(project.path(), cache.path(), &[Adapter::Claude]);
+        let managed_skill = managed_skill_root(project.path(), Adapter::Claude, &package, "review")
+            .join("SKILL.md");
+
+        relay_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "playbook_ios",
+            Some(&linked_repo),
+            None,
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        append_file(&managed_skill, "\nFirst relay update.\n");
+        relay_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "playbook_ios",
+            None,
+            None,
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        append_file(&managed_skill, "Second relay update.\n");
+        let summary = relay_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "playbook_ios",
+            None,
+            None,
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        assert_eq!(summary.updated_file_count, 1);
+        let relayed = fs::read_to_string(linked_repo.join("skills/review/SKILL.md")).unwrap();
+        assert!(relayed.ends_with("\nFirst relay update.\nSecond relay update.\n"));
+
+        let local_config = LocalConfig::load_in_dir(project.path()).unwrap();
+        let link = local_config.relay_link("playbook_ios").unwrap();
+        assert_eq!(
+            link.package_digest.as_deref(),
+            Some(package.digest.as_str())
+        );
+        assert_eq!(
+            link.files["skills/review/SKILL.md"].source_sha256,
+            sha256_hex(relayed.as_bytes())
+        );
+    }
+
+    #[test]
     fn relay_writes_back_direct_managed_file_and_directory_edits() {
         let (_remote_root, remote_repo) = create_remote_dependency();
         let linked = clone_linked_repo(&remote_repo);
@@ -1583,6 +1691,65 @@ target = ".github/prompts/review.md"
             cache.path(),
             "playbook_ios",
             Some(&linked_repo),
+            None,
+            &Reporter::silent(),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("changed in both managed outputs and linked source"));
+    }
+
+    #[test]
+    fn relay_rejects_manual_linked_edits_after_successful_relay() {
+        let (_remote_root, remote_repo) = create_remote_dependency();
+        let linked = clone_linked_repo(&remote_repo);
+        let linked_repo = linked.path().join("linked");
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        install_dependency(
+            project.path(),
+            cache.path(),
+            &remote_repo,
+            &[Adapter::Claude],
+        );
+
+        let package = resolved_package(project.path(), cache.path(), &[Adapter::Claude]);
+        let managed_skill = managed_skill_root(project.path(), Adapter::Claude, &package, "review")
+            .join("SKILL.md");
+
+        relay_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "playbook_ios",
+            Some(&linked_repo),
+            None,
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        append_file(&managed_skill, "\nManaged relay update.\n");
+        relay_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "playbook_ios",
+            None,
+            None,
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        append_file(
+            &linked_repo.join("skills/review/SKILL.md"),
+            "\nManual linked change.\n",
+        );
+        append_file(&managed_skill, "Managed second update.\n");
+
+        let error = relay_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "playbook_ios",
+            None,
             None,
             &Reporter::silent(),
         )
@@ -2037,6 +2204,89 @@ tag = {:?}
     }
 
     #[test]
+    fn relay_watch_syncs_multiple_follow_up_edits_to_same_file() {
+        let (_remote_root, remote_repo) = create_remote_dependency();
+        let linked = clone_linked_repo(&remote_repo);
+        let linked_repo = linked.path().join("linked");
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        install_dependency(
+            project.path(),
+            cache.path(),
+            &remote_repo,
+            &[Adapter::Claude],
+        );
+
+        let package = resolved_package(project.path(), cache.path(), &[Adapter::Claude]);
+        let managed_skill = managed_skill_root(project.path(), Adapter::Claude, &package, "review")
+            .join("SKILL.md");
+
+        let project_root = project.path().to_path_buf();
+        let cache_root = cache.path().to_path_buf();
+        let linked_repo_for_watch = linked_repo.clone();
+        let output = SharedBuffer::default();
+        let output_for_watch = output.clone();
+        let watch_handle = thread::spawn(move || {
+            watch_dependency_in_dir_with_options(
+                &project_root,
+                &cache_root,
+                "playbook_ios",
+                Some(&linked_repo_for_watch),
+                None,
+                &Reporter::sink(ColorMode::Never, output_for_watch),
+                RelayWatchOptions {
+                    poll_interval: Duration::from_millis(20),
+                    max_events: Some(3),
+                    max_polls: Some(400),
+                },
+            )
+            .unwrap()
+        });
+
+        wait_until(
+            || {
+                output
+                    .contents()
+                    .contains("watching managed outputs for changes")
+            },
+            "watcher never reported readiness",
+        );
+
+        append_file(&managed_skill, "\nWatched relay update one.\n");
+        wait_until(
+            || {
+                fs::read_to_string(linked_repo.join("skills/review/SKILL.md"))
+                    .unwrap()
+                    .ends_with("\nWatched relay update one.\n")
+            },
+            "first watched relay update was never applied",
+        );
+        wait_until(
+            || {
+                output
+                    .contents()
+                    .matches("relayed playbook_ios into")
+                    .count()
+                    >= 2
+            },
+            "watcher never recorded the first follow-up relay",
+        );
+        thread::sleep(Duration::from_millis(200));
+
+        append_file(&managed_skill, "Watched relay update two.\n");
+
+        let summaries = watch_handle.join().unwrap();
+        assert_eq!(summaries.len(), 3);
+        assert_eq!(summaries[1].updated_file_count, 1);
+        assert_eq!(summaries[2].updated_file_count, 1);
+        assert!(
+            fs::read_to_string(linked_repo.join("skills/review/SKILL.md"))
+                .unwrap()
+                .ends_with("\nWatched relay update one.\nWatched relay update two.\n")
+        );
+    }
+
+    #[test]
     fn relay_watch_syncs_follow_up_managed_edits_for_multiple_dependencies() {
         let (_remote_root_one, remote_repo_one) = create_remote_dependency_named("playbook-ios");
         let (_remote_root_two, remote_repo_two) = create_remote_dependency_named("docs-kit");
@@ -2149,6 +2399,70 @@ tag = {:?}
                 .unwrap()
                 .ends_with("\nDocs baseline.\n")
         );
+    }
+
+    #[test]
+    fn relay_ignores_stale_file_state_after_dependency_digest_changes() {
+        let (_remote_root, remote_repo) = create_remote_dependency();
+        let linked = clone_linked_repo(&remote_repo);
+        let linked_repo = linked.path().join("linked");
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        install_dependency(
+            project.path(),
+            cache.path(),
+            &remote_repo,
+            &[Adapter::Claude],
+        );
+
+        let package_v1 = resolved_package(project.path(), cache.path(), &[Adapter::Claude]);
+        let managed_skill_v1 =
+            managed_skill_root(project.path(), Adapter::Claude, &package_v1, "review")
+                .join("SKILL.md");
+
+        relay_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "playbook_ios",
+            Some(&linked_repo),
+            None,
+            &Reporter::silent(),
+        )
+        .unwrap();
+        append_file(&managed_skill_v1, "\nRelayed from v0.1.0.\n");
+        relay_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "playbook_ios",
+            None,
+            None,
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        let mut local_config = LocalConfig::load_in_dir(project.path()).unwrap();
+        let link = local_config.relay_link_mut("playbook_ios").unwrap();
+        assert_eq!(
+            link.package_digest.as_deref(),
+            Some(package_v1.digest.as_str())
+        );
+        link.package_digest = Some("sha256:stale".into());
+        local_config.save_in_dir(project.path()).unwrap();
+
+        append_file(&managed_skill_v1, "Relayed after digest changed.\n");
+
+        let error = relay_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "playbook_ios",
+            None,
+            None,
+            &Reporter::silent(),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("changed in both managed outputs and linked source"));
     }
 
     #[test]
