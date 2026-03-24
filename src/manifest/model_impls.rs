@@ -62,14 +62,22 @@ impl LoadedManifest {
             PackageRole::Root => true,
             PackageRole::Dependency => {
                 (self.manifest_path.is_some() || self.allows_empty_dependency_wrapper)
-                    && !self.manifest.dependencies.is_empty()
+                    && (!self.manifest.dependencies.is_empty()
+                        || !self.manifest.mcp_servers.is_empty())
             }
         };
-        if self.discovered.is_empty() && !allow_empty_package {
+        if self.discovered.is_empty()
+            && self.manifest.mcp_servers.is_empty()
+            && !allow_empty_package
+        {
             bail!(
-                "package at {} must contain at least one of `agents/`, `commands/`, `rules/`, or `skills/`, or declare dependencies in nodus.toml",
+                "package at {} must contain at least one of `agents/`, `commands/`, `rules/`, or `skills/`, declare `mcp_servers`, or declare dependencies in nodus.toml",
                 self.root.display()
             );
+        }
+
+        for (server_id, server) in &self.manifest.mcp_servers {
+            validate_mcp_server(server_id, server)?;
         }
 
         let mut aliases = HashSet::new();
@@ -537,6 +545,46 @@ impl ManagedPathSpec {
     pub fn normalized_target(&self) -> Result<PathBuf> {
         normalize_manifest_relative_path(&self.target, "managed target path")
     }
+}
+
+fn validate_mcp_server(server_id: &str, server: &McpServerConfig) -> Result<()> {
+    if server_id.trim().is_empty() {
+        bail!("manifest field `mcp_servers` contains an empty server id");
+    }
+    if server.command.trim().is_empty() {
+        bail!("manifest field `mcp_servers.{server_id}.command` must not be empty");
+    }
+    if let Some(cwd) = &server.cwd
+        && cwd.as_os_str().is_empty()
+    {
+        bail!("manifest field `mcp_servers.{server_id}.cwd` must not be empty");
+    }
+    for key in server.env.keys() {
+        if key.trim().is_empty() {
+            bail!("manifest field `mcp_servers.{server_id}.env` must not contain empty keys");
+        }
+    }
+
+    if server.command.contains("${CLAUDE_PLUGIN_ROOT}")
+        || server
+            .args
+            .iter()
+            .any(|arg| arg.contains("${CLAUDE_PLUGIN_ROOT}"))
+        || server
+            .env
+            .values()
+            .any(|value| value.contains("${CLAUDE_PLUGIN_ROOT}"))
+        || server
+            .cwd
+            .as_ref()
+            .is_some_and(|cwd| display_path(cwd).contains("${CLAUDE_PLUGIN_ROOT}"))
+    {
+        bail!(
+            "manifest field `mcp_servers.{server_id}` uses unsupported `${{CLAUDE_PLUGIN_ROOT}}` interpolation"
+        );
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

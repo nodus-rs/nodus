@@ -6,7 +6,9 @@ use anyhow::{Context, Result, anyhow, bail};
 use semver::Version;
 use toml::Table;
 
-use super::types::{ClaudeMarketplace, ClaudePluginMetadata, SkillFrontmatter};
+use super::types::{
+    ClaudeMarketplace, ClaudeMarketplaceMcpServers, ClaudePluginMetadata, SkillFrontmatter,
+};
 use super::*;
 
 pub(super) fn load_manifest_str(path: &Path, contents: &str) -> Result<(Manifest, Vec<String>)> {
@@ -21,7 +23,9 @@ pub(super) fn load_manifest_str(path: &Path, contents: &str) -> Result<(Manifest
 }
 
 pub(super) fn should_try_claude_marketplace_fallback(loaded: &LoadedManifest) -> bool {
-    loaded.discovered.is_empty() && loaded.manifest.dependencies.is_empty()
+    loaded.discovered.is_empty()
+        && loaded.manifest.dependencies.is_empty()
+        && loaded.manifest.mcp_servers.is_empty()
 }
 
 pub(super) fn load_claude_marketplace_wrapper(
@@ -98,7 +102,14 @@ pub(super) fn load_claude_marketplace_wrapper(
             );
         }
         if plugin_root == loaded.root {
-            bail!("plugin `{name}` source `{source}` must not point at the package root");
+            let Some(mcp_servers) = plugin.mcp_servers else {
+                bail!("plugin `{name}` source `{source}` must not point at the package root");
+            };
+            import_marketplace_mcp_servers(&mut manifest, name, mcp_servers, &marketplace_path)?;
+            if plugin_count == 1 {
+                single_plugin_version = declared_version;
+            }
+            continue;
         }
 
         let plugin_manifest = load_dependency_from_dir(&plugin_root).with_context(|| {
@@ -140,6 +151,42 @@ pub(super) fn load_claude_marketplace_wrapper(
         allows_empty_dependency_wrapper: true,
         manifest_contents_override: None,
     }))
+}
+
+fn import_marketplace_mcp_servers(
+    manifest: &mut Manifest,
+    plugin_name: &str,
+    mcp_servers: ClaudeMarketplaceMcpServers,
+    marketplace_path: &Path,
+) -> Result<()> {
+    let servers = match mcp_servers {
+        ClaudeMarketplaceMcpServers::Inline(servers) => servers,
+        ClaudeMarketplaceMcpServers::Path(path) => {
+            bail!(
+                "{} plugin `{plugin_name}` uses unsupported `mcpServers` path `{path}`",
+                marketplace_path.display()
+            )
+        }
+    };
+
+    for (server_id, server) in servers {
+        let id = server_id.trim();
+        if id.is_empty() {
+            bail!(
+                "{} plugin `{plugin_name}` has an empty MCP server id",
+                marketplace_path.display()
+            );
+        }
+        if manifest.mcp_servers.contains_key(id) {
+            bail!(
+                "{} plugin `{plugin_name}` declares duplicate MCP server `{id}`",
+                marketplace_path.display()
+            );
+        }
+        manifest.mcp_servers.insert(id.to_string(), server);
+    }
+
+    Ok(())
 }
 
 pub(super) fn discover_package_contents(
@@ -463,6 +510,7 @@ pub(super) fn collect_ignored_field_warnings(table: &Table) -> Vec<String> {
         "content_roots",
         "publish_root",
         "capabilities",
+        "mcp_servers",
         "adapters",
         "launch_hooks",
         "dependencies",

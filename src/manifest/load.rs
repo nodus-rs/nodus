@@ -101,6 +101,37 @@ pub fn serialize_manifest(manifest: &Manifest) -> Result<String> {
         }
     }
 
+    if !manifest.mcp_servers.is_empty() {
+        if !output.is_empty() && !output.ends_with('\n') {
+            output.push('\n');
+        }
+        for (id, server) in &manifest.mcp_servers {
+            output.push_str(&format!("[mcp_servers.{id}]\n"));
+            output.push_str(&format!("command = {}\n", quote(&server.command)));
+            if !server.args.is_empty() {
+                let encoded = server
+                    .args
+                    .iter()
+                    .map(|arg| quote(arg))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                output.push_str(&format!("args = [{encoded}]\n"));
+            }
+            if let Some(cwd) = &server.cwd {
+                output.push_str(&format!("cwd = {}\n", quote(&display_path(cwd))));
+            }
+            if !server.env.is_empty() {
+                output.push_str("[mcp_servers.");
+                output.push_str(id);
+                output.push_str(".env]\n");
+                for (key, value) in &server.env {
+                    output.push_str(&format!("{key} = {}\n", quote(value)));
+                }
+            }
+            output.push('\n');
+        }
+    }
+
     if let Some(adapters) = &manifest.adapters {
         if !output.is_empty() && !output.ends_with('\n') {
             output.push('\n');

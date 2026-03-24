@@ -10,7 +10,7 @@ use crate::manifest::{Capability, DependencyComponent};
 use crate::store::write_atomic;
 
 pub const LOCKFILE_NAME: &str = "nodus.lock";
-const LOCKFILE_VERSION: u32 = 6;
+const LOCKFILE_VERSION: u32 = 7;
 const MIN_SYNC_COMPATIBLE_LOCKFILE_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +39,8 @@ pub struct LockedPackage {
     pub rules: Vec<String>,
     #[serde(default)]
     pub commands: Vec<String>,
+    #[serde(default)]
+    pub mcp_servers: Vec<String>,
     #[serde(default)]
     pub dependencies: Vec<String>,
     #[serde(default)]
@@ -260,6 +262,22 @@ impl Lockfile {
 
         if paths.is_empty() { None } else { Some(paths) }
     }
+
+    pub fn managed_mcp_server_names(&self) -> HashSet<String> {
+        self.packages
+            .iter()
+            .flat_map(|package| {
+                package
+                    .mcp_servers
+                    .iter()
+                    .map(|server_id| managed_mcp_server_name(&package.alias, server_id))
+            })
+            .collect()
+    }
+}
+
+pub fn managed_mcp_server_name(package_alias: &str, server_id: &str) -> String {
+    format!("{package_alias}__{server_id}")
 }
 
 fn locked_package_short_id(package: &LockedPackage) -> String {
@@ -322,6 +340,7 @@ mod tests {
                 agents: vec!["security-reviewer".into()],
                 rules: vec!["safe-shell".into()],
                 commands: vec!["build".into()],
+                mcp_servers: vec!["firebase".into()],
                 dependencies: vec![],
                 capabilities: vec![Capability {
                     id: "shell.exec".into(),
@@ -401,6 +420,7 @@ managed_files = []
                 agents: vec!["security".into()],
                 rules: vec![],
                 commands: vec!["build".into()],
+                mcp_servers: vec!["firebase".into()],
                 dependencies: vec![],
                 capabilities: vec![],
             }],
@@ -444,6 +464,7 @@ managed_files = []
                 agents: vec![],
                 rules: vec![],
                 commands: vec![],
+                mcp_servers: vec![],
                 dependencies: vec![],
                 capabilities: vec![],
             }],
@@ -496,6 +517,7 @@ managed_files = []
                 agents: vec!["security".into()],
                 rules: vec!["default".into()],
                 commands: vec!["build".into()],
+                mcp_servers: vec![],
                 dependencies: vec![],
                 capabilities: vec![],
             }],
@@ -541,5 +563,40 @@ managed_files = []
         assert!(managed_paths.contains(&PathBuf::from(
             "/tmp/project/.opencode/rules/default_01f556.md"
         )));
+    }
+
+    #[test]
+    fn managed_mcp_server_names_include_alias_prefixes() {
+        let lockfile = Lockfile {
+            version: LOCKFILE_VERSION,
+            packages: vec![LockedPackage {
+                alias: "firebase".into(),
+                name: "firebase-tools".into(),
+                version_tag: Some("1.0.0".into()),
+                source: LockedSource {
+                    kind: "git".into(),
+                    path: None,
+                    url: Some("https://github.com/firebase/firebase-tools".into()),
+                    tag: Some("v1.0.0".into()),
+                    branch: None,
+                    rev: Some("abc123".into()),
+                },
+                digest: "sha256:abc".into(),
+                selected_components: None,
+                skills: vec![],
+                agents: vec![],
+                rules: vec![],
+                commands: vec![],
+                mcp_servers: vec!["firebase".into()],
+                dependencies: vec![],
+                capabilities: vec![],
+            }],
+            managed_files: vec![".mcp.json".into()],
+        };
+
+        assert_eq!(
+            lockfile.managed_mcp_server_names(),
+            HashSet::from([String::from("firebase__firebase")])
+        );
     }
 }

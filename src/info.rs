@@ -38,6 +38,7 @@ pub struct PackageInfo {
     agents: Vec<String>,
     rules: Vec<String>,
     commands: Vec<String>,
+    mcp_servers: Vec<String>,
     dependencies: Vec<String>,
     dev_dependencies: Vec<String>,
     capabilities: Vec<PackageCapability>,
@@ -410,6 +411,7 @@ fn package_info_from_loaded(
             .iter()
             .map(|entry| entry.id.clone())
             .collect(),
+        mcp_servers: manifest.manifest.mcp_servers.keys().cloned().collect(),
         dependencies,
         dev_dependencies,
         capabilities: manifest
@@ -557,6 +559,14 @@ impl PackageInfo {
         if !self.capabilities.is_empty() {
             lines.push(paint_label(reporter, "capabilities:"));
             lines.extend(render_capability_lines(reporter, &self.capabilities));
+        }
+
+        if !self.mcp_servers.is_empty() {
+            lines.push(format!(
+                "{} {}",
+                paint_label(reporter, "mcp-servers:"),
+                render_items(&self.mcp_servers)
+            ));
         }
 
         if !self.features.is_empty() {
@@ -935,6 +945,26 @@ api_version = "1"
         assert!(output.contains("artifacts:\n  skills = [review]"));
         assert!(output.contains("features:\n +default"));
         assert!(output.contains("  test-utils = []"));
+    }
+
+    #[test]
+    fn info_lists_mcp_servers() {
+        let package = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+
+        write_file(
+            &package.path().join("nodus.toml"),
+            r#"
+[mcp_servers.firebase]
+command = "npx"
+args = ["-y", "firebase-tools", "mcp", "--dir", "."]
+"#,
+        );
+        write_skill(package.path(), "Review");
+
+        let output = capture_info_output(package.path(), cache.path(), ".", None, None);
+
+        assert!(output.contains("mcp-servers: firebase"));
     }
 
     #[test]

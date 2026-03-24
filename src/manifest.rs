@@ -13,5 +13,6 @@ pub use model_impls::RequestedGitRef;
 pub use types::{
     AdapterConfig, Capability, DependencyComponent, DependencyEntry, DependencyKind,
     DependencySourceKind, DependencySpec, FileEntry, InitSummary, LaunchHookConfig, LoadedManifest,
-    MANIFEST_FILE, ManagedPathSpec, Manifest, PackageContents, PackageRole, SkillEntry,
+    MANIFEST_FILE, ManagedPathSpec, Manifest, McpServerConfig, PackageContents, PackageRole,
+    SkillEntry,
 };

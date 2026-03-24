@@ -436,7 +436,13 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
             })
             .collect::<Result<Vec<_>>>()?;
         let selected_adapters = Adapters::from_slice(&selection.adapters);
-        let output_plan = build_output_plan(cwd, &package_snapshots, selected_adapters)?;
+        let output_plan = build_output_plan(
+            cwd,
+            &package_snapshots,
+            selected_adapters,
+            existing_lockfile.as_ref(),
+            true,
+        )?;
         let planned_files = &output_plan.files;
         let desired_paths = resolution.managed_paths(cwd, selected_adapters)?;
         let lockfile = resolution.to_lockfile(selected_adapters)?;
@@ -795,7 +801,13 @@ pub fn doctor_in_dir(cwd: &Path, cache_root: &Path, reporter: &Reporter) -> Resu
         .iter()
         .map(|package| (package.clone(), package.root.clone()))
         .collect::<Vec<_>>();
-    let output_plan = build_output_plan(cwd, &package_roots, selected_adapters)?;
+    let output_plan = build_output_plan(
+        cwd,
+        &package_roots,
+        selected_adapters,
+        Some(&existing_lockfile),
+        true,
+    )?;
     let planned_files = &output_plan.files;
     let desired_paths = resolution.managed_paths(cwd, selected_adapters)?;
     let expected_lockfile = resolution.to_lockfile(selected_adapters)?;
@@ -1510,6 +1522,7 @@ impl Resolution {
                         .iter()
                         .map(|item| &item.id),
                 ),
+                mcp_servers: sorted_ids(package.manifest.manifest.mcp_servers.keys()),
                 dependencies,
                 capabilities: package.manifest.manifest.capabilities.clone(),
             });
@@ -1536,7 +1549,14 @@ impl Resolution {
             .iter()
             .map(|package| (package.clone(), package.root.clone()))
             .collect::<Vec<_>>();
-        Ok(build_output_plan(&self.project_root, &package_roots, selected_adapters)?.managed_files)
+        Ok(build_output_plan(
+            &self.project_root,
+            &package_roots,
+            selected_adapters,
+            None,
+            false,
+        )?
+        .managed_files)
     }
 }
 
@@ -1620,7 +1640,10 @@ fn find_unmanaged_collision(
     project_root: &Path,
 ) -> Option<UnmanagedCollision> {
     for file in planned_files {
-        if file.path.exists() && !path_is_owned(&file.path, owned_paths) {
+        if file.path.exists()
+            && !path_is_owned(&file.path, owned_paths)
+            && !allows_managed_merge(project_root, &file.path)
+        {
             return Some(UnmanagedCollision {
                 path: file.path.clone(),
             });
@@ -1641,6 +1664,10 @@ fn find_unmanaged_collision(
     }
 
     None
+}
+
+fn allows_managed_merge(project_root: &Path, path: &Path) -> bool {
+    path == project_root.join(".mcp.json")
 }
 
 fn find_managed_collision(
@@ -3466,6 +3493,229 @@ shared = { path = "vendor/shared" }
     }
 
     #[test]
+    fn sync_merges_direct_managed_runtime_root_gitignore_with_generated_outputs() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_manifest(
+            temp.path(),
+            r#"
+[dependencies.shared]
+path = "vendor/shared"
+
+[[dependencies.shared.managed]]
+source = "config/.gitignore"
+target = ".claude/.gitignore"
+"#,
+        );
+        write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+        write_file(
+            &temp.path().join("vendor/shared/config/.gitignore"),
+            ".DS_Store\n",
+        );
+
+        sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Claude])
+            .unwrap();
+        sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Claude])
+            .unwrap();
+
+        let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+        let dependency = resolution
+            .packages
+            .iter()
+            .find(|package| package.alias == "shared")
+            .unwrap();
+        let managed_skill_id = namespaced_skill_id(dependency, "review");
+        let (_, suffix) = managed_skill_id.rsplit_once('_').unwrap();
+        let gitignore = fs::read_to_string(temp.path().join(".claude/.gitignore")).unwrap();
+        let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+
+        assert!(gitignore.contains("# Managed by nodus"));
+        assert!(gitignore.contains(".gitignore"));
+        assert!(gitignore.contains(".DS_Store"));
+        assert!(gitignore.contains(&format!("skills/*_{suffix}/")));
+        assert!(
+            lockfile
+                .managed_files
+                .contains(&".claude/.gitignore".into())
+        );
+    }
+
+    #[test]
+    fn sync_emits_mcp_json_from_dependency_manifests() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_manifest(
+            temp.path(),
+            r#"
+[dependencies.firebase]
+path = "vendor/firebase"
+"#,
+        );
+        write_file(
+            &temp.path().join("vendor/firebase/nodus.toml"),
+            r#"
+[mcp_servers.firebase]
+command = "npx"
+args = ["-y", "firebase-tools", "mcp", "--dir", "."]
+
+[mcp_servers.firebase.env]
+IS_FIREBASE_MCP = "true"
+"#,
+        );
+
+        sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex])
+            .unwrap();
+
+        let mcp_config = fs::read_to_string(temp.path().join(".mcp.json")).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&mcp_config).unwrap();
+        let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+        let firebase_package = lockfile
+            .packages
+            .iter()
+            .find(|package| package.alias == "firebase")
+            .unwrap();
+
+        assert_eq!(firebase_package.mcp_servers, vec!["firebase"]);
+        assert!(lockfile.managed_files.contains(&String::from(".mcp.json")));
+        assert_eq!(
+            json["mcpServers"]["firebase__firebase"]["command"].as_str(),
+            Some("npx")
+        );
+        assert_eq!(
+            json["mcpServers"]["firebase__firebase"]["env"]["IS_FIREBASE_MCP"].as_str(),
+            Some("true")
+        );
+    }
+
+    #[test]
+    fn sync_merges_unmanaged_mcp_entries_with_managed_outputs() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_manifest(
+            temp.path(),
+            r#"
+[dependencies.firebase]
+path = "vendor/firebase"
+"#,
+        );
+        write_file(
+            &temp.path().join("vendor/firebase/nodus.toml"),
+            r#"
+[mcp_servers.firebase]
+command = "npx"
+"#,
+        );
+        write_file(
+            &temp.path().join(".mcp.json"),
+            r#"{
+  "mcpServers": {
+    "local": {
+      "command": "node"
+    }
+  }
+}
+"#,
+        );
+
+        sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex])
+            .unwrap();
+
+        let json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(temp.path().join(".mcp.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            json["mcpServers"]["local"]["command"].as_str(),
+            Some("node")
+        );
+        assert_eq!(
+            json["mcpServers"]["firebase__firebase"]["command"].as_str(),
+            Some("npx")
+        );
+    }
+
+    #[test]
+    fn sync_prunes_stale_managed_mcp_entries_without_touching_unmanaged_ones() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_manifest(
+            temp.path(),
+            r#"
+[dependencies.firebase]
+path = "vendor/firebase"
+"#,
+        );
+        write_file(
+            &temp.path().join("vendor/firebase/nodus.toml"),
+            r#"
+[mcp_servers.firebase]
+command = "npx"
+"#,
+        );
+
+        sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex])
+            .unwrap();
+        write_file(
+            &temp.path().join(".mcp.json"),
+            r#"{
+  "mcpServers": {
+    "firebase__firebase": {
+      "command": "npx"
+    },
+    "local": {
+      "command": "node"
+    }
+  }
+}
+"#,
+        );
+        write_manifest(temp.path(), "");
+
+        sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex])
+            .unwrap();
+
+        let mcp_path = temp.path().join(".mcp.json");
+        let json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&mcp_path).unwrap()).unwrap();
+        let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+
+        assert!(json["mcpServers"].get("firebase__firebase").is_none());
+        assert_eq!(
+            json["mcpServers"]["local"]["command"].as_str(),
+            Some("node")
+        );
+        assert!(!lockfile.managed_files.contains(&String::from(".mcp.json")));
+    }
+
+    #[test]
+    fn doctor_rejects_invalid_managed_mcp_json() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_manifest(
+            temp.path(),
+            r#"
+[dependencies.firebase]
+path = "vendor/firebase"
+"#,
+        );
+        write_file(
+            &temp.path().join("vendor/firebase/nodus.toml"),
+            r#"
+[mcp_servers.firebase]
+command = "npx"
+"#,
+        );
+
+        sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex])
+            .unwrap();
+        write_file(&temp.path().join(".mcp.json"), "{");
+
+        let error = doctor_in_dir(temp.path(), cache.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("failed to parse MCP config"));
+    }
+
+    #[test]
     fn sync_recreates_missing_lockfile_for_existing_runtime_outputs() {
         let temp = TempDir::new().unwrap();
         let cache = cache_dir();
@@ -5189,7 +5439,8 @@ shared = { path = "vendor/shared" }
             .iter()
             .map(|package| (package.clone(), package.root.clone()))
             .collect::<Vec<_>>();
-        let output_plan = build_output_plan(temp.path(), &package_roots, Adapters::CODEX).unwrap();
+        let output_plan =
+            build_output_plan(temp.path(), &package_roots, Adapters::CODEX, None, false).unwrap();
         write_managed_files(&output_plan.files).unwrap();
         resolution
             .to_lockfile(Adapters::CODEX)

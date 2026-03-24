@@ -5,8 +5,12 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
+use crate::lockfile::{Lockfile, managed_mcp_server_name};
 use crate::manifest::DependencyComponent;
+use crate::manifest::McpServerConfig;
+use crate::paths::display_path;
 use crate::resolver::{PackageSource, ResolvedPackage};
 
 pub mod agents;
@@ -179,6 +183,37 @@ struct OutputAccumulator {
     warnings: Vec<String>,
 }
 
+#[derive(Debug, Default)]
+struct RuntimeGitignoreAccumulator {
+    explicit_lines: Vec<String>,
+    generated_patterns: BTreeSet<String>,
+}
+
+#[derive(Debug, Default)]
+struct RuntimeGitignorePlan {
+    files: Vec<ManagedFile>,
+    consumed_inputs: Vec<PathBuf>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct ProjectMcpConfig {
+    #[serde(rename = "mcpServers", default)]
+    mcp_servers: BTreeMap<String, EmittedMcpServerConfig>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct EmittedMcpServerConfig {
+    command: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    args: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    env: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cwd: Option<String>,
+}
+
 pub fn namespaced_skill_id(package: &ResolvedPackage, skill_id: &str) -> String {
     namespaced_artifact_id(package, skill_id)
 }
@@ -309,6 +344,8 @@ pub fn build_output_plan(
     project_root: &Path,
     packages: &[(ResolvedPackage, PathBuf)],
     selected_adapters: Adapters,
+    existing_lockfile: Option<&Lockfile>,
+    merge_existing_mcp: bool,
 ) -> Result<OutputPlan> {
     let mut plan = OutputAccumulator::default();
 
@@ -556,6 +593,17 @@ pub fn build_output_plan(
         register_direct_managed_paths(project_root, &mut plan.managed_files, package)?;
     }
 
+    if let Some(file) = mcp_config_file(
+        project_root,
+        packages,
+        existing_lockfile,
+        merge_existing_mcp,
+    )? {
+        plan.managed_files
+            .insert(display_relative(project_root, &file.path));
+        merge_file(&mut plan.files, file)?;
+    }
+
     if packages
         .iter()
         .any(|(package, _)| matches!(package.source, PackageSource::Root))
@@ -571,7 +619,11 @@ pub fn build_output_plan(
         }
     }
 
-    for file in gitignore_files(project_root, &plan.files)? {
+    let gitignores = gitignore_files(project_root, &plan.files)?;
+    for consumed in gitignores.consumed_inputs {
+        plan.files.remove(&consumed);
+    }
+    for file in gitignores.files {
         plan.managed_files
             .insert(display_relative(project_root, &file.path));
         merge_file(&mut plan.files, file)?;
@@ -591,23 +643,47 @@ pub fn build_output_plan(
 fn gitignore_files(
     project_root: &Path,
     files: &BTreeMap<PathBuf, Vec<u8>>,
-) -> Result<Vec<ManagedFile>> {
-    let mut entries = BTreeMap::<PathBuf, BTreeSet<String>>::new();
+) -> Result<RuntimeGitignorePlan> {
+    let mut entries = BTreeMap::<PathBuf, RuntimeGitignoreAccumulator>::new();
 
-    for path in files.keys() {
+    for (path, contents) in files {
+        if let Some(root) = runtime_root_gitignore(project_root, path)? {
+            entries
+                .entry(root)
+                .or_default()
+                .explicit_lines
+                .extend(parse_gitignore_lines(path, contents)?);
+            continue;
+        }
+
         let Some((root, pattern)) = gitignore_entry(project_root, path)? else {
             continue;
         };
-        entries.entry(root).or_default().insert(pattern);
+        entries
+            .entry(root)
+            .or_default()
+            .generated_patterns
+            .insert(pattern);
     }
 
-    Ok(entries
-        .into_iter()
-        .map(|(root, patterns)| ManagedFile {
-            path: root.join(".gitignore"),
-            contents: render_gitignore(&patterns).into_bytes(),
-        })
-        .collect())
+    let mut plan = RuntimeGitignorePlan::default();
+    for (root, entry) in entries {
+        if entry.generated_patterns.is_empty() {
+            continue;
+        }
+
+        let path = root.join(".gitignore");
+        if !entry.explicit_lines.is_empty() {
+            plan.consumed_inputs.push(path.clone());
+        }
+        plan.files.push(ManagedFile {
+            path,
+            contents: render_gitignore(&entry.explicit_lines, &entry.generated_patterns)
+                .into_bytes(),
+        });
+    }
+
+    Ok(plan)
 }
 
 fn direct_managed_files(
@@ -659,6 +735,72 @@ fn register_direct_managed_paths(
     Ok(())
 }
 
+fn mcp_config_file(
+    project_root: &Path,
+    packages: &[(ResolvedPackage, PathBuf)],
+    existing_lockfile: Option<&Lockfile>,
+    merge_existing_mcp: bool,
+) -> Result<Option<ManagedFile>> {
+    let path = project_root.join(".mcp.json");
+    let previously_managed = existing_lockfile
+        .map(Lockfile::managed_mcp_server_names)
+        .unwrap_or_default();
+    let mut desired_servers = BTreeMap::new();
+    for (package, _) in packages {
+        if matches!(package.source, PackageSource::Root) && !package.manifest.manifest.publish_root
+        {
+            continue;
+        }
+
+        for (server_id, server) in &package.manifest.manifest.mcp_servers {
+            desired_servers.insert(
+                managed_mcp_server_name(&package.alias, server_id),
+                emitted_mcp_server(server),
+            );
+        }
+    }
+
+    if desired_servers.is_empty() && previously_managed.is_empty() {
+        return Ok(None);
+    }
+
+    let mut config = if merge_existing_mcp && path.exists() {
+        read_project_mcp_config(&path)?
+    } else {
+        ProjectMcpConfig::default()
+    };
+
+    config.mcp_servers.retain(|server_name, _| {
+        !previously_managed.contains(server_name) && !desired_servers.contains_key(server_name)
+    });
+    config.mcp_servers.extend(desired_servers);
+
+    if config.mcp_servers.is_empty() && config.extra.is_empty() {
+        return Ok(None);
+    }
+
+    let mut contents = serde_json::to_vec_pretty(&config)
+        .context("failed to serialize managed MCP configuration")?;
+    contents.push(b'\n');
+    Ok(Some(ManagedFile { path, contents }))
+}
+
+fn read_project_mcp_config(path: &Path) -> Result<ProjectMcpConfig> {
+    let contents =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    serde_json::from_str(&contents)
+        .with_context(|| format!("failed to parse MCP config {}", path.display()))
+}
+
+fn emitted_mcp_server(server: &McpServerConfig) -> EmittedMcpServerConfig {
+    EmittedMcpServerConfig {
+        command: server.command.clone(),
+        args: server.args.clone(),
+        env: server.env.clone(),
+        cwd: server.cwd.as_ref().map(|cwd| display_path(cwd)),
+    }
+}
+
 fn gitignore_entry(project_root: &Path, path: &Path) -> Result<Option<(PathBuf, String)>> {
     let relative = path
         .strip_prefix(project_root)
@@ -693,6 +835,39 @@ fn gitignore_entry(project_root: &Path, path: &Path) -> Result<Option<(PathBuf, 
     Ok(Some((project_root.join(runtime), pattern)))
 }
 
+fn runtime_root_gitignore(project_root: &Path, path: &Path) -> Result<Option<PathBuf>> {
+    let relative = path
+        .strip_prefix(project_root)
+        .with_context(|| format!("failed to make {} relative", path.display()))?;
+    let components = relative
+        .iter()
+        .map(|component| component.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+
+    let [runtime, gitignore] = components.as_slice() else {
+        return Ok(None);
+    };
+    if !matches!(
+        runtime.as_str(),
+        ".agents" | ".claude" | ".codex" | ".cursor" | ".opencode"
+    ) || gitignore != ".gitignore"
+    {
+        return Ok(None);
+    }
+
+    Ok(Some(project_root.join(runtime)))
+}
+
+fn parse_gitignore_lines(path: &Path, contents: &[u8]) -> Result<Vec<String>> {
+    let text = std::str::from_utf8(contents)
+        .with_context(|| format!("managed gitignore {} must be valid UTF-8", path.display()))?;
+    Ok(text
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
 fn managed_artifact_gitignore_pattern(
     runtime: &str,
     artifact_dir: &str,
@@ -723,11 +898,24 @@ fn managed_artifact_gitignore_pattern(
     format!("{artifact_dir}/{artifact_name}")
 }
 
-fn render_gitignore(patterns: &BTreeSet<String>) -> String {
+fn render_gitignore(explicit_lines: &[String], patterns: &BTreeSet<String>) -> String {
     let mut output = String::from("# Managed by nodus\n.gitignore\n");
+    let mut seen = BTreeSet::from([
+        String::from("# Managed by nodus"),
+        String::from(".gitignore"),
+    ]);
+
+    for line in explicit_lines {
+        if seen.insert(line.clone()) {
+            output.push_str(line);
+            output.push('\n');
+        }
+    }
     for pattern in patterns {
-        output.push_str(pattern);
-        output.push('\n');
+        if seen.insert(pattern.clone()) {
+            output.push_str(pattern);
+            output.push('\n');
+        }
     }
     output
 }
@@ -864,5 +1052,51 @@ mod tests {
         assert!(command.contains(Adapter::OpenCode));
 
         assert!(Adapters::NONE.is_empty());
+    }
+
+    #[test]
+    fn gitignore_files_merge_explicit_runtime_root_gitignore_with_generated_patterns() {
+        let project_root = Path::new("/tmp/project");
+        let mut files = BTreeMap::new();
+        files.insert(
+            project_root.join(".claude/.gitignore"),
+            b".gitignore\n# custom\nskills/*_abc123/\n".to_vec(),
+        );
+        files.insert(
+            project_root.join(".claude/skills/review_abc123/SKILL.md"),
+            b"# Review\n".to_vec(),
+        );
+        files.insert(
+            project_root.join(".claude/commands/build_abc123.md"),
+            b"cargo test\n".to_vec(),
+        );
+
+        let plan = gitignore_files(project_root, &files).unwrap();
+
+        assert_eq!(
+            plan.consumed_inputs,
+            vec![project_root.join(".claude/.gitignore")]
+        );
+        assert_eq!(plan.files.len(), 1);
+        assert_eq!(plan.files[0].path, project_root.join(".claude/.gitignore"));
+        assert_eq!(
+            String::from_utf8(plan.files[0].contents.clone()).unwrap(),
+            "# Managed by nodus\n.gitignore\n# custom\nskills/*_abc123/\ncommands/*_abc123.md\n"
+        );
+    }
+
+    #[test]
+    fn gitignore_files_preserve_explicit_runtime_root_gitignore_without_generated_patterns() {
+        let project_root = Path::new("/tmp/project");
+        let mut files = BTreeMap::new();
+        files.insert(
+            project_root.join(".claude/.gitignore"),
+            b".gitignore\n# custom\n".to_vec(),
+        );
+
+        let plan = gitignore_files(project_root, &files).unwrap();
+
+        assert!(plan.consumed_inputs.is_empty());
+        assert!(plan.files.is_empty());
     }
 }

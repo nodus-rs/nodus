@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -173,6 +174,25 @@ playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.1.0" }
 }
 
 #[test]
+fn accepts_dependency_repo_with_only_mcp_servers() {
+    let temp = TempDir::new().unwrap();
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[mcp_servers.firebase]
+command = "npx"
+args = ["-y", "firebase-tools", "mcp", "--dir", "."]
+"#,
+    );
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    assert!(loaded.discovered.is_empty());
+    assert!(loaded.manifest.dependencies.is_empty());
+    assert!(loaded.manifest.mcp_servers.contains_key("firebase"));
+}
+
+#[test]
 fn accepts_dependency_repo_with_claude_marketplace_wrapper() {
     let temp = TempDir::new().unwrap();
     write_marketplace(
@@ -231,6 +251,51 @@ fn accepts_dependency_repo_with_claude_marketplace_wrapper() {
                 .canonicalize()
                 .unwrap()
         )
+    );
+}
+
+#[test]
+fn imports_firebase_style_marketplace_mcp_servers() {
+    let temp = TempDir::new().unwrap();
+    write_marketplace(
+        temp.path(),
+        r#"{
+  "plugins": [
+    {
+      "name": "firebase",
+      "version": "1.0.0",
+      "source": "./",
+      "mcpServers": {
+        "firebase": {
+          "description": "Firebase MCP server",
+          "command": "npx",
+          "args": ["-y", "firebase-tools", "mcp", "--dir", "."],
+          "env": {
+            "IS_FIREBASE_MCP": "true"
+          }
+        }
+      }
+    }
+  ]
+}"#,
+    );
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    assert!(loaded.manifest.dependencies.is_empty());
+    assert_eq!(
+        loaded.manifest.version,
+        Some(Version::parse("1.0.0").unwrap())
+    );
+    let server = loaded.manifest.mcp_servers.get("firebase").unwrap();
+    assert_eq!(server.command, "npx");
+    assert_eq!(
+        server.args,
+        vec!["-y", "firebase-tools", "mcp", "--dir", "."]
+    );
+    assert_eq!(
+        server.env,
+        BTreeMap::from([(String::from("IS_FIREBASE_MCP"), String::from("true"))])
     );
 }
 
@@ -472,6 +537,54 @@ fn rejects_marketplace_with_plugin_source_that_is_not_a_nodus_package() {
         .unwrap_err()
         .to_string();
     assert!(error.contains("does not match the Nodus package layout"));
+}
+
+#[test]
+fn rejects_marketplace_with_mcp_server_path_indirection() {
+    let temp = TempDir::new().unwrap();
+    write_marketplace(
+        temp.path(),
+        r#"{
+  "plugins": [
+    {
+      "name": "firebase",
+      "source": "./",
+      "mcpServers": "./mcp.json"
+    }
+  ]
+}"#,
+    );
+
+    let error = load_dependency_from_dir(temp.path())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("unsupported `mcpServers` path"));
+}
+
+#[test]
+fn rejects_marketplace_with_plugin_root_interpolation_in_mcp_server() {
+    let temp = TempDir::new().unwrap();
+    write_marketplace(
+        temp.path(),
+        r#"{
+  "plugins": [
+    {
+      "name": "firebase",
+      "source": "./",
+      "mcpServers": {
+        "firebase": {
+          "command": "${CLAUDE_PLUGIN_ROOT}/server"
+        }
+      }
+    }
+  ]
+}"#,
+    );
+
+    let error = load_dependency_from_dir(temp.path())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("${CLAUDE_PLUGIN_ROOT}"));
 }
 
 #[test]
@@ -806,6 +919,31 @@ fn serializes_content_roots_and_publish_root() {
 }
 
 #[test]
+fn serializes_mcp_servers() {
+    let manifest = Manifest {
+        mcp_servers: BTreeMap::from([(
+            "firebase".into(),
+            McpServerConfig {
+                command: "npx".into(),
+                args: vec!["-y".into(), "firebase-tools".into()],
+                env: BTreeMap::from([(String::from("IS_FIREBASE_MCP"), String::from("true"))]),
+                cwd: Some(PathBuf::from(".")),
+            },
+        )]),
+        ..Manifest::default()
+    };
+
+    let encoded = serialize_manifest(&manifest).unwrap();
+
+    assert!(encoded.contains("[mcp_servers.firebase]"));
+    assert!(encoded.contains("command = \"npx\""));
+    assert!(encoded.contains("args = [\"-y\", \"firebase-tools\"]"));
+    assert!(encoded.contains("cwd = \".\""));
+    assert!(encoded.contains("[mcp_servers.firebase.env]"));
+    assert!(encoded.contains("IS_FIREBASE_MCP = \"true\""));
+}
+
+#[test]
 fn serializes_managed_dependencies_as_expanded_tables() {
     let mut manifest = Manifest::default();
     manifest.dependencies.insert(
@@ -1048,6 +1186,34 @@ playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.1.0", compone
 }
 
 #[test]
+fn parses_mcp_servers() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[mcp_servers.firebase]
+command = "npx"
+args = ["-y", "firebase-tools"]
+cwd = "."
+
+[mcp_servers.firebase.env]
+IS_FIREBASE_MCP = "true"
+"#,
+    );
+
+    let loaded = load_root_from_dir(temp.path()).unwrap();
+    let server = loaded.manifest.mcp_servers.get("firebase").unwrap();
+    assert_eq!(server.command, "npx");
+    assert_eq!(server.args, vec!["-y", "firebase-tools"]);
+    assert_eq!(server.cwd.as_deref(), Some(Path::new(".")));
+    assert_eq!(
+        server.env,
+        BTreeMap::from([(String::from("IS_FIREBASE_MCP"), String::from("true"))])
+    );
+}
+
+#[test]
 fn rejects_git_dependency_version_with_tag() {
     let temp = TempDir::new().unwrap();
     write_valid_skill(temp.path());
@@ -1178,6 +1344,22 @@ playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.1.0", compone
 
     let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
     assert!(error.contains("field `components` must not be empty"));
+}
+
+#[test]
+fn rejects_empty_mcp_server_command() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[mcp_servers.firebase]
+command = ""
+"#,
+    );
+
+    let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+    assert!(error.contains("mcp_servers.firebase.command"));
 }
 
 #[test]
