@@ -81,5 +81,11 @@ jobs:
           set -euo pipefail
           brew --version
           brew tap WendellXY/nodus
+          formula_path="$(brew --repo WendellXY/nodus)/Formula/nodus.rb"
+          [ -f "${formula_path}" ]
+          grep -q 'url "https://github.com/WendellXY/nodus/releases/download/' "${formula_path}"
+          grep -q '^  sha256 "' "${formula_path}"
+          grep -q '^  version "' "${formula_path}"
           brew install WendellXY/nodus/nodus
           nodus --version
+          brew test nodus
