@@ -32,13 +32,13 @@ publish_root = true
 
 [adapters]
 # Pick the runtime folders Nodus should manage in this repo.
-# Supported values: "agents", "claude", "codex", "cursor", "opencode"
+# Supported values: "agents", "claude", "codex", "copilot", "cursor", "opencode"
 #
 # Nodus emits only the files needed for the adapters you enable here.
 # If you omit this section, Nodus can infer adapters from the repo layout,
 # but persisting them keeps sync behavior deterministic in CI and teammates'
 # local clones.
-enabled = ["codex", "claude", "opencode"]
+enabled = ["codex", "copilot", "claude", "opencode"]
 
 [[capabilities]]
 # Optional capability declarations for the root package.

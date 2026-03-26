@@ -33,7 +33,7 @@ If a package publishes content under folders like `skills/`, `agents/`, `rules/`
 - add it from GitHub, Git, or a local path
 - pin what you asked for in `nodus.toml`
 - lock the exact resolved revision in `nodus.lock`
-- write managed files into `.codex/`, `.claude/`, `.cursor/`, `.agents/`, or `.opencode/`
+- write managed files into `.codex/`, `.claude/`, `.cursor/`, `.agents/`, `.github/`, or `.opencode/`
 - prune stale generated files without touching unmanaged ones
 
 For most users, the main command is:
@@ -108,6 +108,8 @@ Typical output files look like this:
 ```text
 .codex/skills/<skill-id>_<source-id>/
 .claude/skills/<skill-id>_<source-id>/
+.github/skills/<skill-id>_<source-id>/
+.github/agents/<agent-id>_<source-id>.agent.md
 .cursor/rules/<rule-id>_<source-id>.mdc
 ```
 
@@ -220,7 +222,7 @@ Supported platforms:
 
 - macOS (`x86_64`, `arm64`)
 - Linux (`x86_64`, `arm64`/`aarch64`)
-- Windows (`x86_64`)
+- Windows (`x86_64`, `arm64`)
 
 By default, Nodus stores shared mirrors, checkouts, and snapshots here:
 
@@ -270,10 +272,13 @@ Supported adapters today:
 - `agents`
 - `claude`
 - `codex`
+- `copilot`
 - `cursor`
 - `opencode`
 
-You can choose adapters explicitly with `--adapter`, persist them in `nodus.toml`, or let Nodus detect them from existing repo roots such as `.codex/` or `.claude/`.
+You can choose adapters explicitly with `--adapter`, persist them in `nodus.toml`, or let Nodus detect them from existing repo roots such as `.codex/`, `.claude/`, or `.github/skills`.
+
+`copilot` manages GitHub Copilot project assets under `.github/skills/` and `.github/agents/`. In v1 it supports skills and custom agents only; rules and commands are not emitted for Copilot.
 
 ## Manifest
 

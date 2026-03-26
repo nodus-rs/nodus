@@ -10,7 +10,7 @@ use crate::manifest::{Capability, DependencyComponent};
 use crate::store::write_atomic;
 
 pub const LOCKFILE_NAME: &str = "nodus.lock";
-const LOCKFILE_VERSION: u32 = 7;
+const LOCKFILE_VERSION: u32 = 8;
 const MIN_SYNC_COMPATIBLE_LOCKFILE_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -113,6 +113,9 @@ impl Lockfile {
         for relative in &self.managed_files {
             let relative_path = Self::validate_managed_relative(relative, project_root)?;
             managed_paths.insert(project_root.join(relative_path));
+            if let Some(paths) = self.expand_legacy_managed_root(project_root, relative_path) {
+                managed_paths.extend(paths);
+            }
         }
 
         Ok(managed_paths)
@@ -207,6 +210,7 @@ impl Lockfile {
         if *runtime != ".agents"
             && *runtime != ".claude"
             && *runtime != ".codex"
+            && *runtime != ".github"
             && *runtime != ".cursor"
             && *runtime != ".opencode"
         {
@@ -231,8 +235,26 @@ impl Lockfile {
                     ))
                 })
                 .collect::<Vec<_>>(),
+            "agents" if runtime == ".github" => self
+                .packages
+                .iter()
+                .filter(|package| {
+                    package
+                        .agents
+                        .iter()
+                        .any(|existing| existing == artifact_name)
+                })
+                .map(|package| {
+                    project_root.join(format!(
+                        "{runtime}/agents/{}_{}.agent.md",
+                        artifact_name,
+                        locked_package_short_id(package)
+                    ))
+                })
+                .collect::<Vec<_>>(),
             "agents" | "rules" | "commands" => {
-                let (artifact_id, extension) = artifact_name.rsplit_once('.')?;
+                let (artifact_id, extension) =
+                    split_managed_file_name(runtime.as_str(), artifact_dir, artifact_name)?;
                 self.packages
                     .iter()
                     .filter(|package| match artifact_dir.as_str() {
@@ -263,6 +285,44 @@ impl Lockfile {
         if paths.is_empty() { None } else { Some(paths) }
     }
 
+    fn expand_legacy_managed_root(
+        &self,
+        project_root: &Path,
+        relative_path: &Path,
+    ) -> Option<Vec<PathBuf>> {
+        let components = relative_path
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let [runtime, artifact_dir, artifact_name] = components.as_slice() else {
+            return None;
+        };
+        if *runtime != ".github" || *artifact_dir != "agents" {
+            return None;
+        }
+
+        let artifact_id = artifact_name.strip_suffix(".agent.md")?;
+        let paths = self
+            .packages
+            .iter()
+            .filter(|package| {
+                package
+                    .agents
+                    .iter()
+                    .any(|existing| existing == artifact_id)
+            })
+            .map(|package| {
+                project_root.join(format!(
+                    ".github/agents/{}_{}.agent.md",
+                    artifact_id,
+                    locked_package_short_id(package)
+                ))
+            })
+            .collect::<Vec<_>>();
+
+        if paths.is_empty() { None } else { Some(paths) }
+    }
+
     pub fn managed_mcp_server_names(&self) -> HashSet<String> {
         self.packages
             .iter()
@@ -274,6 +334,14 @@ impl Lockfile {
             })
             .collect()
     }
+}
+
+fn split_managed_file_name<'a>(
+    _runtime: &str,
+    _artifact_dir: &str,
+    artifact_name: &'a str,
+) -> Option<(&'a str, &'a str)> {
+    artifact_name.rsplit_once('.')
 }
 
 pub fn managed_mcp_server_name(package_alias: &str, server_id: &str) -> String {
@@ -472,6 +540,7 @@ managed_files = []
                 ".agents/skills/iframe-ad".into(),
                 ".claude/skills/iframe-ad".into(),
                 ".codex/skills/iframe-ad".into(),
+                ".github/skills/iframe-ad".into(),
                 ".cursor/skills/iframe-ad".into(),
                 ".opencode/skills/iframe-ad".into(),
             ],
@@ -487,6 +556,9 @@ managed_files = []
         )));
         assert!(managed_paths.contains(&PathBuf::from(
             "/tmp/project/.codex/skills/iframe-ad_01f556"
+        )));
+        assert!(managed_paths.contains(&PathBuf::from(
+            "/tmp/project/.github/skills/iframe-ad_01f556"
         )));
         assert!(managed_paths.contains(&PathBuf::from(
             "/tmp/project/.cursor/skills/iframe-ad_01f556"
@@ -526,6 +598,7 @@ managed_files = []
                 ".claude/agents/security.md".into(),
                 ".claude/commands/build.md".into(),
                 ".claude/rules/default.md".into(),
+                ".github/agents/security".into(),
                 ".cursor/commands/build.md".into(),
                 ".cursor/rules/default.mdc".into(),
                 ".opencode/agents/security.md".into(),
@@ -549,6 +622,9 @@ managed_files = []
             "/tmp/project/.claude/rules/default_01f556.md"
         )));
         assert!(managed_paths.contains(&PathBuf::from(
+            "/tmp/project/.github/agents/security_01f556.agent.md"
+        )));
+        assert!(managed_paths.contains(&PathBuf::from(
             "/tmp/project/.cursor/commands/build_01f556.md"
         )));
         assert!(managed_paths.contains(&PathBuf::from(
@@ -562,6 +638,85 @@ managed_files = []
         )));
         assert!(managed_paths.contains(&PathBuf::from(
             "/tmp/project/.opencode/rules/default_01f556.md"
+        )));
+    }
+
+    #[test]
+    fn keeps_direct_github_agent_files_exact_in_current_lockfiles() {
+        let lockfile = Lockfile::new(
+            vec![LockedPackage {
+                alias: "shared".into(),
+                name: "shared".into(),
+                version_tag: Some("v0.1.0".into()),
+                source: LockedSource {
+                    kind: "git".into(),
+                    path: None,
+                    url: Some("https://github.com/example/shared".into()),
+                    tag: Some("v0.1.0".into()),
+                    branch: None,
+                    rev: Some("01f556abcdef".into()),
+                },
+                digest: "sha256:abc".into(),
+                selected_components: None,
+                skills: vec![],
+                agents: vec!["security".into()],
+                rules: vec![],
+                commands: vec![],
+                mcp_servers: vec![],
+                dependencies: vec![],
+                capabilities: vec![],
+            }],
+            vec![".github/agents/security.agent.md".into()],
+        );
+
+        let managed_paths = lockfile.managed_paths(Path::new("/tmp/project")).unwrap();
+
+        assert!(managed_paths.contains(&PathBuf::from(
+            "/tmp/project/.github/agents/security.agent.md"
+        )));
+        assert!(!managed_paths.contains(&PathBuf::from(
+            "/tmp/project/.github/agents/security_01f556.agent.md"
+        )));
+    }
+
+    #[test]
+    fn managed_paths_for_sync_expand_legacy_github_agent_roots() {
+        let lockfile = Lockfile {
+            version: 7,
+            packages: vec![LockedPackage {
+                alias: "shared".into(),
+                name: "shared".into(),
+                version_tag: Some("v0.1.0".into()),
+                source: LockedSource {
+                    kind: "git".into(),
+                    path: None,
+                    url: Some("https://github.com/example/shared".into()),
+                    tag: Some("v0.1.0".into()),
+                    branch: None,
+                    rev: Some("01f556abcdef".into()),
+                },
+                digest: "sha256:abc".into(),
+                selected_components: None,
+                skills: vec![],
+                agents: vec!["security".into()],
+                rules: vec![],
+                commands: vec![],
+                mcp_servers: vec![],
+                dependencies: vec![],
+                capabilities: vec![],
+            }],
+            managed_files: vec![".github/agents/security.agent.md".into()],
+        };
+
+        let managed_paths = lockfile
+            .managed_paths_for_sync(Path::new("/tmp/project"))
+            .unwrap();
+
+        assert!(managed_paths.contains(&PathBuf::from(
+            "/tmp/project/.github/agents/security.agent.md"
+        )));
+        assert!(managed_paths.contains(&PathBuf::from(
+            "/tmp/project/.github/agents/security_01f556.agent.md"
         )));
     }
 

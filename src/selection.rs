@@ -65,7 +65,7 @@ pub fn resolve_adapter_selection(
     }
 
     bail!(
-        "no adapter configuration found in {}. Pass `--adapter <agents|claude|codex|cursor|opencode>` or configure `[adapters] enabled = [...]` in nodus.toml",
+        "no adapter configuration found in {}. Pass `--adapter <agents|claude|codex|copilot|cursor|opencode>` or configure `[adapters] enabled = [...]` in nodus.toml",
         project_root.display()
     );
 }
@@ -78,6 +78,11 @@ pub fn detect_repo_adapters(project_root: &Path) -> Adapters {
     }
     if project_root.join(".codex").exists() {
         detected = detected.union(Adapters::CODEX);
+    }
+    if project_root.join(".github").join("skills").exists()
+        || project_root.join(".github").join("agents").exists()
+    {
+        detected = detected.union(Adapters::COPILOT);
     }
     if project_root.join(".agents").exists() {
         detected = detected.union(Adapters::AGENTS);
@@ -145,7 +150,7 @@ fn render_missing_adapter_notice_to(
 }
 
 fn adapter_prompt_items() -> &'static [&'static str; Adapter::ALL.len()] {
-    &["agents", "claude", "codex", "cursor", "opencode"]
+    &["agents", "claude", "codex", "copilot", "cursor", "opencode"]
 }
 
 fn adapter_prompt_theme() -> ColorfulTheme {
@@ -198,10 +203,37 @@ mod tests {
         let detected = detect_repo_adapters(temp.path());
 
         assert!(detected.contains(Adapter::Claude));
+        assert!(!detected.contains(Adapter::Copilot));
         assert!(detected.contains(Adapter::Cursor));
         assert!(detected.contains(Adapter::OpenCode));
         assert!(!detected.contains(Adapter::Codex));
         assert!(!detected.contains(Adapter::Agents));
+    }
+
+    #[test]
+    fn detects_github_copilot_project_assets() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join(".github/skills")).unwrap();
+        fs::create_dir_all(temp.path().join(".github/agents")).unwrap();
+        fs::write(temp.path().join(".github/CODEOWNERS"), "* @team\n").unwrap();
+
+        let detected = detect_repo_adapters(temp.path());
+
+        assert!(detected.contains(Adapter::Copilot));
+        assert!(!detected.contains(Adapter::Claude));
+        assert!(!detected.contains(Adapter::Codex));
+        assert!(!detected.contains(Adapter::Agents));
+    }
+
+    #[test]
+    fn ignores_unrelated_github_configuration_when_detecting_adapters() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join(".github")).unwrap();
+        fs::write(temp.path().join(".github/CODEOWNERS"), "* @team\n").unwrap();
+
+        let detected = detect_repo_adapters(temp.path());
+
+        assert!(!detected.contains(Adapter::Copilot));
     }
 
     #[test]
@@ -232,7 +264,7 @@ mod tests {
     fn adapter_prompt_items_follow_supported_adapter_order() {
         assert_eq!(
             adapter_prompt_items(),
-            &["agents", "claude", "codex", "cursor", "opencode"]
+            &["agents", "claude", "codex", "copilot", "cursor", "opencode"]
         );
         assert_eq!(adapter_prompt_items().len(), Adapter::ALL.len());
     }

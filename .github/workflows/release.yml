@@ -52,6 +52,12 @@ jobs:
             archive_ext: zip
             linker: ""
             linker_package: ""
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            binary_name: nodus.exe
+            archive_ext: zip
+            linker: ""
+            linker_package: ""
 
     env:
       RELEASE_TAG: ${{ inputs.tag_name || github.event.release.tag_name }}

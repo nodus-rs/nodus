@@ -16,6 +16,7 @@ use crate::resolver::{PackageSource, ResolvedPackage};
 pub mod agents;
 pub mod claude;
 pub mod codex;
+pub mod copilot;
 pub mod cursor;
 pub mod opencode;
 
@@ -36,6 +37,8 @@ pub enum Adapter {
     Claude,
     #[value(name = "codex")]
     Codex,
+    #[value(name = "copilot")]
+    Copilot,
     #[value(name = "cursor")]
     Cursor,
     #[value(name = "opencode", alias = "open-code")]
@@ -43,10 +46,11 @@ pub enum Adapter {
 }
 
 impl Adapter {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Agents,
         Self::Claude,
         Self::Codex,
+        Self::Copilot,
         Self::Cursor,
         Self::OpenCode,
     ];
@@ -56,8 +60,9 @@ impl Adapter {
             Self::Agents => 1 << 0,
             Self::Claude => 1 << 1,
             Self::Codex => 1 << 2,
-            Self::Cursor => 1 << 3,
-            Self::OpenCode => 1 << 4,
+            Self::Copilot => 1 << 3,
+            Self::Cursor => 1 << 4,
+            Self::OpenCode => 1 << 5,
         }
     }
 
@@ -66,6 +71,7 @@ impl Adapter {
             Self::Agents => "agents",
             Self::Claude => "claude",
             Self::Codex => "codex",
+            Self::Copilot => "copilot",
             Self::Cursor => "cursor",
             Self::OpenCode => "opencode",
         }
@@ -80,6 +86,7 @@ impl Adapters {
     pub const AGENTS: Self = Self(Adapter::Agents.bit());
     pub const CLAUDE: Self = Self(Adapter::Claude.bit());
     pub const CODEX: Self = Self(Adapter::Codex.bit());
+    pub const COPILOT: Self = Self(Adapter::Copilot.bit());
     pub const CURSOR: Self = Self(Adapter::Cursor.bit());
     pub const OPENCODE: Self = Self(Adapter::OpenCode.bit());
 
@@ -146,9 +153,12 @@ impl ArtifactKind {
             Self::Skill => Adapters::AGENTS
                 .union(Adapters::CLAUDE)
                 .union(Adapters::CODEX)
+                .union(Adapters::COPILOT)
                 .union(Adapters::CURSOR)
                 .union(Adapters::OPENCODE),
-            Self::Agent => Adapters::CLAUDE.union(Adapters::OPENCODE),
+            Self::Agent => Adapters::CLAUDE
+                .union(Adapters::COPILOT)
+                .union(Adapters::OPENCODE),
             Self::Rule => Adapters::CLAUDE
                 .union(Adapters::CURSOR)
                 .union(Adapters::OPENCODE),
@@ -226,6 +236,7 @@ pub fn runtime_root(project_root: &Path, adapter: Adapter) -> PathBuf {
         Adapter::Agents => ".agents",
         Adapter::Claude => ".claude",
         Adapter::Codex => ".codex",
+        Adapter::Copilot => ".github",
         Adapter::Cursor => ".cursor",
         Adapter::OpenCode => ".opencode",
     })
@@ -266,6 +277,13 @@ pub fn managed_artifact_path(
                 .join("commands")
                 .join(namespaced_file_name(package, artifact_id, "md")),
         ),
+        (Adapter::Copilot, ArtifactKind::Agent) => {
+            Some(runtime_root.join("agents").join(namespaced_file_name(
+                package,
+                artifact_id,
+                "agent.md",
+            )))
+        }
         (Adapter::Claude, ArtifactKind::Rule) => Some(
             runtime_root
                 .join("rules")
@@ -427,6 +445,19 @@ pub fn build_output_plan(
                     .insert(format!(".codex/skills/{}", skill.id));
             }
 
+            if selected_adapters.contains(Adapter::Copilot)
+                && ArtifactKind::Skill
+                    .supported_adapters()
+                    .contains(Adapter::Copilot)
+            {
+                merge_files(
+                    &mut plan.files,
+                    copilot::skill_files(project_root, package, snapshot_root, skill)?,
+                )?;
+                plan.managed_files
+                    .insert(format!(".github/skills/{}", skill.id));
+            }
+
             if selected_adapters.contains(Adapter::Cursor)
                 && ArtifactKind::Skill
                     .supported_adapters()
@@ -470,6 +501,19 @@ pub fn build_output_plan(
                 )?;
                 plan.managed_files
                     .insert(format!(".claude/agents/{}.md", agent.id));
+            }
+
+            if selected_adapters.contains(Adapter::Copilot)
+                && ArtifactKind::Agent
+                    .supported_adapters()
+                    .contains(Adapter::Copilot)
+            {
+                merge_file(
+                    &mut plan.files,
+                    copilot::agent_file(project_root, package, snapshot_root, agent)?,
+                )?;
+                plan.managed_files
+                    .insert(format!(".github/agents/{}", agent.id));
             }
 
             if selected_adapters.contains(Adapter::OpenCode)
@@ -950,6 +994,11 @@ fn sync_on_startup_files(
             "launch sync is not emitted for `codex`; project config is supported, but no documented startup hook is available".into(),
         );
     }
+    if selected_adapters.contains(Adapter::Copilot) {
+        warnings.push(
+            "launch sync is not emitted for `copilot`; repo-scoped assets are supported, but no documented startup hook is available".into(),
+        );
+    }
     if selected_adapters.contains(Adapter::Cursor) {
         warnings.push(
             "launch sync is not emitted for `cursor`; project hooks exist, but no documented auto-start hook is available for repo-local config".into(),
@@ -1033,14 +1082,16 @@ mod tests {
         assert!(skill.intersects(Adapters::CLAUDE));
         assert!(skill.contains(Adapter::Claude));
         assert!(skill.contains(Adapter::Codex));
+        assert!(skill.contains(Adapter::Copilot));
         assert!(skill.contains(Adapter::Cursor));
         assert!(skill.contains(Adapter::OpenCode));
-        assert_eq!(skill.iter().count(), 5);
+        assert_eq!(skill.iter().count(), 6);
 
         let agent = ArtifactKind::Agent.supported_adapters();
         assert!(!agent.contains(Adapter::Agents));
         assert!(agent.contains(Adapter::Claude));
         assert!(!agent.contains(Adapter::Codex));
+        assert!(agent.contains(Adapter::Copilot));
         assert!(!agent.contains(Adapter::Cursor));
         assert!(agent.contains(Adapter::OpenCode));
 

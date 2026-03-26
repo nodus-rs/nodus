@@ -59,6 +59,7 @@ struct RelayFileMapping {
 enum RelayTransform {
     None,
     OpenCodeSkillName { managed_skill_id: String },
+    CopilotSkillName { managed_skill_id: String },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -403,6 +404,8 @@ fn adapters_from_lockfile(lockfile: &Lockfile) -> Adapters {
                 Some(Adapter::Claude)
             } else if path.starts_with(".codex/") {
                 Some(Adapter::Codex)
+            } else if path.starts_with(".github/skills/") || path.starts_with(".github/agents/") {
+                Some(Adapter::Copilot)
             } else if path.starts_with(".cursor/") {
                 Some(Adapter::Cursor)
             } else if path.starts_with(".opencode/") {
@@ -857,6 +860,8 @@ fn capture_watch_state(
         ".agents",
         ".claude",
         ".codex",
+        ".github/skills",
+        ".github/agents",
         ".cursor",
         ".opencode",
         "AGENTS.md",
@@ -926,6 +931,7 @@ fn build_mappings(
             Adapter::Agents,
             Adapter::Claude,
             Adapter::Codex,
+            Adapter::Copilot,
             Adapter::Cursor,
             Adapter::OpenCode,
         ] {
@@ -951,7 +957,7 @@ fn build_mappings(
         if !package.selects_component(crate::manifest::DependencyComponent::Agents) {
             continue;
         }
-        for adapter in [Adapter::Claude, Adapter::OpenCode] {
+        for adapter in [Adapter::Claude, Adapter::Copilot, Adapter::OpenCode] {
             if !selected_adapters.contains(adapter) {
                 continue;
             }
@@ -1056,9 +1062,15 @@ fn skill_mappings(
             .path()
             .strip_prefix(source_root)
             .with_context(|| format!("failed to make {} relative", entry.path().display()))?;
-        let transform = if adapter == Adapter::OpenCode && relative == Path::new("SKILL.md") {
-            RelayTransform::OpenCodeSkillName {
-                managed_skill_id: crate::adapters::namespaced_skill_id(package, &skill.id),
+        let transform = if relative == Path::new("SKILL.md") {
+            match adapter {
+                Adapter::OpenCode => RelayTransform::OpenCodeSkillName {
+                    managed_skill_id: crate::adapters::namespaced_skill_id(package, &skill.id),
+                },
+                Adapter::Copilot => RelayTransform::CopilotSkillName {
+                    managed_skill_id: crate::adapters::namespaced_skill_id(package, &skill.id),
+                },
+                _ => RelayTransform::None,
             }
         } else {
             RelayTransform::None
@@ -1094,6 +1106,9 @@ impl RelayTransform {
             Self::OpenCodeSkillName { managed_skill_id } => {
                 crate::adapters::opencode::rewrite_skill_name(source, managed_skill_id)
             }
+            Self::CopilotSkillName { managed_skill_id } => {
+                crate::adapters::copilot::rewrite_skill_name(source, managed_skill_id)
+            }
         }
     }
 
@@ -1101,22 +1116,29 @@ impl RelayTransform {
         match self {
             Self::None => Ok(managed.to_vec()),
             Self::OpenCodeSkillName { managed_skill_id } => {
-                restore_opencode_skill_name(managed, baseline_source, managed_skill_id)
+                restore_rewritten_skill_name(managed, baseline_source, managed_skill_id, "OpenCode")
             }
+            Self::CopilotSkillName { managed_skill_id } => restore_rewritten_skill_name(
+                managed,
+                baseline_source,
+                managed_skill_id,
+                "GitHub Copilot",
+            ),
         }
     }
 }
 
-fn restore_opencode_skill_name(
+fn restore_rewritten_skill_name(
     managed: &[u8],
     baseline_source: &[u8],
     managed_skill_id: &str,
+    adapter_name: &str,
 ) -> Result<Vec<u8>> {
-    let managed =
-        String::from_utf8(managed.to_vec()).context("OpenCode managed skills must be UTF-8")?;
+    let managed = String::from_utf8(managed.to_vec())
+        .with_context(|| format!("{adapter_name} managed skills must be UTF-8"))?;
     let baseline_source = String::from_utf8(baseline_source.to_vec())
-        .context("OpenCode source skills must be UTF-8")?;
-    let restored_name = extract_frontmatter_name(&baseline_source)?;
+        .with_context(|| format!("{adapter_name} source skills must be UTF-8"))?;
+    let restored_name = extract_frontmatter_name(&baseline_source, adapter_name)?;
     let mut lines = split_lines_preserving_endings(&managed);
     let Some(index) = lines
         .iter()
@@ -1127,19 +1149,19 @@ fn restore_opencode_skill_name(
                 .position(|line| trim_line_ending(line).trim_start().starts_with("name:"))
         })
     else {
-        bail!("OpenCode managed skill is missing a frontmatter `name`");
+        bail!("{adapter_name} managed skill is missing a frontmatter `name`");
     };
     lines[index] = rewrite_frontmatter_name_line(&lines[index], &restored_name);
     Ok(lines.concat().into_bytes())
 }
 
-fn extract_frontmatter_name(contents: &str) -> Result<String> {
+fn extract_frontmatter_name(contents: &str, adapter_name: &str) -> Result<String> {
     let lines = contents.lines().collect::<Vec<_>>();
     if lines.first().copied() != Some("---") {
-        bail!("OpenCode skill is missing YAML frontmatter");
+        bail!("{adapter_name} skill is missing YAML frontmatter");
     }
     let Some(frontmatter_end) = lines.iter().skip(1).position(|line| *line == "---") else {
-        bail!("OpenCode skill is missing a closing frontmatter fence");
+        bail!("{adapter_name} skill is missing a closing frontmatter fence");
     };
     let frontmatter_end = frontmatter_end + 1;
     for line in lines.iter().take(frontmatter_end) {
@@ -1147,7 +1169,7 @@ fn extract_frontmatter_name(contents: &str) -> Result<String> {
             return Ok(value.trim().to_string());
         }
     }
-    bail!("OpenCode skill is missing a frontmatter `name`")
+    bail!("{adapter_name} skill is missing a frontmatter `name`")
 }
 
 fn split_lines_preserving_endings(contents: &str) -> Vec<String> {
@@ -1386,6 +1408,7 @@ mod tests {
         for adapter in [
             Adapter::Agents,
             Adapter::Claude,
+            Adapter::Copilot,
             Adapter::Cursor,
             Adapter::OpenCode,
         ] {
@@ -1395,7 +1418,7 @@ mod tests {
             );
         }
         let agent_suffix = "\nRelay agent update.\n";
-        for adapter in [Adapter::Claude, Adapter::OpenCode] {
+        for adapter in [Adapter::Claude, Adapter::Copilot, Adapter::OpenCode] {
             append_file(
                 &managed_artifact_path(
                     project.path(),
@@ -1478,6 +1501,60 @@ mod tests {
         let link = local_config.relay_link("playbook_ios").unwrap();
         assert_eq!(link.repo_path, linked_repo.canonicalize().unwrap());
         assert_eq!(link.via, None);
+    }
+
+    #[test]
+    fn relay_writes_back_copilot_skill_and_agent_edits() {
+        let (_remote_root, remote_repo) = create_remote_dependency();
+        let linked = clone_linked_repo(&remote_repo);
+        let linked_repo = linked.path().join("linked");
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        install_dependency(
+            project.path(),
+            cache.path(),
+            &remote_repo,
+            &[Adapter::Copilot],
+        );
+
+        let package = resolved_package(project.path(), cache.path(), &[Adapter::Copilot]);
+        append_file(
+            &managed_skill_root(project.path(), Adapter::Copilot, &package, "review")
+                .join("SKILL.md"),
+            "\nCopilot skill update.\n",
+        );
+        append_file(
+            &managed_artifact_path(
+                project.path(),
+                Adapter::Copilot,
+                ArtifactKind::Agent,
+                &package,
+                "security",
+            )
+            .unwrap(),
+            "\nCopilot agent update.\n",
+        );
+
+        let summary = relay_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "playbook_ios",
+            Some(&linked_repo),
+            None,
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        assert_eq!(summary.updated_file_count, 2);
+        let relayed_skill = fs::read_to_string(linked_repo.join("skills/review/SKILL.md")).unwrap();
+        assert!(relayed_skill.contains("name: Review"));
+        assert!(!relayed_skill.contains("name: review_"));
+        assert!(relayed_skill.ends_with("\nCopilot skill update.\n"));
+        assert!(
+            fs::read_to_string(linked_repo.join("agents/security.md"))
+                .unwrap()
+                .ends_with("\nCopilot agent update.\n")
+        );
     }
 
     #[test]
@@ -2469,7 +2546,8 @@ tag = {:?}
         let managed = b"---\r\nname: review_abcd12\r\ndescription: Example.\r\n---\r\n# Review\r\n";
         let baseline = b"---\r\nname: Review\r\ndescription: Example.\r\n---\r\n# Review\r\n";
 
-        let restored = restore_opencode_skill_name(managed, baseline, "review_abcd12").unwrap();
+        let restored =
+            restore_rewritten_skill_name(managed, baseline, "review_abcd12", "OpenCode").unwrap();
         let restored = String::from_utf8(restored).unwrap();
 
         assert!(restored.contains("name: Review\r\n"));
