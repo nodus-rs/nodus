@@ -93,12 +93,41 @@ enum PlannedUpgrade {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostPlatform {
+    Unix,
+    Windows,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct ReleaseInstallMarker {
     install_method: String,
     repo_slug: String,
     binary_name: String,
     binary_path: PathBuf,
+}
+
+struct InstallerInvocation {
+    program: &'static str,
+    action: &'static str,
+    script_path: PathBuf,
+    base_args: Vec<String>,
+    version_flag: &'static str,
+    install_dir_flag: &'static str,
+}
+
+impl InstallerInvocation {
+    fn args_for(&self, tag: &str, install_dir: &Path) -> Vec<String> {
+        let mut args = self.base_args.clone();
+        args.extend([
+            self.script_path.to_string_lossy().into_owned(),
+            self.version_flag.into(),
+            tag.into(),
+            self.install_dir_flag.into(),
+            install_dir.to_string_lossy().into_owned(),
+        ]);
+        args
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -185,7 +214,9 @@ pub fn upgrade(reporter: &Reporter, check_only: bool) -> Result<()> {
                 anyhow::anyhow!(release_permission_guidance(&latest.tag, &install_dir))
             })?;
             let temp = tempfile::TempDir::new().context("failed to create temp dir")?;
-            let script_path = temp.path().join("install.sh");
+            let installer =
+                release_installer_invocation(&temp.path().join(release_installer_script_name()));
+            let script_path = installer.script_path.clone();
             reporter.status("Downloading", format!("installer for {}", latest.tag))?;
             download_to_path(&script_url, &script_path)?;
             reporter.status(
@@ -196,15 +227,9 @@ pub fn upgrade(reporter: &Reporter, check_only: bool) -> Result<()> {
                 ),
             )?;
             run_checked_command(
-                "bash",
-                &[
-                    script_path.to_string_lossy().into_owned(),
-                    "--version".into(),
-                    latest.tag.clone(),
-                    "--install-dir".into(),
-                    install_dir.to_string_lossy().into_owned(),
-                ],
-                "bash",
+                installer.program,
+                &installer.args_for(latest.tag.as_str(), &install_dir),
+                installer.action,
                 "failed to update nodus via the GitHub release installer",
             )?;
             reporter.finish(format!(
@@ -294,6 +319,14 @@ where
 }
 
 fn plan_upgrade(options: &CheckOptions, latest: &LatestRelease) -> PlannedUpgrade {
+    plan_upgrade_for_platform(options, latest, current_host_platform())
+}
+
+fn plan_upgrade_for_platform(
+    options: &CheckOptions,
+    latest: &LatestRelease,
+    platform: HostPlatform,
+) -> PlannedUpgrade {
     if latest.version <= options.current_version {
         return PlannedUpgrade::AlreadyCurrent {
             version: options.current_version.clone(),
@@ -315,11 +348,11 @@ fn plan_upgrade(options: &CheckOptions, latest: &LatestRelease) -> PlannedUpgrad
                 .unwrap_or_else(|| Path::new("."))
                 .to_path_buf(),
             binary_path,
-            script_url: tagged_install_script_url(&latest.tag),
+            script_url: tagged_install_script_url_for_platform(&latest.tag, platform),
         },
         InstallTarget::Unsupported(install) => PlannedUpgrade::Unsupported {
             latest: latest.clone(),
-            message: unsupported_upgrade_message(latest, &install),
+            message: unsupported_upgrade_message(latest, &install, platform),
         },
     }
 }
@@ -335,7 +368,9 @@ fn detect_install_target(options: &CheckOptions) -> InstallTarget {
 
 fn detect_cargo_install(current_exe: &Path, cargo_home: Option<&Path>) -> Option<InstallTarget> {
     let cargo_home = cargo_home?;
-    let cargo_bin = cargo_home.join("bin").join(BIN_NAME);
+    let cargo_bin = cargo_home
+        .join("bin")
+        .join(executable_file_name(current_host_platform()));
     if current_exe != cargo_bin {
         return None;
     }
@@ -563,8 +598,41 @@ fn cargo_update_command(version: &Version) -> Vec<String> {
     ]
 }
 
+fn current_host_platform() -> HostPlatform {
+    if cfg!(windows) {
+        HostPlatform::Windows
+    } else {
+        HostPlatform::Unix
+    }
+}
+
+fn executable_file_name(platform: HostPlatform) -> &'static str {
+    match platform {
+        HostPlatform::Unix => BIN_NAME,
+        HostPlatform::Windows => "nodus.exe",
+    }
+}
+
+fn release_installer_script_name() -> &'static str {
+    release_installer_script_name_for_platform(current_host_platform())
+}
+
+fn release_installer_script_name_for_platform(platform: HostPlatform) -> &'static str {
+    match platform {
+        HostPlatform::Unix => "install.sh",
+        HostPlatform::Windows => "install.ps1",
+    }
+}
+
 fn tagged_install_script_url(tag: &str) -> String {
-    format!("https://raw.githubusercontent.com/{REPO_SLUG}/{tag}/install.sh")
+    tagged_install_script_url_for_platform(tag, current_host_platform())
+}
+
+fn tagged_install_script_url_for_platform(tag: &str, platform: HostPlatform) -> String {
+    format!(
+        "https://raw.githubusercontent.com/{REPO_SLUG}/{tag}/{}",
+        release_installer_script_name_for_platform(platform)
+    )
 }
 
 fn cargo_permission_guidance(version: &Version, binary_path: &Path) -> String {
@@ -583,7 +651,11 @@ fn release_permission_guidance(tag: &str, install_dir: &Path) -> String {
     )
 }
 
-fn unsupported_upgrade_message(latest: &LatestRelease, install: &UnsupportedInstall) -> String {
+fn unsupported_upgrade_message(
+    latest: &LatestRelease,
+    install: &UnsupportedInstall,
+    platform: HostPlatform,
+) -> String {
     match install {
         UnsupportedInstall::CargoPath {
             binary_path,
@@ -612,23 +684,76 @@ fn unsupported_upgrade_message(latest: &LatestRelease, install: &UnsupportedInst
                 "could not determine how {} was installed.\nUpdate it manually using the original installation method.\nCommon commands:\n  {}\n  {}",
                 display_path(binary_path),
                 cargo_update_command(&latest.version).join(" "),
-                manual_release_update_command(&latest.tag, install_dir),
+                manual_release_update_command_for_platform(&latest.tag, install_dir, platform),
             )
         }
     }
 }
 
 fn manual_release_update_command(tag: &str, install_dir: &Path) -> String {
-    format!(
-        "curl -fsSL {} | bash -s -- --version {} --install-dir {}",
-        shell_quote(&tagged_install_script_url(tag)),
-        shell_quote(tag),
-        shell_quote(&install_dir.to_string_lossy()),
-    )
+    manual_release_update_command_for_platform(tag, install_dir, current_host_platform())
+}
+
+fn manual_release_update_command_for_platform(
+    tag: &str,
+    install_dir: &Path,
+    platform: HostPlatform,
+) -> String {
+    match platform {
+        HostPlatform::Unix => format!(
+            "curl -fsSL {} | bash -s -- --version {} --install-dir {}",
+            shell_quote(&tagged_install_script_url_for_platform(tag, platform)),
+            shell_quote(tag),
+            shell_quote(&install_dir.to_string_lossy()),
+        ),
+        HostPlatform::Windows => format!(
+            "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& {{ $script = Join-Path $env:TEMP 'nodus-install.ps1'; Invoke-WebRequest {} -OutFile $script; & $script -Version {} -InstallDir {}; Remove-Item $script }}\"",
+            powershell_quote(&tagged_install_script_url_for_platform(tag, platform)),
+            powershell_quote(tag),
+            powershell_quote(&install_dir.to_string_lossy()),
+        ),
+    }
 }
 
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn powershell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn release_installer_invocation(script_path: &Path) -> InstallerInvocation {
+    release_installer_invocation_for_platform(script_path, current_host_platform())
+}
+
+fn release_installer_invocation_for_platform(
+    script_path: &Path,
+    platform: HostPlatform,
+) -> InstallerInvocation {
+    match platform {
+        HostPlatform::Unix => InstallerInvocation {
+            program: "bash",
+            action: "bash",
+            script_path: script_path.to_path_buf(),
+            base_args: Vec::new(),
+            version_flag: "--version",
+            install_dir_flag: "--install-dir",
+        },
+        HostPlatform::Windows => InstallerInvocation {
+            program: "powershell",
+            action: "powershell",
+            script_path: script_path.to_path_buf(),
+            base_args: vec![
+                "-NoProfile".into(),
+                "-ExecutionPolicy".into(),
+                "Bypass".into(),
+                "-File".into(),
+            ],
+            version_flag: "-Version",
+            install_dir_flag: "-InstallDir",
+        },
+    }
 }
 
 fn state_path(store_root: &Path) -> PathBuf {
@@ -801,6 +926,10 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("install.sh")
     }
 
+    fn powershell_script_path() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("install.ps1")
+    }
+
     #[test]
     fn parses_release_tags_with_or_without_a_v_prefix() {
         assert_eq!(
@@ -960,6 +1089,75 @@ mod tests {
                 install_dir: binary_path.parent().unwrap().to_path_buf(),
                 script_url: tagged_install_script_url("v0.4.1"),
             }
+        );
+    }
+
+    #[test]
+    fn plans_windows_release_updates_against_the_powershell_installer() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let binary_path = temp.path().join("bin").join("nodus.exe");
+        write_release_marker(&binary_path);
+        let latest = LatestRelease {
+            tag: "v0.4.1".into(),
+            version: Version::parse("0.4.1").unwrap(),
+        };
+
+        assert_eq!(
+            plan_upgrade_for_platform(
+                &test_options(binary_path.clone()),
+                &latest,
+                HostPlatform::Windows
+            ),
+            PlannedUpgrade::GithubRelease {
+                current_version: Version::parse("0.4.0").unwrap(),
+                latest,
+                binary_path: binary_path.clone(),
+                install_dir: binary_path.parent().unwrap().to_path_buf(),
+                script_url: tagged_install_script_url_for_platform("v0.4.1", HostPlatform::Windows),
+            }
+        );
+    }
+
+    #[test]
+    fn builds_a_powershell_manual_update_command_on_windows() {
+        let install_dir = Path::new(r"C:\Users\tester\AppData\Local\Programs\nodus\bin");
+
+        let command = manual_release_update_command_for_platform(
+            "v0.4.1",
+            install_dir,
+            HostPlatform::Windows,
+        );
+
+        assert!(command.contains("powershell -NoProfile -ExecutionPolicy Bypass"));
+        assert!(command.contains("install.ps1"));
+        assert!(command.contains("-Version 'v0.4.1'"));
+        assert!(
+            command.contains(r"-InstallDir 'C:\Users\tester\AppData\Local\Programs\nodus\bin'")
+        );
+    }
+
+    #[test]
+    fn uses_a_powershell_installer_invocation_on_windows() {
+        let install_dir = Path::new(r"C:\Users\tester\AppData\Local\Programs\nodus\bin");
+        let invocation = release_installer_invocation_for_platform(
+            &powershell_script_path(),
+            HostPlatform::Windows,
+        );
+
+        assert_eq!(invocation.program, "powershell");
+        assert_eq!(
+            invocation.args_for("v0.4.1", install_dir),
+            vec![
+                "-NoProfile".into(),
+                "-ExecutionPolicy".into(),
+                "Bypass".into(),
+                "-File".into(),
+                powershell_script_path().to_string_lossy().into_owned(),
+                "-Version".into(),
+                "v0.4.1".into(),
+                "-InstallDir".into(),
+                r"C:\Users\tester\AppData\Local\Programs\nodus\bin".into(),
+            ]
         );
     }
 
@@ -1256,8 +1454,12 @@ HTTP/2 200 \r\n\
             format!("https://github.com/{REPO_SLUG}#install")
         );
         assert_eq!(
-            tagged_install_script_url("v0.3.4"),
+            tagged_install_script_url_for_platform("v0.3.4", HostPlatform::Unix),
             format!("https://raw.githubusercontent.com/{REPO_SLUG}/v0.3.4/install.sh")
+        );
+        assert_eq!(
+            tagged_install_script_url_for_platform("v0.3.4", HostPlatform::Windows),
+            format!("https://raw.githubusercontent.com/{REPO_SLUG}/v0.3.4/install.ps1")
         );
     }
 
@@ -1344,6 +1546,98 @@ HTTP/2 200 \r\n\
             String::from_utf8_lossy(&uninstall_output.stderr)
         );
         assert!(!install_dir.join(BIN_NAME).exists());
+        assert!(!marker_path.exists());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn install_script_handles_windows_release_assets_from_msys_shells() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let fake_bin = temp.path().join("fake-bin");
+        let install_dir = temp.path().join("install");
+        let asset_root = temp
+            .path()
+            .join("asset")
+            .join("nodus-v0.3.4-x86_64-pc-windows-msvc");
+        let asset_path = temp.path().join("nodus-v0.3.4-x86_64-pc-windows-msvc.zip");
+        fs::create_dir_all(&fake_bin).unwrap();
+        fs::create_dir_all(&asset_root).unwrap();
+        fs::write(asset_root.join("nodus.exe"), "windows-binary").unwrap();
+        let zip_status = ProcessCommand::new("zip")
+            .args([
+                "-qr",
+                asset_path.to_str().unwrap(),
+                asset_root.file_name().unwrap().to_str().unwrap(),
+            ])
+            .current_dir(temp.path().join("asset"))
+            .status()
+            .unwrap();
+        assert!(zip_status.success());
+
+        fs::write(
+            fake_bin.join("uname"),
+            "#!/usr/bin/env bash\ncase \"$1\" in\n  -s) printf 'MINGW64_NT-10.0\\n' ;;\n  -m) printf 'x86_64\\n' ;;\n  *) printf 'unexpected uname args: %s\\n' \"$*\" >&2; exit 1 ;;\nesac\n",
+        )
+        .unwrap();
+        fs::write(
+            fake_bin.join("curl"),
+            format!(
+                "#!/usr/bin/env bash\nset -euo pipefail\noutput=''\nprev=''\nurl=''\nfor arg in \"$@\"; do\n  if [ \"$prev\" = '-o' ]; then\n    output=\"$arg\"\n    prev=''\n    continue\n  fi\n  case \"$arg\" in\n    -o) prev='-o' ;;\n    http://*|https://*) url=\"$arg\" ;;\n  esac\ndone\ncase \"$url\" in\n  *nodus-v0.3.4-x86_64-pc-windows-msvc.zip)\n    cp {} \"$output\"\n    ;;\n  *)\n    printf 'unexpected curl url: %s\\n' \"$url\" >&2\n    exit 1\n    ;;\nesac\n",
+                shell_quote(&asset_path.to_string_lossy())
+            ),
+        )
+        .unwrap();
+        fs::write(
+            fake_bin.join("cygpath"),
+            "#!/usr/bin/env bash\ncase \"$1\" in\n  -w|-u) printf '%s\\n' \"$2\" ;;\n  *) printf 'unexpected cygpath args: %s\\n' \"$*\" >&2; exit 1 ;;\nesac\n",
+        )
+        .unwrap();
+        for helper in ["uname", "curl", "cygpath"] {
+            let status = ProcessCommand::new("chmod")
+                .args(["+x", fake_bin.join(helper).to_str().unwrap()])
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+
+        let path = format!("{}:{}", fake_bin.display(), env::var("PATH").unwrap());
+        let install_output = ProcessCommand::new("bash")
+            .arg(script_path())
+            .args(["--version", "v0.3.4", "--install-dir"])
+            .arg(&install_dir)
+            .env("PATH", &path)
+            .output()
+            .unwrap();
+        assert!(
+            install_output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&install_output.stderr)
+        );
+
+        let marker_path = install_dir.join(INSTALL_MARKER_FILE);
+        let marker: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&marker_path).unwrap()).unwrap();
+        assert_eq!(marker["binary_name"], BIN_NAME);
+        let marker_binary_path = PathBuf::from(marker["binary_path"].as_str().unwrap());
+        assert_eq!(
+            canonicalize_or_identity(&marker_binary_path),
+            canonicalize_or_identity(&install_dir.join("nodus.exe"))
+        );
+        assert!(install_dir.join("nodus.exe").exists());
+
+        let uninstall_output = ProcessCommand::new("bash")
+            .arg(script_path())
+            .args(["--uninstall", "--install-dir"])
+            .arg(&install_dir)
+            .env("PATH", &path)
+            .output()
+            .unwrap();
+        assert!(
+            uninstall_output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&uninstall_output.stderr)
+        );
+        assert!(!install_dir.join("nodus.exe").exists());
         assert!(!marker_path.exists());
     }
 }

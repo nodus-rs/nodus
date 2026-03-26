@@ -56,6 +56,15 @@ Install the latest prebuilt binary on macOS or Linux:
 curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/main/install.sh | bash
 ```
 
+Install the latest prebuilt binary on Windows with PowerShell:
+
+```powershell
+$script = Join-Path $env:TEMP "nodus-install.ps1"
+Invoke-WebRequest "https://raw.githubusercontent.com/WendellXY/nodus/main/install.ps1" -OutFile $script
+& $script
+Remove-Item $script
+```
+
 Install with Homebrew:
 
 ```bash
@@ -213,10 +222,19 @@ Windows: %LOCALAPPDATA%\nodus\
 
 Override that location for any command with `--store-path <path>`.
 
-Install a specific release with the installer script:
+Install a specific release with the Unix installer script:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/main/install.sh | bash -s -- --version v0.1.0
+```
+
+Install a specific release on Windows:
+
+```powershell
+$script = Join-Path $env:TEMP "nodus-install.ps1"
+Invoke-WebRequest "https://raw.githubusercontent.com/WendellXY/nodus/main/install.ps1" -OutFile $script
+& $script -Version v0.1.0
+Remove-Item $script
 ```
 
 ## When To Use `sync` vs `update`
