@@ -56,10 +56,10 @@ Install the latest prebuilt binary on macOS or Linux:
 curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/main/install.sh | bash
 ```
 
-Install a specific release:
+Install with Homebrew:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/main/install.sh | bash -s -- --version v0.1.0
+brew install WendellXY/nodus/nodus
 ```
 
 ## Quick Start
@@ -212,6 +212,12 @@ Windows: %LOCALAPPDATA%\nodus\
 ```
 
 Override that location for any command with `--store-path <path>`.
+
+Install a specific release with the installer script:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/main/install.sh | bash -s -- --version v0.1.0
+```
 
 ## When To Use `sync` vs `update`
 

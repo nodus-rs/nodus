@@ -57,10 +57,10 @@ cargo install nodus
 curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/main/install.sh | bash
 ```
 
-安装指定版本：
+通过 Homebrew 安装：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/main/install.sh | bash -s -- --version v0.1.0
+brew install WendellXY/nodus/nodus
 ```
 
 <a id="quick-start"></a>
@@ -216,6 +216,12 @@ Windows: %LOCALAPPDATA%\nodus\
 ```
 
 任意命令都可以通过 `--store-path <path>` 覆盖这个位置。
+
+如果你需要安装某个指定版本，可以使用安装脚本：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/main/install.sh | bash -s -- --version v0.1.0
+```
 
 ## 什么时候用 `sync`，什么时候用 `update`
 
