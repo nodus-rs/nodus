@@ -164,6 +164,17 @@ pub(super) enum Command {
         )]
         dry_run: bool,
     },
+    #[command(
+        alias = "self-update",
+        about = "Check for or install a newer nodus CLI when the install method is supported"
+    )]
+    Upgrade {
+        #[arg(
+            long,
+            help = "Check whether a newer nodus CLI release is available without installing it"
+        )]
+        check: bool,
+    },
     #[command(about = "Relay linked managed edits back into a maintainer checkout")]
     Relay {
         #[arg(

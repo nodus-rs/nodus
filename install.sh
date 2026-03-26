@@ -4,6 +4,7 @@ set -euo pipefail
 
 REPO_SLUG="WendellXY/nodus"
 BIN_NAME="nodus"
+INSTALL_MARKER_NAME="${BIN_NAME}.install.json"
 INSTALL_DIR="${NODUS_INSTALL_DIR:-$HOME/.local/bin}"
 REQUESTED_VERSION="${NODUS_VERSION:-}"
 VERIFY_CHECKSUMS=0
@@ -38,6 +39,21 @@ log() {
 fail() {
   printf 'error: %s\n' "$*" >&2
   exit 1
+}
+
+json_escape() {
+  printf '%s' "$1" | awk '
+    BEGIN { ORS=""; print "\"" }
+    {
+      gsub(/\\/,"\\\\");
+      gsub(/"/,"\\\"");
+      gsub(/\t/,"\\t");
+      gsub(/\r/,"\\r");
+      gsub(/\n/,"\\n");
+      print;
+    }
+    END { print "\"" }
+  '
 }
 
 need_cmd() {
@@ -190,6 +206,24 @@ install_binary() {
   install -m 755 "${source_bin}" "${INSTALL_DIR}/${BIN_NAME}"
 }
 
+install_marker_path() {
+  printf '%s\n' "${INSTALL_DIR}/${INSTALL_MARKER_NAME}"
+}
+
+write_install_marker() {
+  local marker_path installed_bin
+  marker_path="$(install_marker_path)"
+  installed_bin="${INSTALL_DIR}/${BIN_NAME}"
+  cat > "${marker_path}" <<EOF
+{
+  "install_method": $(json_escape "github_release"),
+  "repo_slug": $(json_escape "${REPO_SLUG}"),
+  "binary_name": $(json_escape "${BIN_NAME}"),
+  "binary_path": $(json_escape "${installed_bin}")
+}
+EOF
+}
+
 warn_if_not_on_path() {
   case ":$PATH:" in
     *:"${INSTALL_DIR}":*)
@@ -208,15 +242,17 @@ cleanup() {
 }
 
 uninstall_binary() {
-  local installed_bin
+  local installed_bin marker_path
   installed_bin="${INSTALL_DIR}/${BIN_NAME}"
+  marker_path="$(install_marker_path)"
 
-  if [ ! -e "${installed_bin}" ]; then
+  if [ ! -e "${installed_bin}" ] && [ ! -e "${marker_path}" ]; then
     log "${BIN_NAME} is not installed in ${INSTALL_DIR}"
     return
   fi
 
   rm -f "${installed_bin}"
+  rm -f "${marker_path}"
   log "Removed ${installed_bin}"
 }
 
@@ -267,6 +303,7 @@ main() {
   mkdir -p "${extracted_root}"
   extract_archive "${archive_path}" "${extracted_root}"
   install_binary "${extracted_dir}"
+  write_install_marker
   warn_if_not_on_path
   log "Installed ${BIN_NAME} ${VERSION}"
   log "Run '${BIN_NAME} --help' to get started."

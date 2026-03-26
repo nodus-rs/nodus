@@ -11,7 +11,7 @@ use tempfile::TempDir;
 use walkdir::WalkDir;
 
 use super::args::{Cli, Command};
-use super::dispatch::run_command_in_dir;
+use super::dispatch::{run_command_in_dir, should_auto_check_for_updates};
 use crate::adapters::Adapter;
 use crate::report::{ColorMode, Reporter};
 use crate::resolver;
@@ -231,6 +231,40 @@ fn parses_outdated_subcommand() {
 }
 
 #[test]
+fn auto_update_checks_only_run_for_interactive_human_output_commands() {
+    assert!(should_auto_check_for_updates(
+        &Command::List { json: false },
+        true,
+        false
+    ));
+    assert!(!should_auto_check_for_updates(
+        &Command::List { json: true },
+        true,
+        false
+    ));
+    assert!(!should_auto_check_for_updates(
+        &Command::Completion { shell: Shell::Bash },
+        true,
+        false
+    ));
+    assert!(!should_auto_check_for_updates(
+        &Command::Upgrade { check: false },
+        true,
+        false
+    ));
+    assert!(!should_auto_check_for_updates(
+        &Command::List { json: false },
+        false,
+        false
+    ));
+    assert!(!should_auto_check_for_updates(
+        &Command::List { json: false },
+        true,
+        true
+    ));
+}
+
+#[test]
 fn parses_relay_subcommand() {
     let cli = Cli::try_parse_from([
         "nodus",
@@ -316,6 +350,22 @@ fn parses_update_subcommand() {
 }
 
 #[test]
+fn parses_upgrade_subcommand() {
+    let cli = Cli::try_parse_from(["nodus", "upgrade"]).unwrap();
+
+    assert!(matches!(cli.command, Command::Upgrade { check: false }));
+}
+
+#[test]
+fn parses_upgrade_check_flag_and_self_update_alias() {
+    let check = Cli::try_parse_from(["nodus", "upgrade", "--check"]).unwrap();
+    let alias = Cli::try_parse_from(["nodus", "self-update"]).unwrap();
+
+    assert!(matches!(check.command, Command::Upgrade { check: true }));
+    assert!(matches!(alias.command, Command::Upgrade { check: false }));
+}
+
+#[test]
 fn parses_dry_run_flags_for_mutating_commands() {
     let add = Cli::try_parse_from(["nodus", "add", "example/repo", "--dry-run"]).unwrap();
     let remove = Cli::try_parse_from(["nodus", "remove", "example/repo", "--dry-run"]).unwrap();
@@ -361,6 +411,11 @@ fn root_help_describes_commands() {
     assert!(help.contains("Display resolved package metadata"));
     assert!(help.contains("Check configured dependencies for newer tags or branch head changes"));
     assert!(help.contains("Update configured dependencies and resync managed outputs"));
+    assert!(
+        help.contains(
+            "Check for or install a newer nodus CLI when the install method is supported"
+        )
+    );
     assert!(help.contains("Generate shell completion scripts"));
     assert!(
         help.contains("Use an AI review agent to assess whether a package graph looks safe to use")
