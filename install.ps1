@@ -60,6 +60,7 @@ function Resolve-Target {
     $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
     switch ($arch) {
         "X64" { return "x86_64-pc-windows-msvc" }
+        "Arm64" { return "aarch64-pc-windows-msvc" }
         default { Fail "unsupported Windows architecture: $arch" }
     }
 }

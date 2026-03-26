@@ -209,7 +209,7 @@ Supported platforms:
 
 - macOS (`x86_64`, `arm64`)
 - Linux (`x86_64`, `arm64`/`aarch64`)
-- Windows (`x86_64`)
+- Windows (`x86_64`, `arm64`)
 
 By default, Nodus stores shared mirrors, checkouts, and snapshots here:
 

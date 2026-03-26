@@ -1651,6 +1651,99 @@ HTTP/2 200 \r\n\
 
     #[cfg(not(target_os = "windows"))]
     #[test]
+    fn install_script_handles_windows_arm64_release_assets_from_msys_shells() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let fake_bin = temp.path().join("fake-bin");
+        let install_dir = temp.path().join("install");
+        let asset_root = temp.path().join("asset");
+        let asset_path = temp.path().join("nodus-v0.3.4-aarch64-pc-windows-msvc.zip");
+        fs::create_dir_all(&fake_bin).unwrap();
+        fs::create_dir_all(&asset_root).unwrap();
+        fs::write(asset_root.join("nodus.exe"), "windows-binary").unwrap();
+        fs::write(asset_root.join("README.md"), "readme").unwrap();
+        fs::write(asset_root.join("LICENSE"), "license").unwrap();
+        let zip_status = ProcessCommand::new("zip")
+            .args([
+                "-qr",
+                asset_path.to_str().unwrap(),
+                "nodus.exe",
+                "README.md",
+                "LICENSE",
+            ])
+            .current_dir(&asset_root)
+            .status()
+            .unwrap();
+        assert!(zip_status.success());
+
+        fs::write(
+            fake_bin.join("uname"),
+            "#!/usr/bin/env bash\ncase \"$1\" in\n  -s) printf 'MINGW64_NT-10.0\\n' ;;\n  -m) printf 'arm64\\n' ;;\n  *) printf 'unexpected uname args: %s\\n' \"$*\" >&2; exit 1 ;;\nesac\n",
+        )
+        .unwrap();
+        fs::write(
+            fake_bin.join("curl"),
+            format!(
+                "#!/usr/bin/env bash\nset -euo pipefail\noutput=''\nprev=''\nurl=''\nfor arg in \"$@\"; do\n  if [ \"$prev\" = '-o' ]; then\n    output=\"$arg\"\n    prev=''\n    continue\n  fi\n  case \"$arg\" in\n    -o) prev='-o' ;;\n    http://*|https://*) url=\"$arg\" ;;\n  esac\ndone\ncase \"$url\" in\n  *nodus-v0.3.4-aarch64-pc-windows-msvc.zip)\n    cp {} \"$output\"\n    ;;\n  *)\n    printf 'unexpected curl url: %s\\n' \"$url\" >&2\n    exit 1\n    ;;\nesac\n",
+                shell_quote(&asset_path.to_string_lossy())
+            ),
+        )
+        .unwrap();
+        fs::write(
+            fake_bin.join("cygpath"),
+            "#!/usr/bin/env bash\ncase \"$1\" in\n  -w|-u) printf '%s\\n' \"$2\" ;;\n  *) printf 'unexpected cygpath args: %s\\n' \"$*\" >&2; exit 1 ;;\nesac\n",
+        )
+        .unwrap();
+        for helper in ["uname", "curl", "cygpath"] {
+            let status = ProcessCommand::new("chmod")
+                .args(["+x", fake_bin.join(helper).to_str().unwrap()])
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+
+        let path = format!("{}:{}", fake_bin.display(), env::var("PATH").unwrap());
+        let install_output = ProcessCommand::new("bash")
+            .arg(script_path())
+            .args(["--version", "v0.3.4", "--install-dir"])
+            .arg(&install_dir)
+            .env("PATH", &path)
+            .output()
+            .unwrap();
+        assert!(
+            install_output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&install_output.stderr)
+        );
+
+        let marker_path = install_dir.join(INSTALL_MARKER_FILE);
+        let marker: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&marker_path).unwrap()).unwrap();
+        assert_eq!(marker["binary_name"], BIN_NAME);
+        let marker_binary_path = PathBuf::from(marker["binary_path"].as_str().unwrap());
+        assert_eq!(
+            canonicalize_or_identity(&marker_binary_path),
+            canonicalize_or_identity(&install_dir.join("nodus.exe"))
+        );
+        assert!(install_dir.join("nodus.exe").exists());
+
+        let uninstall_output = ProcessCommand::new("bash")
+            .arg(script_path())
+            .args(["--uninstall", "--install-dir"])
+            .arg(&install_dir)
+            .env("PATH", &path)
+            .output()
+            .unwrap();
+        assert!(
+            uninstall_output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&uninstall_output.stderr)
+        );
+        assert!(!install_dir.join("nodus.exe").exists());
+        assert!(!marker_path.exists());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
     fn powershell_install_script_handles_windows_release_assets_from_flat_zip_root() {
         let temp = tempfile::TempDir::new().unwrap();
         let install_dir = temp.path().join("install");
@@ -1661,7 +1754,7 @@ HTTP/2 200 \r\n\
         fs::write(asset_dir.join("README.md"), "readme").unwrap();
         fs::write(asset_dir.join("LICENSE"), "license").unwrap();
 
-        let asset_name = "nodus-v0.3.4-x86_64-pc-windows-msvc.zip";
+        let asset_name = "nodus-v0.3.4-aarch64-pc-windows-msvc.zip";
         let asset_path = asset_dir.join(asset_name);
         let compress_cmd = format!(
             "Compress-Archive -Path 'nodus.exe','README.md','LICENSE' -DestinationPath '{}' -Force",
@@ -1689,7 +1782,7 @@ HTTP/2 200 \r\n\
             )
             .replacen(
                 "$arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture",
-                "$arch = 'X64'",
+                "$arch = 'ARM64'",
                 1,
             );
         assert_ne!(patched_script, script_body);

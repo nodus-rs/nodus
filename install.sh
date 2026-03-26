@@ -159,6 +159,7 @@ detect_target() {
     CYGWIN*|MINGW*|MSYS*)
       case "$arch" in
         x86_64|amd64) TARGET="x86_64-pc-windows-msvc" ;;
+        aarch64|arm64) TARGET="aarch64-pc-windows-msvc" ;;
         *) fail "unsupported Windows architecture: $arch" ;;
       esac
       ARCHIVE_EXT="zip"
