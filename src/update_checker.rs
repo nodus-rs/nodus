@@ -1781,8 +1781,8 @@ HTTP/2 200 \r\n\
                 1,
             )
             .replacen(
-                "$arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture",
-                "$arch = 'ARM64'",
+                "$Target = Resolve-Target",
+                "$Target = 'aarch64-pc-windows-msvc'",
                 1,
             );
         assert_ne!(patched_script, script_body);
