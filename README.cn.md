@@ -65,6 +65,8 @@ cargo install nodus
 curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/main/install.sh | bash
 ```
 
+预构建 release 归档当前覆盖 macOS（`x86_64`、`arm64`）、Linux（`x86_64`、`arm64`/`aarch64`）和 Windows（`x86_64`）。
+
 安装指定版本，或选择自定义安装目录：
 
 ```bash
@@ -112,17 +114,13 @@ Windows: %LOCALAPPDATA%\nodus\
 <a id="quick-start"></a>
 ## 快速开始
 
-如果仓库还没有清单文件：
-
-```bash
-nodus init
-```
-
-然后添加一个包：
+先添加一个包：
 
 ```bash
 nodus add WendellXY/nodus --adapter codex
 ```
+
+如果此时还没有 `nodus.toml`，`nodus add` 会先创建它，然后再同步受管理文件。
 
 如果只想安装该包中的部分制品类型：
 
@@ -380,6 +378,8 @@ nodus add <url>
 
 默认情况下，Nodus 会解析最新 Git tag，将该 tag 写入 `nodus.toml`，然后立刻执行一次普通的 `nodus sync`。
 
+如果当前仓库还没有 `nodus.toml`，`nodus add` 会自动引导创建该文件。
+
 你仍然可以显式固定某个特定 tag：
 
 ```bash
@@ -437,6 +437,8 @@ nodus add WendellXY/nodus
 ### `nodus init`
 
 创建最小化的 `nodus.toml`，并生成 `skills/example/SKILL.md`。
+
+对于只想消费依赖的仓库，这个命令不是必需的，因为 `nodus add` 首次运行时就能创建 `nodus.toml`。当你想先得到一个空白脚手架和示例 skill，再开始添加依赖时，再使用 `nodus init`。
 
 ### `nodus info`
 

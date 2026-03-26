@@ -66,6 +66,8 @@ Install the latest prebuilt binary on macOS or Linux:
 curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/main/install.sh | bash
 ```
 
+Prebuilt release archives are published for macOS (`x86_64`, `arm64`), Linux (`x86_64`, `arm64`/`aarch64`), and Windows (`x86_64`).
+
 Install a specific release or choose a custom install directory:
 
 ```bash
@@ -112,17 +114,13 @@ You can override that location for any command with `--store-path <path>`.
 
 ## Quick Start
 
-If the repo does not have a manifest yet:
-
-```bash
-nodus init
-```
-
-Then add a package:
+Add a package:
 
 ```bash
 nodus add WendellXY/nodus --adapter codex
 ```
+
+If `nodus.toml` does not exist yet, `nodus add` creates it before syncing managed files.
 
 To install only selected artifact kinds from that package:
 
@@ -403,6 +401,8 @@ nodus add <url>
 
 By default, Nodus resolves the latest Git tag, writes that tag into `nodus.toml`, and immediately runs a normal `nodus sync`.
 
+If the current repo does not have a `nodus.toml` yet, `nodus add` bootstraps one automatically.
+
 You can still pin a specific tag explicitly:
 
 ```bash
@@ -466,6 +466,8 @@ nodus add WendellXY/nodus
 ### `nodus init`
 
 Creates a minimal `nodus.toml` plus `skills/example/SKILL.md`.
+
+This command is optional for dependency consumers because `nodus add` can create `nodus.toml` on first use. Use `nodus init` when you want an empty scaffold and example skill before adding dependencies.
 
 ### `nodus info`
 
