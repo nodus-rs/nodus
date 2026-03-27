@@ -17,6 +17,7 @@
 
 <p align="center">
   <a href="#install">安装</a> •
+  <a href="#for-ai">给 AI 助手</a> •
   <a href="#quick-start">快速开始</a> •
   <a href="#common-tasks">常见任务</a> •
   <a href="#advanced">进阶说明</a> •
@@ -91,6 +92,21 @@ pwsh -NoProfile -Command "irm https://raw.githubusercontent.com/WendellXY/nodus/
 ```
 
 </details>
+
+<a id="for-ai"></a>
+## 给 AI 助手
+
+如果你希望直接把需求交给 AI 助手处理，而不是自己研究 Nodus 命令，可以这样做：
+
+1. 打开 `PROMPT.cn.md`](./PROMPT.cn.md)
+2. 将全文复制给任意 AI 助手，例如 OpenCode、Cursor、Claude、Codex
+3. 再补一句你的目标，例如：
+   - “帮我把 Nodus 接入当前项目，给 Codex 用”
+   - “帮我安装 `https://github.com/wenext-limited/playbook-ios`，给 Claude 用”
+   - “帮我把这个仓库现有的 Nodus 配置同步一下”
+   - “帮我检查为什么 `nodus doctor` 失败了”
+
+这份文档是专门写给 AI 助手看的，目标是让不熟悉命令行和 Nodus 的用户，也能直接通过 AI 完成安装、同步、更新和排障。
 
 <a id="quick-start"></a>
 ## 快速开始
