@@ -7,25 +7,39 @@ description: Use when a user wants to install, inspect, update, remove, or sync 
 
 Help the user consume agent packages with Nodus in a predictable way. Treat `nodus.toml`, `nodus.lock`, and the managed runtime roots as the source of truth.
 
+Assume some users may have little or no coding background. In those cases, optimize for plain language, safe defaults, and doing the work for them.
+
 ## Workflow
 
 1. Identify the repo role.
    - If the repo is consuming packages, work from the root `nodus.toml`.
    - If the user points at a package repo directly, use `nodus info` first before changing anything.
-2. Pick the dependency source and ref.
+2. Switch into plain-language mode when needed.
+   - Explain Nodus as:
+     "a tool that installs and keeps AI helper packages in sync for this repo."
+   - Explain an adapter as:
+     "which AI app should receive the package, such as Codex or Claude."
+   - Avoid unexplained terms like discovery roots, managed outputs, or manifest invariants unless they are necessary to solve the task.
+3. Pick the dependency source and ref.
    - Prefer a Git tag for released packages.
    - Use `branch` only when the package intentionally tracks a moving head.
    - Use `revision` for exact reproducibility.
    - Use `path` for local development checkouts.
-3. Choose the narrowest useful component set.
-   - Install only `skills`, `agents`, `rules`, or `commands` that the repo actually needs.
-   - Omit `components` when the repo should consume the full package.
-4. Let Nodus manage runtime outputs.
+4. Choose the simplest useful install.
+   - Default to the full package unless the user clearly needs only `skills`, `agents`, `rules`, or `commands`.
+   - If the user does not know which components they need, omit `components`.
+5. Let Nodus manage runtime outputs.
    - Use `nodus add`, `nodus sync`, `nodus update`, `nodus remove`, and `nodus doctor`.
    - Do not manually copy files into `.agents/`, `.claude/`, `.codex/`, `.cursor/`, or `.opencode/`.
-5. Verify the final state.
+6. Verify the final state.
    - Run `nodus doctor` after changes.
    - Use `nodus info <alias-or-package>` to confirm selected components, discovered artifacts, and source pins.
+7. Close in user language.
+   - Say what you installed, which AI tool it was connected to, and what the user should do next.
+   - Prefer:
+     "I installed the package for Codex and checked it with `nodus doctor`."
+   - Avoid:
+     "I mutated managed runtime roots and updated deterministic install state."
 
 ## Common Commands
 
@@ -48,3 +62,4 @@ nodus update
 - Use `--frozen` only when the existing `nodus.lock` must be installed exactly as written.
 - If a package declares high-sensitivity capabilities, explain why `--allow-high-sensitivity` is needed before using it.
 - If relay links exist, do not overwrite pending relayed edits; inspect relay state first.
+- For non-technical users, prefer one clear recommendation over multiple equally valid options.
