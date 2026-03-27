@@ -934,6 +934,7 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("install.ps1")
     }
 
+    #[cfg(not(target_os = "windows"))]
     fn pwsh_available() -> bool {
         ProcessCommand::new("pwsh")
             .args([
