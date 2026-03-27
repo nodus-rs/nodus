@@ -5,6 +5,9 @@ use anyhow::{Context, Result};
 use rayon::prelude::*;
 use serde::Serialize;
 
+use crate::domain::dependency_status::{
+    display_dependency_alias, load_lockfile, locked_rev, locked_tag, short_identifier,
+};
 use crate::git::{
     ensure_git_dependency, latest_compatible_tag, latest_tag, parse_semver_tag,
     prepare_repository_mirror,
@@ -460,40 +463,11 @@ fn report_for_dependency(
 }
 
 fn display_alias(alias: &str, kind: DependencyKind) -> String {
-    if kind.is_dev() {
-        format!("{alias} [dev]")
-    } else {
-        alias.to_string()
-    }
-}
-
-fn load_lockfile(cwd: &Path) -> Result<Option<Lockfile>> {
-    let path = cwd.join(crate::lockfile::LOCKFILE_NAME);
-    if path.exists() {
-        Ok(Some(Lockfile::read(&path)?))
-    } else {
-        Ok(None)
-    }
-}
-
-fn locked_rev(lockfile: Option<&Lockfile>, alias: &str) -> Option<String> {
-    lockfile?
-        .packages
-        .iter()
-        .find(|package| package.alias == alias)
-        .and_then(|package| package.source.rev.clone())
-}
-
-fn locked_tag(lockfile: Option<&Lockfile>, alias: &str) -> Option<String> {
-    lockfile?
-        .packages
-        .iter()
-        .find(|package| package.alias == alias)
-        .and_then(|package| package.source.tag.clone())
+    display_dependency_alias(alias, kind)
 }
 
 fn short_rev(rev: &str) -> String {
-    rev.chars().take(12).collect()
+    short_identifier(rev)
 }
 
 #[cfg(test)]

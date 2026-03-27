@@ -3,7 +3,10 @@ use std::path::Path;
 use anyhow::Result;
 use serde::Serialize;
 
-use crate::lockfile::{LOCKFILE_NAME, LockedPackage, Lockfile};
+use crate::domain::dependency_status::{
+    display_dependency_alias, find_locked_package, load_lockfile,
+};
+use crate::lockfile::LockedPackage;
 use crate::manifest::{
     DependencyComponent, DependencyKind, DependencySourceKind, RequestedGitRef, load_root_from_dir,
 };
@@ -136,22 +139,6 @@ impl From<&LockedPackage> for DependencyListLocked {
     }
 }
 
-fn load_lockfile(cwd: &Path) -> Result<Option<Lockfile>> {
-    let path = cwd.join(LOCKFILE_NAME);
-    if path.exists() {
-        Ok(Some(Lockfile::read(&path)?))
-    } else {
-        Ok(None)
-    }
-}
-
-fn find_locked_package<'a>(lockfile: &'a Lockfile, alias: &str) -> Option<&'a LockedPackage> {
-    lockfile
-        .packages
-        .iter()
-        .find(|package| package.alias == alias)
-}
-
 fn render_dependency_line(dependency: &DependencyListEntry) -> String {
     format!(
         "{:<20} {}",
@@ -161,11 +148,7 @@ fn render_dependency_line(dependency: &DependencyListEntry) -> String {
 }
 
 fn display_alias(dependency: &DependencyListEntry) -> String {
-    if dependency.kind.is_dev() {
-        format!("{} [dev]", dependency.alias)
-    } else {
-        dependency.alias.clone()
-    }
+    display_dependency_alias(&dependency.alias, dependency.kind)
 }
 
 fn dependency_summary(dependency: &DependencyListEntry) -> String {

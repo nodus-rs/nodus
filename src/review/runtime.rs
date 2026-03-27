@@ -15,11 +15,13 @@ use mentra::tool::{ToolAuthorizationDecision, ToolAuthorizationRequest, ToolAuth
 use mentra::{ContentBlock, Runtime};
 use tempfile::TempDir;
 
+use crate::domain::dependency_query::{
+    ResolvedInspectionSource, load_manifest_for_inspection, resolve_inspection_target,
+};
 use crate::git::{ensure_git_dependency, normalize_alias_from_url, normalize_git_url};
 use crate::manifest::{
-    DependencyComponent, DependencyKind, DependencySourceKind, DependencySpec, LoadedManifest,
-    PackageRole, RequestedGitRef as ManifestRequestedGitRef, load_dependency_from_dir,
-    load_root_from_dir, normalize_dependency_alias,
+    DependencyComponent, DependencyKind, DependencySpec, LoadedManifest, PackageRole,
+    RequestedGitRef as ManifestRequestedGitRef, normalize_dependency_alias,
 };
 use crate::report::Reporter;
 
@@ -396,52 +398,15 @@ fn resolve_direct_dependency(
     cwd: &Path,
     package: &str,
 ) -> Result<Option<(String, DependencySpec, LoadedManifest)>> {
-    let root_manifest = load_root_from_dir(cwd)?;
-    if let Some(entry) = root_manifest.manifest.get_dependency(package) {
-        return Ok(Some((
-            package.to_string(),
-            entry.spec.clone(),
-            root_manifest,
-        )));
-    }
-
-    let normalized = match normalize_alias_from_url(package) {
-        Ok(alias) => alias,
-        Err(_) => return Ok(None),
-    };
-    let Some(entry) = root_manifest.manifest.get_dependency(&normalized) else {
-        return Ok(None);
-    };
-    Ok(Some((normalized, entry.spec.clone(), root_manifest)))
+    crate::domain::dependency_query::resolve_direct_dependency(cwd, package)
 }
 
 fn resolve_local_package_path(cwd: &Path, package: &str) -> Result<Option<PathBuf>> {
-    let candidate = Path::new(package);
-    let candidate = if candidate.is_absolute() {
-        candidate.to_path_buf()
-    } else {
-        cwd.join(candidate)
-    };
-    if !candidate.exists() {
-        return Ok(None);
-    }
-
-    let canonical = candidate
-        .canonicalize()
-        .with_context(|| format!("failed to access {}", candidate.display()))?;
-    if !canonical.is_dir() {
-        bail!("package path {} must be a directory", canonical.display());
-    }
-    Ok(Some(canonical))
+    crate::domain::dependency_query::resolve_local_package_path(cwd, package)
 }
 
 fn load_review_manifest_for_inspection(root: &Path) -> Result<(LoadedManifest, PackageRole)> {
-    match load_root_from_dir(root) {
-        Ok(manifest) => Ok((manifest, PackageRole::Root)),
-        Err(_) => {
-            load_dependency_from_dir(root).map(|manifest| (manifest, PackageRole::Dependency))
-        }
-    }
+    load_manifest_for_inspection(root)
 }
 
 fn resolve_from_dependency_spec(
@@ -451,48 +416,30 @@ fn resolve_from_dependency_spec(
     cache_root: &Path,
     reporter: &Reporter,
 ) -> Result<ResolvedReviewTarget> {
-    match dependency.source_kind()? {
-        DependencySourceKind::Path => {
-            let declared_path = dependency
-                .path
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("dependency `{alias}` must declare `path`"))?;
-            let package_root = root_manifest.resolve_path(declared_path)?;
-            let manifest = load_dependency_from_dir(&package_root)?;
-            Ok(ResolvedReviewTarget {
-                alias: alias.to_string(),
-                manifest,
-                source: ReviewSource::Path { path: package_root },
-                selected_components: dependency.effective_selected_components(),
-                role: PackageRole::Dependency,
-            })
+    let target = resolve_inspection_target(alias, dependency, root_manifest, cache_root, reporter)?;
+    let source = match target.source {
+        ResolvedInspectionSource::Path { resolved_root, .. } => {
+            ReviewSource::Path { path: resolved_root }
         }
-        DependencySourceKind::Git => {
-            let url = dependency.resolved_git_url()?;
-            let checkout = ensure_git_dependency(
-                cache_root,
-                &url,
-                Some(dependency.requested_git_ref()?),
-                true,
-                reporter,
-            )?;
-            let manifest = load_dependency_from_dir(&checkout.path).with_context(|| {
-                format!("dependency `{alias}` does not match the Nodus package layout")
-            })?;
-            Ok(ResolvedReviewTarget {
-                alias: alias.to_string(),
-                manifest,
-                source: ReviewSource::Git {
-                    url: checkout.url,
-                    tag: checkout.tag,
-                    branch: checkout.branch,
-                    rev: checkout.rev,
-                },
-                selected_components: dependency.effective_selected_components(),
-                role: PackageRole::Dependency,
-            })
-        }
-    }
+        ResolvedInspectionSource::Git {
+            url,
+            tag,
+            branch,
+            rev,
+        } => ReviewSource::Git {
+            url,
+            tag,
+            branch,
+            rev,
+        },
+    };
+    Ok(ResolvedReviewTarget {
+        alias: target.alias,
+        manifest: target.manifest,
+        source,
+        selected_components: target.selected_components,
+        role: target.role,
+    })
 }
 
 impl ReviewCollector {

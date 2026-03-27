@@ -7,10 +7,13 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::adapters::Adapter;
+use crate::domain::dependency_query::{
+    ResolvedInspectionSource, load_manifest_for_inspection, resolve_inspection_target,
+};
 use crate::git::{ensure_git_dependency, normalize_alias_from_url, normalize_git_url};
 use crate::manifest::{
-    DependencyComponent, DependencySourceKind, DependencySpec, LoadedManifest, PackageRole,
-    load_dependency_from_dir, load_root_from_dir, normalize_dependency_alias,
+    DependencyComponent, DependencySpec, LoadedManifest, PackageRole,
+    RequestedGitRef as ManifestRequestedGitRef, normalize_dependency_alias,
 };
 use crate::paths::display_path;
 use crate::report::Reporter;
@@ -193,8 +196,8 @@ fn load_package_info(
         cache_root,
         &normalized_url,
         match (tag, branch) {
-            (Some(tag), None) => Some(crate::manifest::RequestedGitRef::Tag(tag)),
-            (None, Some(branch)) => Some(crate::manifest::RequestedGitRef::Branch(branch)),
+            (Some(tag), None) => Some(ManifestRequestedGitRef::Tag(tag)),
+            (None, Some(branch)) => Some(ManifestRequestedGitRef::Branch(branch)),
             (None, None) => None,
             _ => bail!("git dependency must not request both `tag` and `branch`"),
         },
@@ -224,43 +227,11 @@ fn resolve_direct_dependency(
     cwd: &Path,
     package: &str,
 ) -> Result<Option<(String, DependencySpec, LoadedManifest)>> {
-    let root_manifest = load_root_from_dir(cwd)?;
-    if let Some(entry) = root_manifest.manifest.get_dependency(package) {
-        return Ok(Some((
-            package.to_string(),
-            entry.spec.clone(),
-            root_manifest,
-        )));
-    }
-
-    let normalized = match normalize_alias_from_url(package) {
-        Ok(alias) => alias,
-        Err(_) => return Ok(None),
-    };
-    let Some(entry) = root_manifest.manifest.get_dependency(&normalized) else {
-        return Ok(None);
-    };
-    Ok(Some((normalized, entry.spec.clone(), root_manifest)))
+    crate::domain::dependency_query::resolve_direct_dependency(cwd, package)
 }
 
 fn resolve_local_package_path(cwd: &Path, package: &str) -> Result<Option<PathBuf>> {
-    let candidate = Path::new(package);
-    let candidate = if candidate.is_absolute() {
-        candidate.to_path_buf()
-    } else {
-        cwd.join(candidate)
-    };
-    if !candidate.exists() {
-        return Ok(None);
-    }
-
-    let canonical = candidate
-        .canonicalize()
-        .with_context(|| format!("failed to access {}", candidate.display()))?;
-    if !canonical.is_dir() {
-        bail!("package path {} must be a directory", canonical.display());
-    }
-    Ok(Some(canonical))
+    crate::domain::dependency_query::resolve_local_package_path(cwd, package)
 }
 
 fn load_from_dependency_spec(
@@ -270,64 +241,41 @@ fn load_from_dependency_spec(
     cache_root: &Path,
     reporter: &Reporter,
 ) -> Result<PackageInfo> {
-    match dependency.source_kind()? {
-        DependencySourceKind::Path => {
-            let declared_path = dependency
-                .path
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("dependency `{alias}` must declare `path`"))?;
-            let package_root = root_manifest.resolve_path(declared_path)?;
-            let manifest = load_dependency_from_dir(&package_root)?;
-            Ok(package_info_from_loaded(
-                alias.to_string(),
-                manifest,
-                PackageInfoSource::Path {
-                    path: declared_path.clone(),
-                    tag: dependency.tag.clone(),
-                },
-                dependency.is_enabled(),
-                dependency.effective_selected_components(),
-                None,
-                PackageRole::Dependency,
-            ))
-        }
-        DependencySourceKind::Git => {
-            let url = dependency.resolved_git_url()?;
-            let checkout = ensure_git_dependency(
-                cache_root,
-                &url,
-                Some(dependency.requested_git_ref()?),
-                true,
-                reporter,
-            )?;
-            let manifest = load_dependency_from_dir(&checkout.path).with_context(|| {
-                format!("dependency `{alias}` does not match the Nodus package layout")
-            })?;
-            Ok(package_info_from_loaded(
-                alias.to_string(),
-                manifest,
-                PackageInfoSource::Git {
-                    url: checkout.url,
-                    tag: checkout.tag,
-                    branch: checkout.branch,
-                    rev: checkout.rev,
-                },
-                dependency.is_enabled(),
-                dependency.effective_selected_components(),
-                dependency.version.as_ref().map(ToString::to_string),
-                PackageRole::Dependency,
-            ))
-        }
-    }
+    let target = resolve_inspection_target(alias, dependency, root_manifest, cache_root, reporter)?;
+    let source = match target.source {
+        ResolvedInspectionSource::Path {
+            declared_path,
+            resolved_root,
+            tag,
+        } => PackageInfoSource::Path {
+            path: declared_path.unwrap_or(resolved_root),
+            tag,
+        },
+        ResolvedInspectionSource::Git {
+            url,
+            tag,
+            branch,
+            rev,
+        } => PackageInfoSource::Git {
+            url,
+            tag,
+            branch,
+            rev,
+        },
+    };
+    Ok(package_info_from_loaded(
+        target.alias,
+        target.manifest,
+        source,
+        target.enabled,
+        target.selected_components,
+        target.version_requirement,
+        target.role,
+    ))
 }
 
 fn load_package_manifest_for_inspection(root: &Path) -> Result<(LoadedManifest, PackageRole)> {
-    match load_root_from_dir(root) {
-        Ok(manifest) => Ok((manifest, PackageRole::Root)),
-        Err(_) => {
-            load_dependency_from_dir(root).map(|manifest| (manifest, PackageRole::Dependency))
-        }
-    }
+    load_manifest_for_inspection(root)
 }
 
 fn package_info_from_loaded(
