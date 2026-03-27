@@ -83,19 +83,19 @@ cargo install nodus
 On macOS or Linux, a prebuilt install script is also available:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/nodus-rs/nodus/main/install.sh | bash
 ```
 
 Homebrew:
 
 ```bash
-brew install WendellXY/nodus/nodus
+brew install nodus-rs/nodus/nodus
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/WendellXY/nodus/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/nodus-rs/nodus/main/install.ps1 | iex
 ```
 
 After installation, verify again:
@@ -132,20 +132,20 @@ Common user phrasing:
 
 For ordinary users, prefer the simplest path:
 
-1. If the user only wants to "get it working" and "finish everything in one go", and did not clearly request a different package, default to installing `WendellXY/nodus`
+1. If the user only wants to "get it working" and "finish everything in one go", and did not clearly request a different package, default to installing `nodus-rs/nodus`
 2. For beginner users like this, prefer a **global install** by default
 3. Only switch to a project-scoped install when the user explicitly says "install it into this repo" or clearly needs the current repository to stay reproducible
 
 Recommended default path:
 
 ```bash
-nodus add WendellXY/nodus --global
+nodus add nodus-rs/nodus --global
 ```
 
 If the user explicitly wants repository-scoped management instead:
 
 ```bash
-nodus add WendellXY/nodus --adapter <adapter>
+nodus add nodus-rs/nodus --adapter <adapter>
 nodus doctor
 ```
 
@@ -166,13 +166,13 @@ nodus add ./vendor/agent-package --adapter <adapter>
 If the user specifically wants to add Nodus's own package into the current repo:
 
 ```bash
-nodus add WendellXY/nodus --adapter <adapter>
+nodus add nodus-rs/nodus --adapter <adapter>
 ```
 
 If the user did not emphasize "this repo" and just wants a one-stop setup, prefer:
 
 ```bash
-nodus add WendellXY/nodus --global
+nodus add nodus-rs/nodus --global
 ```
 
 ### Optional Installation Modes
@@ -440,14 +440,14 @@ nodus remove nodus --global
 For the beginner audience this document targets, if the user only wants to "start using it" and did not explicitly ask for a project-level install, prefer:
 
 ```bash
-nodus add WendellXY/nodus --global --adapter codex
+nodus add nodus-rs/nodus --global --adapter codex
 ```
 
 Only switch the default back to project-scoped handling when the user explicitly wants:
 
 - the current repository to remain reproducible
 - teammates to share the same repository configuration
-- or a package other than `WendellXY/nodus`
+- or a package other than `nodus-rs/nodus`
 
 ---
 
@@ -717,7 +717,7 @@ nodus relay dep-a dep-b
 1. Check the repository role and the user's intent before giving commands.
 2. Infer what you can. Ask the fewest possible questions only when needed.
 3. For ordinary users, default to:
-   - `nodus add WendellXY/nodus --global --adapter <adapter>` when they just want a one-stop setup
+   - `nodus add nodus-rs/nodus --global --adapter <adapter>` when they just want a one-stop setup
    - a single adapter
    - `nodus add <package> --adapter <adapter>` only when they explicitly want project-scoped management
    - `nodus doctor` after project-scoped installation

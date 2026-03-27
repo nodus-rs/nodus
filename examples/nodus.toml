@@ -78,7 +78,7 @@ playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.6.0" }
 
 # Common case: install only a subset of artifact kinds from a dependency.
 # Supported values: "skills", "agents", "rules", "commands"
-nodus = { github = "WendellXY/nodus", tag = "v0.3.2", components = ["skills", "rules"] }
+nodus = { github = "nodus-rs/nodus", tag = "v0.3.2", components = ["skills", "rules"] }
 
 # Common case: local path dependency relative to the repo root.
 local_playbook = { path = "vendor/playbook" }

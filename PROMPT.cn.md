@@ -83,19 +83,19 @@ cargo install nodus
 macOS / Linux 也可以用预构建安装脚本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/nodus-rs/nodus/main/install.sh | bash
 ```
 
 Homebrew：
 
 ```bash
-brew install WendellXY/nodus/nodus
+brew install nodus-rs/nodus/nodus
 ```
 
 Windows PowerShell：
 
 ```powershell
-irm https://raw.githubusercontent.com/WendellXY/nodus/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/nodus-rs/nodus/main/install.ps1 | iex
 ```
 
 安装完成后再次验证：
@@ -132,20 +132,20 @@ git ls-remote <仓库地址> HEAD
 
 对普通用户，优先走最简单路径：
 
-1. 如果用户只是想“先装好、先能用、最好一站式做完”，并且没有明确指定别的包，默认安装 `WendellXY/nodus`
+1. 如果用户只是想“先装好、先能用、最好一站式做完”，并且没有明确指定别的包，默认安装 `nodus-rs/nodus`
 2. 对这类小白用户，默认优先考虑**全局安装**
 3. 只有当用户明确说“装到当前仓库里”或明确要当前仓库可复现时，才改用当前项目安装
 
 推荐默认路径：
 
 ```bash
-nodus add WendellXY/nodus --global
+nodus add nodus-rs/nodus --global
 ```
 
 如果用户明确要按当前仓库管理，再使用：
 
 ```bash
-nodus add WendellXY/nodus --adapter <adapter>
+nodus add nodus-rs/nodus --adapter <adapter>
 nodus doctor
 ```
 
@@ -166,13 +166,13 @@ nodus add ./vendor/agent-package --adapter <adapter>
 如果用户就是想先把 Nodus 自己的能力包接进当前仓库：
 
 ```bash
-nodus add WendellXY/nodus --adapter <adapter>
+nodus add nodus-rs/nodus --adapter <adapter>
 ```
 
 如果用户没有强调“当前仓库”，而是想一站式直接可用，优先给：
 
 ```bash
-nodus add WendellXY/nodus --global
+nodus add nodus-rs/nodus --global
 ```
 
 ### 可选安装方式
@@ -440,14 +440,14 @@ nodus remove nodus --global
 对这个文档面对的小白用户，如果他只是想“先用起来”、又没有明确要求项目级安装，默认优先推荐：
 
 ```bash
-nodus add WendellXY/nodus --global --adapter codex
+nodus add nodus-rs/nodus --global --adapter codex
 ```
 
 只有当用户明确要：
 
 - 当前仓库可复现
 - 团队成员也跟着同一个仓库配置走
-- 或者要安装的并不是 `WendellXY/nodus`
+- 或者要安装的并不是 `nodus-rs/nodus`
 
 才默认改为当前仓库处理，而不是全局安装。
 
@@ -719,7 +719,7 @@ nodus relay dep-a dep-b
 1. 先检查仓库角色和用户意图，再给命令。
 2. 能推断的就推断，推断不了再问最少的问题。
 3. 对普通用户，默认：
-   - 如果只是想一站式先用起来，默认 `nodus add WendellXY/nodus --global --adapter <adapter>`
+   - 如果只是想一站式先用起来，默认 `nodus add nodus-rs/nodus --global --adapter <adapter>`
    - 单一 adapter
    - 只有在明确要求项目级管理时，才默认 `nodus add <package> --adapter <adapter>`
    - 项目级安装完成后，最后跑 `nodus doctor`

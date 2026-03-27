@@ -46,7 +46,7 @@ nodus add <package>
 如果你想让项目里的 agent 自动学会怎么使用 Nodus，最直接的起点通常是：
 
 ```bash
-nodus add WendellXY/nodus
+nodus add nodus-rs/nodus
 ```
 
 这会把 Nodus 自己发布的能力包接进当前仓库，让 agent 可以直接读取它生成的 skills 和说明。如果这是一个全新的仓库，Nodus 还没法判断你在用哪个工具，那么第一次执行时补上 adapter 即可，比如 `--adapter codex`。
@@ -65,19 +65,19 @@ cargo install nodus
 在 macOS 或 Linux 上安装最新预构建版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/nodus-rs/nodus/main/install.sh | bash
 ```
 
 通过 Homebrew 安装：
 
 ```bash
-brew install WendellXY/nodus/nodus
+brew install nodus-rs/nodus/nodus
 ```
 
 在 Windows 上通过 PowerShell 安装最新预构建版本：
 
 ```powershell
-irm https://raw.githubusercontent.com/WendellXY/nodus/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/nodus-rs/nodus/main/install.ps1 | iex
 ```
 
 <details>
@@ -88,7 +88,7 @@ irm https://raw.githubusercontent.com/WendellXY/nodus/main/install.ps1 | iex
 ```powershell
 winget install --id Microsoft.PowerShell --source winget
 # 先重启终端，让 `pwsh` 生效。
-pwsh -NoProfile -Command "irm https://raw.githubusercontent.com/WendellXY/nodus/main/install.ps1 | iex"
+pwsh -NoProfile -Command "irm https://raw.githubusercontent.com/nodus-rs/nodus/main/install.ps1 | iex"
 ```
 
 </details>
@@ -114,7 +114,7 @@ pwsh -NoProfile -Command "irm https://raw.githubusercontent.com/WendellXY/nodus/
 如果你想先让当前仓库里的 agent 学会 Nodus，不必先把所有概念都弄明白。可以先执行：
 
 ```bash
-nodus add WendellXY/nodus
+nodus add nodus-rs/nodus
 ```
 
 这条命令会自动帮你做几件事：
@@ -128,7 +128,7 @@ nodus add WendellXY/nodus
 如果仓库里还没有 `.codex/`、`.claude/`、`.github/skills` 这类 adapter 线索，第一次可以显式指定：
 
 ```bash
-nodus add WendellXY/nodus --adapter <adapter>
+nodus add nodus-rs/nodus --adapter <adapter>
 ```
 
 执行完后，可以再跑一次：
@@ -336,20 +336,20 @@ Windows: %LOCALAPPDATA%\nodus\
 在 macOS 或 Linux 上：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/main/install.sh | bash -s -- --version v0.1.0
+curl -fsSL https://raw.githubusercontent.com/nodus-rs/nodus/main/install.sh | bash -s -- --version v0.1.0
 ```
 
 在 Windows 上：
 
 ```powershell
-$env:NODUS_VERSION='v0.1.0'; irm https://raw.githubusercontent.com/WendellXY/nodus/main/install.ps1 | iex
+$env:NODUS_VERSION='v0.1.0'; irm https://raw.githubusercontent.com/nodus-rs/nodus/main/install.ps1 | iex
 ```
 
 如果 Windows 上失败，可以先设置版本号，再通过 `pwsh` 执行：
 
 ```powershell
 $env:NODUS_VERSION='v0.1.0'
-pwsh -NoProfile -Command "irm https://raw.githubusercontent.com/WendellXY/nodus/main/install.ps1 | iex"
+pwsh -NoProfile -Command "irm https://raw.githubusercontent.com/nodus-rs/nodus/main/install.ps1 | iex"
 ```
 
 ## 什么时候用 `sync`，什么时候用 `update`
@@ -400,7 +400,7 @@ Nodus 只会为你的仓库真正使用的 adapter 写输出。
 enabled = ["codex"]
 
 [dependencies]
-nodus = { github = "WendellXY/nodus", tag = "v0.3.2" }
+nodus = { github = "nodus-rs/nodus", tag = "v0.3.2" }
 ```
 
 更常见的几种写法：

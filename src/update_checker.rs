@@ -17,7 +17,7 @@ const BIN_NAME: &str = "nodus";
 const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
 const CRATES_IO_SOURCE: &str = "registry+https://github.com/rust-lang/crates.io-index";
 const INSTALL_MARKER_FILE: &str = "nodus.install.json";
-const REPO_SLUG: &str = "WendellXY/nodus";
+const REPO_SLUG: &str = "nodus-rs/nodus";
 const STATE_FILE: &str = "update-check.json";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1445,17 +1445,17 @@ mod tests {
     fn extracts_the_latest_release_from_redirect_headers() {
         let headers = "\
 HTTP/2 302 \r\n\
-location: https://github.com/WendellXY/nodus/releases/tag/v0.3.4\r\n\
+location: https://github.com/nodus-rs/nodus/releases/tag/v0.3.4\r\n\
 \r\n\
 HTTP/2 200 \r\n\
 \r\n";
 
         assert_eq!(
             last_location_header(headers).as_deref(),
-            Some("https://github.com/WendellXY/nodus/releases/tag/v0.3.4")
+            Some("https://github.com/nodus-rs/nodus/releases/tag/v0.3.4")
         );
         let release = parse_latest_release_from_location(
-            "https://github.com/WendellXY/nodus/releases/tag/v0.3.4?foo=bar",
+            "https://github.com/nodus-rs/nodus/releases/tag/v0.3.4?foo=bar",
         )
         .unwrap();
         assert_eq!(release.tag, "v0.3.4");

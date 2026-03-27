@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-REPO_SLUG="WendellXY/nodus"
+REPO_SLUG="nodus-rs/nodus"
 BIN_NAME="nodus"
 INSTALL_MARKER_NAME="${BIN_NAME}.install.json"
 INSTALL_DIR="${NODUS_INSTALL_DIR:-}"

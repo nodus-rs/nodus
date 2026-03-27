@@ -28,7 +28,7 @@ Assume some users may have little or no coding background. In those cases, optim
 4. Choose the simplest useful install.
    - Default to the full package unless the user clearly needs only `skills`, `agents`, `rules`, or `commands`.
    - If the user does not know which components they need, omit `components`.
-   - If the user is a beginner who just wants a one-stop setup and does not name another package, prefer `WendellXY/nodus`.
+   - If the user is a beginner who just wants a one-stop setup and does not name another package, prefer `nodus-rs/nodus`.
    - In that beginner one-stop case, prefer `--global` by default.
    - Switch back to a project-scoped install only when the user explicitly wants the current repo managed or clearly needs repo-level reproducibility.
 5. Let Nodus manage runtime outputs.
@@ -47,7 +47,7 @@ Assume some users may have little or no coding background. In those cases, optim
 ## Common Commands
 
 ```bash
-nodus add WendellXY/nodus --global --adapter codex
+nodus add nodus-rs/nodus --global --adapter codex
 nodus add <package> --adapter <adapter>
 nodus add <package> --adapter <adapter> --component skills --component rules
 nodus info <package-or-alias>

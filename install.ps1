@@ -11,7 +11,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$RepoSlug = "WendellXY/nodus"
+$RepoSlug = "nodus-rs/nodus"
 $BinaryName = "nodus"
 $ExecutableName = "nodus.exe"
 $InstallMarkerName = "$BinaryName.install.json"

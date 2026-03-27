@@ -80,12 +80,12 @@ jobs:
         run: |
           set -euo pipefail
           brew --version
-          brew tap WendellXY/nodus
-          formula_path="$(brew --repo WendellXY/nodus)/Formula/nodus.rb"
+          brew tap nodus-rs/nodus
+          formula_path="$(brew --repo nodus-rs/nodus)/Formula/nodus.rb"
           [ -f "${formula_path}" ]
-          grep -q 'url "https://github.com/WendellXY/nodus/releases/download/' "${formula_path}"
+          grep -q 'url "https://github.com/nodus-rs/nodus/releases/download/' "${formula_path}"
           grep -Eq '^[[:space:]]+sha256 "' "${formula_path}"
           grep -q '^  version "' "${formula_path}"
-          brew install WendellXY/nodus/nodus
+          brew install nodus-rs/nodus/nodus
           nodus --version
           nodus completion zsh > /dev/null

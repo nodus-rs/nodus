@@ -45,7 +45,7 @@ nodus add <package>
 If you want your agent to learn how to use Nodus automatically inside this repo, start with:
 
 ```bash
-nodus add WendellXY/nodus
+nodus add nodus-rs/nodus
 ```
 
 That installs Nodus's own package into the repo so the agent can pick up the managed skills and instructions it publishes. If this is a brand-new repo and Nodus cannot infer your tool yet, add an adapter on the first run, for example `--adapter <adapter>`.
@@ -61,19 +61,19 @@ cargo install nodus
 Install the latest prebuilt binary on macOS or Linux:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/nodus-rs/nodus/main/install.sh | bash
 ```
 
 Install with Homebrew:
 
 ```bash
-brew install WendellXY/nodus/nodus
+brew install nodus-rs/nodus/nodus
 ```
 
 Install the latest prebuilt binary on Windows with PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/WendellXY/nodus/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/nodus-rs/nodus/main/install.ps1 | iex
 ```
 
 <details>
@@ -84,7 +84,7 @@ If the command fails (for example, `pwsh` is not recognized), install PowerShell
 ```powershell
 winget install --id Microsoft.PowerShell --source winget
 # Restart terminal first so `pwsh` is available on PATH.
-pwsh -NoProfile -Command "irm https://raw.githubusercontent.com/WendellXY/nodus/main/install.ps1 | iex"
+pwsh -NoProfile -Command "irm https://raw.githubusercontent.com/nodus-rs/nodus/main/install.ps1 | iex"
 ```
 
 </details>
@@ -94,7 +94,7 @@ pwsh -NoProfile -Command "irm https://raw.githubusercontent.com/WendellXY/nodus/
 If you want the agent in this repo to learn Nodus first, run:
 
 ```bash
-nodus add WendellXY/nodus
+nodus add nodus-rs/nodus
 ```
 
 That one command:
@@ -108,7 +108,7 @@ That one command:
 If your repo does not already expose adapter signals such as `.codex/`, `.claude/`, or `.github/skills`, make the first install explicit:
 
 ```bash
-nodus add WendellXY/nodus --adapter <adapter>
+nodus add nodus-rs/nodus --adapter <adapter>
 ```
 
 Validate the result:
@@ -284,20 +284,20 @@ Global installs do not support `copilot`, and `--global` cannot be combined with
 Install a specific release with the Unix installer script:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/main/install.sh | bash -s -- --version v0.1.0
+curl -fsSL https://raw.githubusercontent.com/nodus-rs/nodus/main/install.sh | bash -s -- --version v0.1.0
 ```
 
 Install a specific release on Windows:
 
 ```powershell
-$env:NODUS_VERSION='v0.1.0'; irm https://raw.githubusercontent.com/WendellXY/nodus/main/install.ps1 | iex
+$env:NODUS_VERSION='v0.1.0'; irm https://raw.githubusercontent.com/nodus-rs/nodus/main/install.ps1 | iex
 ```
 
 If this command fails on Windows, install PowerShell 7, restart your terminal, then run through `pwsh`:
 
 ```powershell
 $env:NODUS_VERSION='v0.1.0'
-pwsh -NoProfile -Command "irm https://raw.githubusercontent.com/WendellXY/nodus/main/install.ps1 | iex"
+pwsh -NoProfile -Command "irm https://raw.githubusercontent.com/nodus-rs/nodus/main/install.ps1 | iex"
 ```
 
 ## When To Use `sync` vs `update`
@@ -336,7 +336,7 @@ The smallest useful consumer manifest looks like this:
 enabled = ["codex"]
 
 [dependencies]
-nodus = { github = "WendellXY/nodus", tag = "v0.3.2" }
+nodus = { github = "nodus-rs/nodus", tag = "v0.3.2" }
 ```
 
 Common dependency forms:
