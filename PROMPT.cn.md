@@ -139,13 +139,13 @@ git ls-remote <仓库地址> HEAD
 推荐默认路径：
 
 ```bash
-nodus add WendellXY/nodus --global --adapter codex
+nodus add WendellXY/nodus --global
 ```
 
 如果用户明确要按当前仓库管理，再使用：
 
 ```bash
-nodus add WendellXY/nodus --adapter codex
+nodus add WendellXY/nodus --adapter <adapter>
 nodus doctor
 ```
 
@@ -154,25 +154,25 @@ nodus doctor
 从 GitHub 安装：
 
 ```bash
-nodus add owner/repo --adapter codex
+nodus add owner/repo --adapter <adapter>
 ```
 
 从本地路径安装：
 
 ```bash
-nodus add ./vendor/agent-package --adapter claude
+nodus add ./vendor/agent-package --adapter <adapter>
 ```
 
 如果用户就是想先把 Nodus 自己的能力包接进当前仓库：
 
 ```bash
-nodus add WendellXY/nodus --adapter codex
+nodus add WendellXY/nodus --adapter <adapter>
 ```
 
 如果用户没有强调“当前仓库”，而是想一站式直接可用，优先给：
 
 ```bash
-nodus add WendellXY/nodus --global --adapter codex
+nodus add WendellXY/nodus --global
 ```
 
 ### 可选安装方式
@@ -180,50 +180,50 @@ nodus add WendellXY/nodus --global --adapter codex
 固定版本 tag：
 
 ```bash
-nodus add owner/repo --adapter codex --tag v1.2.3
+nodus add owner/repo --adapter <adapter> --tag v1.2.3
 ```
 
 跟踪分支：
 
 ```bash
-nodus add owner/repo --adapter codex --branch main
+nodus add owner/repo --adapter <adapter> --branch main
 ```
 
 固定提交：
 
 ```bash
-nodus add owner/repo --adapter codex --revision 0123456789abcdef
+nodus add owner/repo --adapter <adapter> --revision 0123456789abcdef
 ```
 
 按 semver 选择兼容版本：
 
 ```bash
-nodus add owner/repo --adapter codex --version '^1.2.0'
+nodus add owner/repo --adapter <adapter> --version '^1.2.0'
 ```
 
 只安装部分组件：
 
 ```bash
-nodus add owner/repo --adapter cursor --component skills
-nodus add owner/repo --adapter cursor --component skills --component rules
+nodus add owner/repo --adapter <adapter> --component skills
+nodus add owner/repo --adapter <adapter> --component skills --component rules
 ```
 
 安装成开发依赖：
 
 ```bash
-nodus add owner/repo --adapter codex --dev
+nodus add owner/repo --adapter <adapter> --dev
 ```
 
 让支持的工具在打开仓库时自动执行 `nodus sync`：
 
 ```bash
-nodus add owner/repo --adapter codex --sync-on-launch
+nodus add owner/repo --adapter <adapter> --sync-on-launch
 ```
 
 预览但不真正写入：
 
 ```bash
-nodus add owner/repo --adapter codex --dry-run
+nodus add owner/repo --adapter <adapter> --dry-run
 ```
 
 安装完成后必须补一条：

@@ -139,13 +139,13 @@ For ordinary users, prefer the simplest path:
 Recommended default path:
 
 ```bash
-nodus add WendellXY/nodus --global --adapter codex
+nodus add WendellXY/nodus --global
 ```
 
 If the user explicitly wants repository-scoped management instead:
 
 ```bash
-nodus add WendellXY/nodus --adapter codex
+nodus add WendellXY/nodus --adapter <adapter>
 nodus doctor
 ```
 
@@ -154,25 +154,25 @@ nodus doctor
 Install from GitHub:
 
 ```bash
-nodus add owner/repo --adapter codex
+nodus add owner/repo --adapter <adapter>
 ```
 
 Install from a local path:
 
 ```bash
-nodus add ./vendor/agent-package --adapter claude
+nodus add ./vendor/agent-package --adapter <adapter>
 ```
 
 If the user specifically wants to add Nodus's own package into the current repo:
 
 ```bash
-nodus add WendellXY/nodus --adapter codex
+nodus add WendellXY/nodus --adapter <adapter>
 ```
 
 If the user did not emphasize "this repo" and just wants a one-stop setup, prefer:
 
 ```bash
-nodus add WendellXY/nodus --global --adapter codex
+nodus add WendellXY/nodus --global
 ```
 
 ### Optional Installation Modes
@@ -180,50 +180,50 @@ nodus add WendellXY/nodus --global --adapter codex
 Pin to a tag:
 
 ```bash
-nodus add owner/repo --adapter codex --tag v1.2.3
+nodus add owner/repo --adapter <adapter> --tag v1.2.3
 ```
 
 Track a branch:
 
 ```bash
-nodus add owner/repo --adapter codex --branch main
+nodus add owner/repo --adapter <adapter> --branch main
 ```
 
 Pin to a specific revision:
 
 ```bash
-nodus add owner/repo --adapter codex --revision 0123456789abcdef
+nodus add owner/repo --adapter <adapter> --revision 0123456789abcdef
 ```
 
 Choose a compatible semver range:
 
 ```bash
-nodus add owner/repo --adapter codex --version '^1.2.0'
+nodus add owner/repo --adapter <adapter> --version '^1.2.0'
 ```
 
 Install only selected components:
 
 ```bash
-nodus add owner/repo --adapter cursor --component skills
-nodus add owner/repo --adapter cursor --component skills --component rules
+nodus add owner/repo --adapter <adapter> --component skills
+nodus add owner/repo --adapter <adapter> --component skills --component rules
 ```
 
 Install as a development dependency:
 
 ```bash
-nodus add owner/repo --adapter codex --dev
+nodus add owner/repo --adapter <adapter> --dev
 ```
 
 Have supported tools automatically run `nodus sync` when opening the repository:
 
 ```bash
-nodus add owner/repo --adapter codex --sync-on-launch
+nodus add owner/repo --adapter <adapter> --sync-on-launch
 ```
 
 Preview without writing anything:
 
 ```bash
-nodus add owner/repo --adapter codex --dry-run
+nodus add owner/repo --adapter <adapter> --dry-run
 ```
 
 After installation, always add:

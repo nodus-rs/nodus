@@ -48,7 +48,7 @@ If you want your agent to learn how to use Nodus automatically inside this repo,
 nodus add WendellXY/nodus
 ```
 
-That installs Nodus's own package into the repo so the agent can pick up the managed skills and instructions it publishes. If this is a brand-new repo and Nodus cannot infer your tool yet, add an adapter on the first run, for example `--adapter codex`.
+That installs Nodus's own package into the repo so the agent can pick up the managed skills and instructions it publishes. If this is a brand-new repo and Nodus cannot infer your tool yet, add an adapter on the first run, for example `--adapter <adapter>`.
 
 ## Install
 
@@ -108,7 +108,7 @@ That one command:
 If your repo does not already expose adapter signals such as `.codex/`, `.claude/`, or `.github/skills`, make the first install explicit:
 
 ```bash
-nodus add WendellXY/nodus --adapter codex
+nodus add WendellXY/nodus --adapter <adapter>
 ```
 
 Validate the result:
@@ -132,13 +132,13 @@ Typical output files look like this:
 Add from GitHub:
 
 ```bash
-nodus add owner/repo --adapter codex
+nodus add owner/repo --adapter <adapter>
 ```
 
 Add from a local path:
 
 ```bash
-nodus add ./vendor/playbook --adapter codex
+nodus add ./vendor/playbook --adapter <adapter>
 ```
 
 Pin a tag, branch, commit, or semver range:
@@ -153,20 +153,20 @@ nodus add owner/repo --version '^1.2.0'
 Install only part of a package:
 
 ```bash
-nodus add owner/repo --adapter claude --component skills
-nodus add owner/repo --adapter claude --component skills --component rules
+nodus add owner/repo --adapter <adapter> --component skills
+nodus add owner/repo --adapter <adapter> --component skills --component rules
 ```
 
 Add a dev-only dependency:
 
 ```bash
-nodus add owner/repo --dev --adapter codex
+nodus add owner/repo --dev --adapter <adapter>
 ```
 
 Start tools with automatic sync:
 
 ```bash
-nodus add owner/repo --adapter codex --sync-on-launch
+nodus add owner/repo --adapter <adapter> --sync-on-launch
 ```
 
 Install globally into all detected supported home-scoped agent roots:
@@ -178,13 +178,13 @@ nodus add owner/repo --global
 Install globally into an explicit home-scoped agent root:
 
 ```bash
-nodus add owner/repo --global --adapter codex
+nodus add owner/repo --global --adapter <adapter>
 ```
 
 Preview changes without writing them:
 
 ```bash
-nodus add owner/repo --adapter codex --dry-run
+nodus add owner/repo --adapter <adapter> --dry-run
 ```
 
 ## Common Tasks

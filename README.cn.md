@@ -128,7 +128,7 @@ nodus add WendellXY/nodus
 如果仓库里还没有 `.codex/`、`.claude/`、`.github/skills` 这类 adapter 线索，第一次可以显式指定：
 
 ```bash
-nodus add WendellXY/nodus --adapter codex
+nodus add WendellXY/nodus --adapter <adapter>
 ```
 
 执行完后，可以再跑一次：
@@ -163,13 +163,13 @@ nodus doctor
 从 GitHub 添加：
 
 ```bash
-nodus add owner/repo --adapter codex
+nodus add owner/repo --adapter <adapter>
 ```
 
 从本地路径添加：
 
 ```bash
-nodus add ./vendor/playbook --adapter codex
+nodus add ./vendor/playbook --adapter <adapter>
 ```
 
 固定到某个版本、分支、提交或版本范围：
@@ -184,32 +184,32 @@ nodus add owner/repo --version '^1.2.0'
 只安装包的一部分内容：
 
 ```bash
-nodus add owner/repo --adapter claude --component skills
-nodus add owner/repo --adapter claude --component skills --component rules
+nodus add owner/repo --adapter <adapter> --component skills
+nodus add owner/repo --adapter <adapter> --component skills --component rules
 ```
 
 把它记为开发依赖：
 
 ```bash
-nodus add owner/repo --dev --adapter codex
+nodus add owner/repo --dev --adapter <adapter>
 ```
 
 让支持的工具在打开仓库时自动执行 `nodus sync`：
 
 ```bash
-nodus add owner/repo --adapter codex --sync-on-launch
+nodus add owner/repo --adapter <adapter> --sync-on-launch
 ```
 
 先预览变更，不真正写入：
 
 ```bash
-nodus add owner/repo --adapter codex --dry-run
+nodus add owner/repo --adapter <adapter> --dry-run
 ```
 
 如果你不确定该选什么，通常先从下面这条开始就够了：
 
 ```bash
-nodus add owner/repo --adapter codex
+nodus add owner/repo --adapter <adapter>
 ```
 
 <a id="common-tasks"></a>
