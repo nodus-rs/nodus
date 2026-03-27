@@ -901,7 +901,7 @@ mod tests {
         CheckOptions {
             now_unix_secs: CHECK_INTERVAL_SECS,
             current_exe,
-            current_version: Version::parse("0.4.0").unwrap(),
+            current_version: Version::parse("0.5.0").unwrap(),
             cargo_home: None,
         }
     }
@@ -949,14 +949,14 @@ mod tests {
     #[test]
     fn parses_release_tags_with_or_without_a_v_prefix() {
         assert_eq!(
-            parse_release_version("v0.4.1").unwrap(),
-            Version::parse("0.4.1").unwrap()
+            parse_release_version("v0.5.1").unwrap(),
+            Version::parse("0.5.1").unwrap()
         );
         assert_eq!(
-            parse_release_version("0.4.1").unwrap(),
-            Version::parse("0.4.1").unwrap()
+            parse_release_version("0.5.1").unwrap(),
+            Version::parse("0.5.1").unwrap()
         );
-        assert!(parse_release_version("release-0.4.1").is_none());
+        assert!(parse_release_version("release-0.5.1").is_none());
     }
 
     #[test]
@@ -965,9 +965,9 @@ mod tests {
         let path = state_path(temp.path());
         let state = UpdateCheckState {
             last_attempted_at_unix_secs: Some(42),
-            latest_known_tag: Some("v0.4.1".into()),
-            latest_known_version: Some("0.4.1".into()),
-            last_notified_tag: Some("v0.4.1".into()),
+            latest_known_tag: Some("v0.5.1".into()),
+            latest_known_version: Some("0.5.1".into()),
+            last_notified_tag: Some("v0.5.1".into()),
         };
 
         persist_state(&path, &state).unwrap();
@@ -982,7 +982,7 @@ mod tests {
         fs::create_dir_all(cargo_home.join("bin")).unwrap();
         fs::write(
             cargo_home.join(".crates2.json"),
-            r#"{"installs":{"nodus 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)":{"bins":["nodus"]}}}"#,
+            r#"{"installs":{"nodus 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)":{"bins":["nodus"]}}}"#,
         )
         .unwrap();
         let binary_path = cargo_home.join("bin").join(host_binary_name());
@@ -1002,7 +1002,7 @@ mod tests {
         fs::create_dir_all(cargo_home.join("bin")).unwrap();
         fs::write(
             cargo_home.join(".crates2.json"),
-            r#"{"installs":{"nodus 0.4.0 (path+file:///tmp/nodus)":{"bins":["nodus"]}}}"#,
+            r#"{"installs":{"nodus 0.5.0 (path+file:///tmp/nodus)":{"bins":["nodus"]}}}"#,
         )
         .unwrap();
         let binary_path = cargo_home.join("bin").join(host_binary_name());
@@ -1035,14 +1035,14 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let binary_path = temp.path().join("bin").join(BIN_NAME);
         let latest = LatestRelease {
-            tag: "v0.4.1".into(),
-            version: Version::parse("0.4.1").unwrap(),
+            tag: "v0.5.1".into(),
+            version: Version::parse("0.5.1").unwrap(),
         };
 
         match plan_upgrade(&test_options(binary_path), &latest) {
             PlannedUpgrade::Unsupported { message, .. } => {
                 assert!(message.contains("could not determine"));
-                assert!(message.contains("cargo install --locked --force nodus --version 0.4.1"));
+                assert!(message.contains("cargo install --locked --force nodus --version 0.5.1"));
                 assert!(message.contains(host_installer_name()));
             }
             other => panic!("expected unsupported plan, got {other:?}"),
@@ -1056,13 +1056,13 @@ mod tests {
         fs::create_dir_all(cargo_home.join("bin")).unwrap();
         fs::write(
             cargo_home.join(".crates2.json"),
-            r#"{"installs":{"nodus 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)":{"bins":["nodus"]}}}"#,
+            r#"{"installs":{"nodus 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)":{"bins":["nodus"]}}}"#,
         )
         .unwrap();
         let binary_path = cargo_home.join("bin").join(host_binary_name());
         let latest = LatestRelease {
-            tag: "v0.4.1".into(),
-            version: Version::parse("0.4.1").unwrap(),
+            tag: "v0.5.1".into(),
+            version: Version::parse("0.5.1").unwrap(),
         };
         let mut options = test_options(binary_path.clone());
         options.cargo_home = Some(cargo_home);
@@ -1070,7 +1070,7 @@ mod tests {
         assert_eq!(
             plan_upgrade(&options, &latest),
             PlannedUpgrade::CargoRegistry {
-                current_version: Version::parse("0.4.0").unwrap(),
+                current_version: Version::parse("0.5.0").unwrap(),
                 latest,
                 binary_path,
                 command: vec![
@@ -1080,7 +1080,7 @@ mod tests {
                     "--force".into(),
                     "nodus".into(),
                     "--version".into(),
-                    "0.4.1".into(),
+                    "0.5.1".into(),
                 ],
             }
         );
@@ -1092,19 +1092,19 @@ mod tests {
         let binary_path = temp.path().join("bin").join(BIN_NAME);
         write_release_marker(&binary_path);
         let latest = LatestRelease {
-            tag: "v0.4.1".into(),
-            version: Version::parse("0.4.1").unwrap(),
+            tag: "v0.5.1".into(),
+            version: Version::parse("0.5.1").unwrap(),
         };
 
         assert_eq!(
             plan_upgrade(&test_options(binary_path.clone()), &latest),
             PlannedUpgrade::GithubRelease {
-                current_version: Version::parse("0.4.0").unwrap(),
+                current_version: Version::parse("0.5.0").unwrap(),
                 latest,
                 binary_path: binary_path.clone(),
                 install_dir: binary_path.parent().unwrap().to_path_buf(),
                 script_url: tagged_install_script_url_for_platform(
-                    "v0.4.1",
+                    "v0.5.1",
                     current_host_platform(),
                 ),
             }
@@ -1117,8 +1117,8 @@ mod tests {
         let binary_path = temp.path().join("bin").join("nodus.exe");
         write_release_marker(&binary_path);
         let latest = LatestRelease {
-            tag: "v0.4.1".into(),
-            version: Version::parse("0.4.1").unwrap(),
+            tag: "v0.5.1".into(),
+            version: Version::parse("0.5.1").unwrap(),
         };
 
         assert_eq!(
@@ -1128,11 +1128,11 @@ mod tests {
                 HostPlatform::Windows
             ),
             PlannedUpgrade::GithubRelease {
-                current_version: Version::parse("0.4.0").unwrap(),
+                current_version: Version::parse("0.5.0").unwrap(),
                 latest,
                 binary_path: binary_path.clone(),
                 install_dir: binary_path.parent().unwrap().to_path_buf(),
-                script_url: tagged_install_script_url_for_platform("v0.4.1", HostPlatform::Windows),
+                script_url: tagged_install_script_url_for_platform("v0.5.1", HostPlatform::Windows),
             }
         );
     }
@@ -1142,14 +1142,14 @@ mod tests {
         let install_dir = Path::new(r"C:\Users\tester\AppData\Local\Programs\nodus\bin");
 
         let command = manual_release_update_command_for_platform(
-            "v0.4.1",
+            "v0.5.1",
             install_dir,
             HostPlatform::Windows,
         );
 
         assert!(command.contains("powershell -NoProfile -ExecutionPolicy Bypass"));
         assert!(command.contains("install.ps1"));
-        assert!(command.contains("-Version 'v0.4.1'"));
+        assert!(command.contains("-Version 'v0.5.1'"));
         assert!(
             command.contains(r"-InstallDir 'C:\Users\tester\AppData\Local\Programs\nodus\bin'")
         );
@@ -1165,7 +1165,7 @@ mod tests {
 
         assert_eq!(invocation.program, "powershell");
         assert_eq!(
-            invocation.args_for("v0.4.1", install_dir),
+            invocation.args_for("v0.5.1", install_dir),
             vec![
                 "-NoProfile".into(),
                 "-ExecutionPolicy".into(),
@@ -1173,7 +1173,7 @@ mod tests {
                 "-File".into(),
                 powershell_script_path().to_string_lossy().into_owned(),
                 "-Version".into(),
-                "v0.4.1".into(),
+                "v0.5.1".into(),
                 "-InstallDir".into(),
                 r"C:\Users\tester\AppData\Local\Programs\nodus\bin".into(),
             ]
@@ -1187,21 +1187,21 @@ mod tests {
         fs::create_dir_all(cargo_home.join("bin")).unwrap();
         fs::write(
             cargo_home.join(".crates2.json"),
-            r#"{"installs":{"nodus 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)":{"bins":["nodus"]}}}"#,
+            r#"{"installs":{"nodus 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)":{"bins":["nodus"]}}}"#,
         )
         .unwrap();
         let binary_path = cargo_home.join("bin").join(host_binary_name());
         let mut options = test_options(binary_path);
         options.cargo_home = Some(cargo_home);
         let latest = LatestRelease {
-            tag: "v0.4.1".into(),
-            version: Version::parse("0.4.1").unwrap(),
+            tag: "v0.5.1".into(),
+            version: Version::parse("0.5.1").unwrap(),
         };
         let plan = plan_upgrade(&options, &latest);
 
         assert_eq!(
             upgrade_available_message(&options, &latest, &plan),
-            "nodus 0.4.1 is available (current 0.4.0); run `nodus upgrade`"
+            "nodus 0.5.1 is available (current 0.5.0); run `nodus upgrade`"
         );
     }
 
@@ -1210,8 +1210,8 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let binary_path = temp.path().join("bin").join(BIN_NAME);
         let latest = LatestRelease {
-            tag: "v0.4.1".into(),
-            version: Version::parse("0.4.1").unwrap(),
+            tag: "v0.5.1".into(),
+            version: Version::parse("0.5.1").unwrap(),
         };
         let options = test_options(binary_path);
         let plan = plan_upgrade(&options, &latest);
@@ -1219,7 +1219,7 @@ mod tests {
         assert_eq!(
             upgrade_available_message(&options, &latest, &plan),
             format!(
-                "nodus 0.4.1 is available (current 0.4.0); see {}",
+                "nodus 0.5.1 is available (current 0.5.0); see {}",
                 install_url()
             )
         );
@@ -1229,14 +1229,14 @@ mod tests {
     fn upgrade_check_reports_when_current_version_is_already_latest() {
         let options = test_options(PathBuf::from("/tmp/nodus"));
         let latest = LatestRelease {
-            tag: "v0.4.0".into(),
-            version: Version::parse("0.4.0").unwrap(),
+            tag: "v0.5.0".into(),
+            version: Version::parse("0.5.0").unwrap(),
         };
         let plan = plan_upgrade(&options, &latest);
 
         assert_eq!(
             upgrade_available_message(&options, &latest, &plan),
-            "nodus 0.4.0 is already current"
+            "nodus 0.5.0 is already current"
         );
     }
 
@@ -1252,8 +1252,8 @@ mod tests {
             &test_options(temp.path().join("bin").join(BIN_NAME)),
             || {
                 Ok(Some(LatestRelease {
-                    tag: "v0.4.1".into(),
-                    version: Version::parse("0.4.1").unwrap(),
+                    tag: "v0.5.1".into(),
+                    version: Version::parse("0.5.1").unwrap(),
                 }))
             },
         )
@@ -1262,15 +1262,15 @@ mod tests {
         assert_eq!(
             buffer.contents(),
             format!(
-                "warning: nodus 0.4.1 is available (current 0.4.0); see {}\n",
+                "warning: nodus 0.5.1 is available (current 0.5.0); see {}\n",
                 install_url()
             )
         );
 
         let state = read_state(&state_file);
         assert_eq!(state.last_attempted_at_unix_secs, Some(CHECK_INTERVAL_SECS));
-        assert_eq!(state.latest_known_tag.as_deref(), Some("v0.4.1"));
-        assert_eq!(state.last_notified_tag.as_deref(), Some("v0.4.1"));
+        assert_eq!(state.latest_known_tag.as_deref(), Some("v0.5.1"));
+        assert_eq!(state.last_notified_tag.as_deref(), Some("v0.5.1"));
     }
 
     #[test]
@@ -1280,8 +1280,8 @@ mod tests {
             &state_path(temp.path()),
             &UpdateCheckState {
                 last_attempted_at_unix_secs: Some(100),
-                latest_known_tag: Some("v0.4.1".into()),
-                latest_known_version: Some("0.4.1".into()),
+                latest_known_tag: Some("v0.5.1".into()),
+                latest_known_version: Some("0.5.1".into()),
                 last_notified_tag: None,
             },
         )
@@ -1302,7 +1302,7 @@ mod tests {
         assert_eq!(
             buffer.contents(),
             format!(
-                "warning: nodus 0.4.1 is available (current 0.4.0); see {}\n",
+                "warning: nodus 0.5.1 is available (current 0.5.0); see {}\n",
                 install_url()
             )
         );
@@ -1315,9 +1315,9 @@ mod tests {
             &state_path(temp.path()),
             &UpdateCheckState {
                 last_attempted_at_unix_secs: Some(0),
-                latest_known_tag: Some("v0.4.1".into()),
-                latest_known_version: Some("0.4.1".into()),
-                last_notified_tag: Some("v0.4.1".into()),
+                latest_known_tag: Some("v0.5.1".into()),
+                latest_known_version: Some("0.5.1".into()),
+                last_notified_tag: Some("v0.5.1".into()),
             },
         )
         .unwrap();
@@ -1344,9 +1344,9 @@ mod tests {
             &state_path(temp.path()),
             &UpdateCheckState {
                 last_attempted_at_unix_secs: Some(0),
-                latest_known_tag: Some("v0.4.1".into()),
-                latest_known_version: Some("0.4.1".into()),
-                last_notified_tag: Some("v0.4.1".into()),
+                latest_known_tag: Some("v0.5.1".into()),
+                latest_known_version: Some("0.5.1".into()),
+                last_notified_tag: Some("v0.5.1".into()),
             },
         )
         .unwrap();
@@ -1361,8 +1361,8 @@ mod tests {
             },
             || {
                 Ok(Some(LatestRelease {
-                    tag: "v0.4.2".into(),
-                    version: Version::parse("0.4.2").unwrap(),
+                    tag: "v0.5.2".into(),
+                    version: Version::parse("0.5.2").unwrap(),
                 }))
             },
         )
@@ -1371,7 +1371,7 @@ mod tests {
         assert_eq!(
             buffer.contents(),
             format!(
-                "warning: nodus 0.4.2 is available (current 0.4.0); see {}\n",
+                "warning: nodus 0.5.2 is available (current 0.5.0); see {}\n",
                 install_url()
             )
         );
@@ -1379,7 +1379,7 @@ mod tests {
             read_state(&state_path(temp.path()))
                 .last_notified_tag
                 .as_deref(),
-            Some("v0.4.2")
+            Some("v0.5.2")
         );
     }
 
