@@ -476,10 +476,9 @@ fn validate_managed_ownership_root(
     existing_roots: &[PathBuf],
     candidate: &Path,
 ) -> Result<()> {
-    if let Some(existing) = existing_roots
-        .iter()
-        .find(|existing| existing.as_path().starts_with(candidate) || candidate.starts_with(existing))
-    {
+    if let Some(existing) = existing_roots.iter().find(|existing| {
+        existing.as_path().starts_with(candidate) || candidate.starts_with(existing)
+    }) {
         bail!(
             "dependency `{alias}` field `managed` has overlapping target roots `{}` and `{}`",
             existing.display(),
