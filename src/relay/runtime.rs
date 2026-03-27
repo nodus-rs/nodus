@@ -10,7 +10,10 @@ use sha2::{Digest, Sha256};
 use self::watch::{
     RelayWatchOptions, watch_dependencies_in_dir_with_options, watch_dependency_in_dir_with_options,
 };
-use crate::adapters::{Adapter, Adapters, ArtifactKind, managed_artifact_path, managed_skill_root};
+use crate::adapters::{
+    Adapter, Adapters, ArtifactKind, ManagedArtifactNames, managed_artifact_path,
+    managed_skill_root,
+};
 use crate::execution::{ExecutionMode, PreviewChange};
 use crate::git::{
     git_urls_match, is_git_repository, normalize_git_url, repository_origin_url,
@@ -131,6 +134,7 @@ fn relay_dependency_in_dir_mode(
     )?;
 
     let plan = build_relay_plan(
+        &workspace,
         &dependency,
         &workspace.project_root,
         workspace.selected_adapters,
@@ -266,6 +270,7 @@ pub fn ensure_no_pending_relay_edits_in_dir(project_root: &Path, cache_root: &Pa
         let dependency = dependency_context(&workspace, &alias)?;
         let linked = resolve_existing_link(&workspace.local_config, &dependency)?;
         let plan = build_relay_plan(
+            &workspace,
             &dependency,
             &workspace.project_root,
             workspace.selected_adapters,
@@ -531,13 +536,22 @@ fn validate_linked_repo(path: &Path, url: &str) -> Result<()> {
 }
 
 fn build_relay_plan(
+    workspace: &RelayWorkspace,
     dependency: &DependencyContext,
     project_root: &Path,
     selected_adapters: Adapters,
     relay_link: Option<&RelayLink>,
     linked_repo: &Path,
 ) -> Result<RelayPlan> {
-    let mappings = build_mappings(dependency, project_root, selected_adapters, linked_repo)?;
+    let managed_names =
+        ManagedArtifactNames::from_resolved_packages(workspace.resolution.packages.iter());
+    let mappings = build_mappings(
+        &managed_names,
+        dependency,
+        project_root,
+        selected_adapters,
+        linked_repo,
+    )?;
     let mut grouped = BTreeMap::<PathBuf, Vec<RelayFileMapping>>::new();
     for mapping in mappings {
         grouped
@@ -671,6 +685,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 fn build_mappings(
+    names: &ManagedArtifactNames,
     dependency: &DependencyContext,
     project_root: &Path,
     selected_adapters: Adapters,
@@ -697,9 +712,10 @@ fn build_mappings(
                 continue;
             }
             let source_root = snapshot_root.join(&skill.path);
-            let managed_root = managed_skill_root(project_root, adapter, package, &skill.id);
+            let managed_root = managed_skill_root(names, project_root, adapter, package, &skill.id);
             let target_root = linked_repo.join(&skill.path);
             mappings.extend(skill_mappings(
+                names,
                 adapter,
                 package,
                 skill,
@@ -720,6 +736,7 @@ fn build_mappings(
                 continue;
             }
             if let Some(managed_path) = managed_artifact_path(
+                names,
                 project_root,
                 adapter,
                 ArtifactKind::Agent,
@@ -749,7 +766,7 @@ fn build_mappings(
                 continue;
             }
             if let Some(managed_path) =
-                managed_artifact_path(project_root, adapter, kind, package, &rule.id)
+                managed_artifact_path(names, project_root, adapter, kind, package, &rule.id)
             {
                 mappings.push(file_mapping(
                     managed_path,
@@ -775,7 +792,7 @@ fn build_mappings(
                 continue;
             }
             if let Some(managed_path) =
-                managed_artifact_path(project_root, adapter, kind, package, &command.id)
+                managed_artifact_path(names, project_root, adapter, kind, package, &command.id)
             {
                 mappings.push(file_mapping(
                     managed_path,
@@ -802,6 +819,7 @@ fn build_mappings(
 }
 
 fn skill_mappings(
+    names: &ManagedArtifactNames,
     adapter: Adapter,
     package: &ResolvedPackage,
     skill: &SkillEntry,
@@ -823,10 +841,10 @@ fn skill_mappings(
         let transform = if relative == Path::new("SKILL.md") {
             match adapter {
                 Adapter::OpenCode => RelayTransform::OpenCodeSkillName {
-                    managed_skill_id: crate::adapters::namespaced_skill_id(package, &skill.id),
+                    managed_skill_id: crate::adapters::managed_skill_id(names, package, &skill.id),
                 },
                 Adapter::Copilot => RelayTransform::CopilotSkillName {
-                    managed_skill_id: crate::adapters::namespaced_skill_id(package, &skill.id),
+                    managed_skill_id: crate::adapters::managed_skill_id(names, package, &skill.id),
                 },
                 _ => RelayTransform::None,
             }
@@ -987,7 +1005,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::adapters::managed_artifact_path;
+    use crate::adapters::ManagedArtifactNames;
     use crate::git::{AddDependencyOptions, add_dependency_in_dir_with_adapters};
     use crate::report::ColorMode;
 
@@ -1023,6 +1041,38 @@ mod tests {
         let mut contents = fs::read_to_string(path).unwrap();
         contents.push_str(suffix);
         fs::write(path, contents).unwrap();
+    }
+
+    fn managed_skill_root(
+        project_root: &Path,
+        adapter: Adapter,
+        package: &ResolvedPackage,
+        skill_id: &str,
+    ) -> PathBuf {
+        let names = Lockfile::read(&project_root.join(LOCKFILE_NAME))
+            .map(|lockfile| ManagedArtifactNames::from_locked_packages(lockfile.packages.iter()))
+            .unwrap_or_else(|_| ManagedArtifactNames::from_resolved_packages([package]));
+        crate::adapters::managed_skill_root(&names, project_root, adapter, package, skill_id)
+    }
+
+    fn managed_artifact_path(
+        project_root: &Path,
+        adapter: Adapter,
+        kind: ArtifactKind,
+        package: &ResolvedPackage,
+        artifact_id: &str,
+    ) -> Option<PathBuf> {
+        let names = Lockfile::read(&project_root.join(LOCKFILE_NAME))
+            .map(|lockfile| ManagedArtifactNames::from_locked_packages(lockfile.packages.iter()))
+            .unwrap_or_else(|_| ManagedArtifactNames::from_resolved_packages([package]));
+        crate::adapters::managed_artifact_path(
+            &names,
+            project_root,
+            adapter,
+            kind,
+            package,
+            artifact_id,
+        )
     }
 
     fn wait_until(mut predicate: impl FnMut() -> bool, message: &str) {

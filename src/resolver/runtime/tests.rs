@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
 
 use super::*;
-use crate::adapters::{Adapter, Adapters, namespaced_file_name, namespaced_skill_id};
+use crate::adapters::{Adapter, Adapters, ArtifactKind, ManagedArtifactNames};
 use crate::git::{
     AddDependencyOptions, AddSummary, RemoveSummary, add_dependency_at_paths_with_adapters,
     add_dependency_in_dir_with_adapters as add_dependency_in_dir_with_adapters_impl,
@@ -79,6 +79,70 @@ fn write_codex_mcp_config(path: &Path) {
 }
 "#,
     );
+}
+
+fn namespaced_skill_id(package: &ResolvedPackage, skill_id: &str) -> String {
+    ManagedArtifactNames::from_resolved_packages([package]).managed_skill_id(package, skill_id)
+}
+
+fn namespaced_file_name(package: &ResolvedPackage, artifact_id: &str, extension: &str) -> String {
+    let kind = match extension {
+        "agent.md" | "md"
+            if package
+                .manifest
+                .discovered
+                .agents
+                .iter()
+                .any(|agent| agent.id == artifact_id) =>
+        {
+            ArtifactKind::Agent
+        }
+        "mdc" => ArtifactKind::Rule,
+        "md" => {
+            if package
+                .manifest
+                .discovered
+                .rules
+                .iter()
+                .any(|rule| rule.id == artifact_id)
+            {
+                ArtifactKind::Rule
+            } else {
+                ArtifactKind::Command
+            }
+        }
+        _ => ArtifactKind::Command,
+    };
+    ManagedArtifactNames::from_resolved_packages([package]).managed_file_name(
+        package,
+        kind,
+        artifact_id,
+        extension,
+    )
+}
+
+fn resolution_skill_id(
+    resolution: &Resolution,
+    package: &ResolvedPackage,
+    skill_id: &str,
+) -> String {
+    ManagedArtifactNames::from_resolved_packages(resolution.packages.iter())
+        .managed_skill_id(package, skill_id)
+}
+
+fn resolution_file_name(
+    resolution: &Resolution,
+    package: &ResolvedPackage,
+    kind: ArtifactKind,
+    artifact_id: &str,
+    extension: &str,
+) -> String {
+    ManagedArtifactNames::from_resolved_packages(resolution.packages.iter()).managed_file_name(
+        package,
+        kind,
+        artifact_id,
+        extension,
+    )
 }
 
 fn init_git_repo(path: &Path) {
@@ -1942,21 +2006,16 @@ shared = { path = "vendor/shared" }
 
     assert!(codex_gitignore.contains("# Managed by nodus"));
     assert!(codex_gitignore.contains(".gitignore"));
-    let (_, suffix) = managed_skill_id.rsplit_once('_').unwrap();
-    assert!(codex_gitignore.contains(&format!("skills/*_{suffix}/")));
-    let (_, command_suffix) = managed_command_file
-        .trim_end_matches(".md")
-        .rsplit_once('_')
-        .unwrap();
+    assert!(codex_gitignore.contains(&format!("skills/{managed_skill_id}")));
     assert!(agents_gitignore.contains("# Managed by nodus"));
     assert!(agents_gitignore.contains(".gitignore"));
-    assert!(agents_gitignore.contains(&format!("skills/*_{suffix}/")));
-    assert!(agents_gitignore.contains(&format!("commands/*_{command_suffix}.md")));
+    assert!(agents_gitignore.contains(&format!("skills/{managed_skill_id}")));
+    assert!(agents_gitignore.contains(&format!("commands/{managed_command_file}")));
     assert!(cursor_gitignore.contains("# Managed by nodus"));
     assert!(cursor_gitignore.contains(".gitignore"));
-    assert!(cursor_gitignore.contains(&format!("skills/*_{suffix}/")));
-    assert!(cursor_gitignore.contains(&format!("commands/*_{command_suffix}.md")));
-    assert!(cursor_gitignore.contains(&format!("rules/*_{suffix}.mdc")));
+    assert!(cursor_gitignore.contains(&format!("skills/{managed_skill_id}")));
+    assert!(cursor_gitignore.contains(&format!("commands/{managed_command_file}")));
+    assert!(cursor_gitignore.contains("rules/default.mdc"));
 }
 
 #[test]
@@ -1990,14 +2049,13 @@ target = ".claude/.gitignore"
         .find(|package| package.alias == "shared")
         .unwrap();
     let managed_skill_id = namespaced_skill_id(dependency, "review");
-    let (_, suffix) = managed_skill_id.rsplit_once('_').unwrap();
     let gitignore = fs::read_to_string(temp.path().join(".claude/.gitignore")).unwrap();
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
 
     assert!(gitignore.contains("# Managed by nodus"));
     assert!(gitignore.contains(".gitignore"));
     assert!(gitignore.contains(".DS_Store"));
-    assert!(gitignore.contains(&format!("skills/*_{suffix}/")));
+    assert!(gitignore.contains(&format!("skills/{managed_skill_id}")));
     assert!(
         lockfile
             .managed_files
@@ -2301,41 +2359,49 @@ shared = { path = "vendor/shared" }
     let managed_skill_id = namespaced_skill_id(dependency, "review");
     let managed_agent_file = namespaced_file_name(dependency, "security", "md");
     let managed_command_file = namespaced_file_name(dependency, "build", "md");
+    let legacy_skill_id = crate::adapters::namespaced_skill_id(dependency, "review");
+    let legacy_agent_file = crate::adapters::namespaced_file_name(dependency, "security", "md");
+    let legacy_command_file = crate::adapters::namespaced_file_name(dependency, "build", "md");
 
     fs::rename(
         temp.path()
             .join(format!(".claude/agents/{managed_agent_file}")),
-        temp.path().join(".claude/agents/security.md"),
+        temp.path()
+            .join(format!(".claude/agents/{legacy_agent_file}")),
     )
     .unwrap();
     fs::rename(
         temp.path()
             .join(format!(".claude/commands/{managed_command_file}")),
-        temp.path().join(".claude/commands/build.md"),
+        temp.path()
+            .join(format!(".claude/commands/{legacy_command_file}")),
     )
     .unwrap();
     fs::rename(
         temp.path()
             .join(format!(".opencode/agents/{managed_agent_file}")),
-        temp.path().join(".opencode/agents/security.md"),
+        temp.path()
+            .join(format!(".opencode/agents/{legacy_agent_file}")),
     )
     .unwrap();
     fs::rename(
         temp.path()
             .join(format!(".opencode/commands/{managed_command_file}")),
-        temp.path().join(".opencode/commands/build.md"),
+        temp.path()
+            .join(format!(".opencode/commands/{legacy_command_file}")),
     )
     .unwrap();
     fs::rename(
         temp.path()
             .join(format!(".opencode/skills/{managed_skill_id}")),
-        temp.path().join(".opencode/skills/review"),
+        temp.path()
+            .join(format!(".opencode/skills/{legacy_skill_id}")),
     )
     .unwrap();
 
     let current_lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     Lockfile {
-        version: 4,
+        version: 8,
         packages: current_lockfile.packages,
         managed_files: current_lockfile.managed_files,
     }
@@ -2379,11 +2445,36 @@ shared = { path = "vendor/shared" }
             .join(format!(".opencode/skills/{managed_skill_id}"))
             .exists()
     );
-    assert!(!temp.path().join(".claude/agents/security.md").exists());
-    assert!(!temp.path().join(".claude/commands/build.md").exists());
-    assert!(!temp.path().join(".opencode/agents/security.md").exists());
-    assert!(!temp.path().join(".opencode/commands/build.md").exists());
-    assert!(!temp.path().join(".opencode/skills/review").exists());
+    assert!(
+        !temp
+            .path()
+            .join(format!(".claude/agents/{legacy_agent_file}"))
+            .exists()
+    );
+    assert!(
+        !temp
+            .path()
+            .join(format!(".claude/commands/{legacy_command_file}"))
+            .exists()
+    );
+    assert!(
+        !temp
+            .path()
+            .join(format!(".opencode/agents/{legacy_agent_file}"))
+            .exists()
+    );
+    assert!(
+        !temp
+            .path()
+            .join(format!(".opencode/commands/{legacy_command_file}"))
+            .exists()
+    );
+    assert!(
+        !temp
+            .path()
+            .join(format!(".opencode/skills/{legacy_skill_id}"))
+            .exists()
+    );
 }
 
 #[test]
@@ -2654,8 +2745,8 @@ review_pkg = {{ url = "{}", branch = "main" }}
     let updated_skill_path = temp
         .path()
         .join(format!(".claude/skills/{updated_skill_id}/SKILL.md"));
-    assert_ne!(updated_skill_id, initial_skill_id);
-    assert!(!initial_skill_path.exists());
+    assert_eq!(updated_skill_id, initial_skill_id);
+    assert!(initial_skill_path.exists());
     assert!(updated_skill_path.exists());
     assert!(
         fs::read_to_string(&updated_skill_path)
@@ -3526,7 +3617,7 @@ shared = { path = "vendor/shared" }
 }
 
 #[test]
-fn sync_uses_short_git_revision_suffix_for_dependency_skills() {
+fn sync_keeps_unique_dependency_skill_ids_unsuffixed() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();
     let (_repo, url) = create_git_dependency();
@@ -3542,8 +3633,7 @@ fn sync_uses_short_git_revision_suffix_for_dependency_skills() {
 
     sync_all(temp.path(), cache.path());
 
-    assert!(managed_skill_id.starts_with("review_"));
-    assert_eq!(managed_skill_id.len(), "review_".len() + 6);
+    assert_eq!(managed_skill_id, "review");
     assert!(
         temp.path()
             .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
@@ -3775,8 +3865,8 @@ other = { path = "vendor/other" }
         .iter()
         .find(|package| package.alias == "other")
         .unwrap();
-    let shared_skill_id = namespaced_skill_id(shared, "review");
-    let other_skill_id = namespaced_skill_id(other, "review");
+    let shared_skill_id = resolution_skill_id(&resolution, shared, "review");
+    let other_skill_id = resolution_skill_id(&resolution, other, "review");
 
     assert_ne!(shared_skill_id, other_skill_id);
     assert!(
@@ -3852,14 +3942,32 @@ other = { path = "vendor/other" }
         .find(|package| package.alias == "other")
         .unwrap();
 
-    let shared_agent_file = namespaced_file_name(shared, "security", "md");
-    let other_agent_file = namespaced_file_name(other, "security", "md");
-    let shared_copilot_agent_file = namespaced_file_name(shared, "security", "agent.md");
-    let other_copilot_agent_file = namespaced_file_name(other, "security", "agent.md");
-    let shared_command_file = namespaced_file_name(shared, "build", "md");
-    let other_command_file = namespaced_file_name(other, "build", "md");
-    let shared_claude_rule_file = namespaced_file_name(shared, "default", "md");
-    let other_claude_rule_file = namespaced_file_name(other, "default", "md");
+    let shared_agent_file =
+        resolution_file_name(&resolution, shared, ArtifactKind::Agent, "security", "md");
+    let other_agent_file =
+        resolution_file_name(&resolution, other, ArtifactKind::Agent, "security", "md");
+    let shared_copilot_agent_file = resolution_file_name(
+        &resolution,
+        shared,
+        ArtifactKind::Agent,
+        "security",
+        "agent.md",
+    );
+    let other_copilot_agent_file = resolution_file_name(
+        &resolution,
+        other,
+        ArtifactKind::Agent,
+        "security",
+        "agent.md",
+    );
+    let shared_command_file =
+        resolution_file_name(&resolution, shared, ArtifactKind::Command, "build", "md");
+    let other_command_file =
+        resolution_file_name(&resolution, other, ArtifactKind::Command, "build", "md");
+    let shared_claude_rule_file =
+        resolution_file_name(&resolution, shared, ArtifactKind::Rule, "default", "md");
+    let other_claude_rule_file =
+        resolution_file_name(&resolution, other, ArtifactKind::Rule, "default", "md");
 
     assert_ne!(shared_agent_file, other_agent_file);
     assert_ne!(shared_copilot_agent_file, other_copilot_agent_file);
@@ -3981,9 +4089,9 @@ shared = { path = "vendor/shared" }
         .path()
         .join(format!(".claude/skills/{second_skill_id}"));
 
-    assert_ne!(first_skill_id, second_skill_id);
+    assert_eq!(first_skill_id, second_skill_id);
     assert!(second_skill_dir.exists());
-    assert!(!first_skill_dir.exists());
+    assert!(first_skill_dir.exists());
 }
 
 #[test]

@@ -1,8 +1,11 @@
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
+use crate::lockfile::LockedPackage;
+use crate::manifest::DependencyComponent;
 use crate::resolver::{PackageSource, ResolvedPackage};
 
 mod output;
@@ -143,6 +146,166 @@ pub enum ArtifactKind {
     Command,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ManagedArtifactNames {
+    duplicate_skills: HashSet<String>,
+    duplicate_agents: HashSet<String>,
+    duplicate_rules: HashSet<String>,
+    duplicate_commands: HashSet<String>,
+}
+
+impl ManagedArtifactNames {
+    pub fn from_resolved_packages<'a>(
+        packages: impl IntoIterator<Item = &'a ResolvedPackage>,
+    ) -> Self {
+        let mut duplicate_skills = HashMap::new();
+        let mut duplicate_agents = HashMap::new();
+        let mut duplicate_rules = HashMap::new();
+        let mut duplicate_commands = HashMap::new();
+
+        for package in packages {
+            if !package.emits_runtime_outputs() {
+                continue;
+            }
+
+            if package.selects_component(DependencyComponent::Skills) {
+                track_duplicates(
+                    &mut duplicate_skills,
+                    package
+                        .manifest
+                        .discovered
+                        .skills
+                        .iter()
+                        .map(|skill| &skill.id),
+                );
+            }
+            if package.selects_component(DependencyComponent::Agents) {
+                track_duplicates(
+                    &mut duplicate_agents,
+                    package
+                        .manifest
+                        .discovered
+                        .agents
+                        .iter()
+                        .map(|agent| &agent.id),
+                );
+            }
+            if package.selects_component(DependencyComponent::Rules) {
+                track_duplicates(
+                    &mut duplicate_rules,
+                    package
+                        .manifest
+                        .discovered
+                        .rules
+                        .iter()
+                        .map(|rule| &rule.id),
+                );
+            }
+            if package.selects_component(DependencyComponent::Commands) {
+                track_duplicates(
+                    &mut duplicate_commands,
+                    package
+                        .manifest
+                        .discovered
+                        .commands
+                        .iter()
+                        .map(|command| &command.id),
+                );
+            }
+        }
+
+        Self {
+            duplicate_skills: collect_duplicates(duplicate_skills),
+            duplicate_agents: collect_duplicates(duplicate_agents),
+            duplicate_rules: collect_duplicates(duplicate_rules),
+            duplicate_commands: collect_duplicates(duplicate_commands),
+        }
+    }
+
+    pub fn from_locked_packages<'a>(packages: impl IntoIterator<Item = &'a LockedPackage>) -> Self {
+        let mut duplicate_skills = HashMap::new();
+        let mut duplicate_agents = HashMap::new();
+        let mut duplicate_rules = HashMap::new();
+        let mut duplicate_commands = HashMap::new();
+
+        for package in packages {
+            track_duplicates(&mut duplicate_skills, package.skills.iter());
+            track_duplicates(&mut duplicate_agents, package.agents.iter());
+            track_duplicates(&mut duplicate_rules, package.rules.iter());
+            track_duplicates(&mut duplicate_commands, package.commands.iter());
+        }
+
+        Self {
+            duplicate_skills: collect_duplicates(duplicate_skills),
+            duplicate_agents: collect_duplicates(duplicate_agents),
+            duplicate_rules: collect_duplicates(duplicate_rules),
+            duplicate_commands: collect_duplicates(duplicate_commands),
+        }
+    }
+
+    pub fn managed_skill_id(&self, package: &ResolvedPackage, skill_id: &str) -> String {
+        self.artifact_id(ArtifactKind::Skill, skill_id, package_short_id(package))
+    }
+
+    pub fn managed_file_name(
+        &self,
+        package: &ResolvedPackage,
+        kind: ArtifactKind,
+        artifact_id: &str,
+        extension: &str,
+    ) -> String {
+        format!(
+            "{}.{}",
+            self.artifact_id(kind, artifact_id, package_short_id(package)),
+            extension.trim_start_matches('.')
+        )
+    }
+
+    pub fn locked_managed_skill_id(&self, package: &LockedPackage, skill_id: &str) -> String {
+        self.artifact_id(
+            ArtifactKind::Skill,
+            skill_id,
+            locked_package_short_id(package),
+        )
+    }
+
+    pub fn locked_managed_file_name(
+        &self,
+        package: &LockedPackage,
+        kind: ArtifactKind,
+        artifact_id: &str,
+        extension: &str,
+    ) -> String {
+        format!(
+            "{}.{}",
+            self.artifact_id(kind, artifact_id, locked_package_short_id(package)),
+            extension.trim_start_matches('.')
+        )
+    }
+
+    fn artifact_id(
+        &self,
+        kind: ArtifactKind,
+        artifact_id: &str,
+        package_short_id: String,
+    ) -> String {
+        if self.requires_suffix(kind, artifact_id) {
+            format!("{artifact_id}_{package_short_id}")
+        } else {
+            artifact_id.to_string()
+        }
+    }
+
+    fn requires_suffix(&self, kind: ArtifactKind, artifact_id: &str) -> bool {
+        match kind {
+            ArtifactKind::Skill => self.duplicate_skills.contains(artifact_id),
+            ArtifactKind::Agent => self.duplicate_agents.contains(artifact_id),
+            ArtifactKind::Rule => self.duplicate_rules.contains(artifact_id),
+            ArtifactKind::Command => self.duplicate_commands.contains(artifact_id),
+        }
+    }
+}
+
 impl ArtifactKind {
     pub const fn supported_adapters(self) -> Adapters {
         match self {
@@ -175,8 +338,28 @@ impl ArtifactKind {
     }
 }
 
-pub fn namespaced_skill_id(package: &ResolvedPackage, skill_id: &str) -> String {
-    namespaced_artifact_id(package, skill_id)
+fn track_duplicates<'a>(
+    counts: &mut HashMap<String, usize>,
+    ids: impl IntoIterator<Item = &'a String>,
+) {
+    for id in ids {
+        *counts.entry(id.clone()).or_default() += 1;
+    }
+}
+
+fn collect_duplicates(counts: HashMap<String, usize>) -> HashSet<String> {
+    counts
+        .into_iter()
+        .filter_map(|(id, count)| (count > 1).then_some(id))
+        .collect()
+}
+
+pub fn managed_skill_id(
+    names: &ManagedArtifactNames,
+    package: &ResolvedPackage,
+    skill_id: &str,
+) -> String {
+    names.managed_skill_id(package, skill_id)
 }
 
 pub fn runtime_root(project_root: &Path, adapter: Adapter) -> PathBuf {
@@ -191,6 +374,7 @@ pub fn runtime_root(project_root: &Path, adapter: Adapter) -> PathBuf {
 }
 
 pub fn managed_skill_root(
+    names: &ManagedArtifactNames,
     project_root: &Path,
     adapter: Adapter,
     package: &ResolvedPackage,
@@ -198,10 +382,11 @@ pub fn managed_skill_root(
 ) -> PathBuf {
     runtime_root(project_root, adapter)
         .join("skills")
-        .join(namespaced_skill_id(package, skill_id))
+        .join(managed_skill_id(names, package, skill_id))
 }
 
 pub fn managed_artifact_path(
+    names: &ManagedArtifactNames,
     project_root: &Path,
     adapter: Adapter,
     kind: ArtifactKind,
@@ -210,66 +395,115 @@ pub fn managed_artifact_path(
 ) -> Option<PathBuf> {
     let runtime_root = runtime_root(project_root, adapter);
     match (adapter, kind) {
-        (Adapter::Agents, ArtifactKind::Command) => Some(
-            runtime_root
-                .join("commands")
-                .join(namespaced_file_name(package, artifact_id, "md")),
-        ),
-        (Adapter::Claude, ArtifactKind::Agent) => Some(
-            runtime_root
-                .join("agents")
-                .join(namespaced_file_name(package, artifact_id, "md")),
-        ),
-        (Adapter::Claude, ArtifactKind::Command) => Some(
-            runtime_root
-                .join("commands")
-                .join(namespaced_file_name(package, artifact_id, "md")),
-        ),
-        (Adapter::Copilot, ArtifactKind::Agent) => {
-            Some(runtime_root.join("agents").join(namespaced_file_name(
+        (Adapter::Agents, ArtifactKind::Command) => {
+            Some(runtime_root.join("commands").join(managed_file_name(
+                names,
                 package,
+                kind,
                 artifact_id,
-                "agent.md",
+                "md",
             )))
         }
-        (Adapter::Claude, ArtifactKind::Rule) => Some(
-            runtime_root
-                .join("rules")
-                .join(namespaced_file_name(package, artifact_id, "md")),
-        ),
-        (Adapter::Cursor, ArtifactKind::Command) => Some(
-            runtime_root
-                .join("commands")
-                .join(namespaced_file_name(package, artifact_id, "md")),
-        ),
-        (Adapter::Cursor, ArtifactKind::Rule) => Some(
-            runtime_root
-                .join("rules")
-                .join(namespaced_file_name(package, artifact_id, "mdc")),
-        ),
-        (Adapter::OpenCode, ArtifactKind::Agent) => Some(
-            runtime_root
-                .join("agents")
-                .join(namespaced_file_name(package, artifact_id, "md")),
-        ),
-        (Adapter::OpenCode, ArtifactKind::Command) => Some(
-            runtime_root
-                .join("commands")
-                .join(namespaced_file_name(package, artifact_id, "md")),
-        ),
-        (Adapter::OpenCode, ArtifactKind::Rule) => Some(
-            runtime_root
-                .join("rules")
-                .join(namespaced_file_name(package, artifact_id, "md")),
-        ),
+        (Adapter::Claude, ArtifactKind::Agent) => {
+            Some(runtime_root.join("agents").join(managed_file_name(
+                names,
+                package,
+                kind,
+                artifact_id,
+                "md",
+            )))
+        }
+        (Adapter::Claude, ArtifactKind::Command) => {
+            Some(runtime_root.join("commands").join(managed_file_name(
+                names,
+                package,
+                kind,
+                artifact_id,
+                "md",
+            )))
+        }
+        (Adapter::Copilot, ArtifactKind::Agent) => Some(runtime_root.join("agents").join(
+            managed_file_name(names, package, kind, artifact_id, "agent.md"),
+        )),
+        (Adapter::Claude, ArtifactKind::Rule) => {
+            Some(runtime_root.join("rules").join(managed_file_name(
+                names,
+                package,
+                kind,
+                artifact_id,
+                "md",
+            )))
+        }
+        (Adapter::Cursor, ArtifactKind::Command) => {
+            Some(runtime_root.join("commands").join(managed_file_name(
+                names,
+                package,
+                kind,
+                artifact_id,
+                "md",
+            )))
+        }
+        (Adapter::Cursor, ArtifactKind::Rule) => {
+            Some(runtime_root.join("rules").join(managed_file_name(
+                names,
+                package,
+                kind,
+                artifact_id,
+                "mdc",
+            )))
+        }
+        (Adapter::OpenCode, ArtifactKind::Agent) => {
+            Some(runtime_root.join("agents").join(managed_file_name(
+                names,
+                package,
+                kind,
+                artifact_id,
+                "md",
+            )))
+        }
+        (Adapter::OpenCode, ArtifactKind::Command) => {
+            Some(runtime_root.join("commands").join(managed_file_name(
+                names,
+                package,
+                kind,
+                artifact_id,
+                "md",
+            )))
+        }
+        (Adapter::OpenCode, ArtifactKind::Rule) => {
+            Some(runtime_root.join("rules").join(managed_file_name(
+                names,
+                package,
+                kind,
+                artifact_id,
+                "md",
+            )))
+        }
         _ => None,
     }
 }
 
+#[cfg(test)]
 pub fn namespaced_artifact_id(package: &ResolvedPackage, artifact_id: &str) -> String {
     format!("{artifact_id}_{}", package_short_id(package))
 }
 
+pub fn managed_file_name(
+    names: &ManagedArtifactNames,
+    package: &ResolvedPackage,
+    kind: ArtifactKind,
+    artifact_id: &str,
+    extension: &str,
+) -> String {
+    names.managed_file_name(package, kind, artifact_id, extension)
+}
+
+#[cfg(test)]
+pub fn namespaced_skill_id(package: &ResolvedPackage, skill_id: &str) -> String {
+    namespaced_artifact_id(package, skill_id)
+}
+
+#[cfg(test)]
 pub fn namespaced_file_name(
     package: &ResolvedPackage,
     artifact_id: &str,
@@ -306,5 +540,23 @@ pub fn short_source_id(value: &str) -> String {
         "local0".into()
     } else {
         short
+    }
+}
+
+fn locked_package_short_id(package: &LockedPackage) -> String {
+    match package.source.kind.as_str() {
+        "git" => short_source_id(
+            package
+                .source
+                .rev
+                .as_deref()
+                .unwrap_or(package.digest.as_str()),
+        ),
+        _ => short_source_id(
+            package
+                .digest
+                .strip_prefix("sha256:")
+                .unwrap_or(&package.digest),
+        ),
     }
 }

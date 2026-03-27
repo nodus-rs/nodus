@@ -3,11 +3,12 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::adapters::{ManagedFile, managed_skill_root};
+use crate::adapters::{ManagedArtifactNames, ManagedFile, managed_skill_root};
 use crate::manifest::SkillEntry;
 use crate::resolver::ResolvedPackage;
 
 pub fn skill_files(
+    names: &ManagedArtifactNames,
     project_root: &Path,
     package: &ResolvedPackage,
     snapshot_root: &Path,
@@ -15,6 +16,7 @@ pub fn skill_files(
 ) -> Result<Vec<ManagedFile>> {
     copy_directory(
         managed_skill_root(
+            names,
             project_root,
             crate::adapters::Adapter::Codex,
             package,

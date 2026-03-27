@@ -5,12 +5,13 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::adapters::{ArtifactKind, ManagedArtifactNames, short_source_id};
 use crate::manifest::{Capability, DependencyComponent};
 #[cfg(test)]
 use crate::store::write_atomic;
 
 pub const LOCKFILE_NAME: &str = "nodus.lock";
-const LOCKFILE_VERSION: u32 = 8;
+const LOCKFILE_VERSION: u32 = 9;
 const MIN_SYNC_COMPATIBLE_LOCKFILE_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -113,6 +114,11 @@ impl Lockfile {
         for relative in &self.managed_files {
             let relative_path = Self::validate_managed_relative(relative, project_root)?;
             managed_paths.insert(project_root.join(relative_path));
+            if let Some(paths) =
+                self.expand_previous_schema_managed_root(project_root, relative_path)
+            {
+                managed_paths.extend(paths);
+            }
             if let Some(paths) = self.expand_legacy_managed_root(project_root, relative_path) {
                 managed_paths.extend(paths);
             }
@@ -194,6 +200,15 @@ impl Lockfile {
     }
 
     fn expand_managed_root(
+        &self,
+        project_root: &Path,
+        relative_path: &Path,
+    ) -> Option<Vec<PathBuf>> {
+        let names = ManagedArtifactNames::from_locked_packages(self.packages.iter());
+        expand_managed_root_with_names(&names, &self.packages, project_root, relative_path)
+    }
+
+    fn expand_previous_schema_managed_root(
         &self,
         project_root: &Path,
         relative_path: &Path,
@@ -366,19 +381,104 @@ fn locked_package_short_id(package: &LockedPackage) -> String {
     }
 }
 
-fn short_source_id(value: &str) -> String {
-    let short = value
-        .chars()
-        .filter(|character| character.is_ascii_alphanumeric())
-        .take(6)
-        .collect::<String>()
-        .to_ascii_lowercase();
+fn expand_managed_root_with_names(
+    names: &ManagedArtifactNames,
+    packages: &[LockedPackage],
+    project_root: &Path,
+    relative_path: &Path,
+) -> Option<Vec<PathBuf>> {
+    let components = relative_path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
 
-    if short.is_empty() {
-        "local0".into()
-    } else {
-        short
+    let [runtime, artifact_dir, artifact_name] = components.as_slice() else {
+        return None;
+    };
+
+    if *runtime != ".agents"
+        && *runtime != ".claude"
+        && *runtime != ".codex"
+        && *runtime != ".github"
+        && *runtime != ".cursor"
+        && *runtime != ".opencode"
+    {
+        return None;
     }
+
+    let paths = match artifact_dir.as_str() {
+        "skills" => packages
+            .iter()
+            .filter(|package| {
+                package
+                    .skills
+                    .iter()
+                    .any(|existing| existing == artifact_name)
+            })
+            .map(|package| {
+                project_root.join(format!(
+                    "{runtime}/skills/{}",
+                    names.locked_managed_skill_id(package, artifact_name)
+                ))
+            })
+            .collect::<Vec<_>>(),
+        "agents" if runtime == ".github" => packages
+            .iter()
+            .filter(|package| {
+                package
+                    .agents
+                    .iter()
+                    .any(|existing| existing == artifact_name)
+            })
+            .map(|package| {
+                project_root.join(format!(
+                    "{runtime}/agents/{}",
+                    names.locked_managed_file_name(
+                        package,
+                        ArtifactKind::Agent,
+                        artifact_name,
+                        "agent.md"
+                    )
+                ))
+            })
+            .collect::<Vec<_>>(),
+        "agents" | "rules" | "commands" => {
+            let (artifact_id, extension) =
+                split_managed_file_name(runtime.as_str(), artifact_dir, artifact_name)?;
+            let kind = match artifact_dir.as_str() {
+                "agents" => ArtifactKind::Agent,
+                "rules" => ArtifactKind::Rule,
+                "commands" => ArtifactKind::Command,
+                _ => return None,
+            };
+            packages
+                .iter()
+                .filter(|package| match kind {
+                    ArtifactKind::Agent => package
+                        .agents
+                        .iter()
+                        .any(|existing| existing == artifact_id),
+                    ArtifactKind::Rule => {
+                        package.rules.iter().any(|existing| existing == artifact_id)
+                    }
+                    ArtifactKind::Command => package
+                        .commands
+                        .iter()
+                        .any(|existing| existing == artifact_id),
+                    ArtifactKind::Skill => false,
+                })
+                .map(|package| {
+                    project_root.join(format!(
+                        "{runtime}/{artifact_dir}/{}",
+                        names.locked_managed_file_name(package, kind, artifact_id, extension)
+                    ))
+                })
+                .collect::<Vec<_>>()
+        }
+        _ => return None,
+    };
+
+    if paths.is_empty() { None } else { Some(paths) }
 }
 
 #[cfg(test)]
@@ -512,7 +612,7 @@ managed_files = []
     }
 
     #[test]
-    fn expands_logical_skill_roots_to_namespaced_directories() {
+    fn expands_logical_skill_roots_to_runtime_directories() {
         let lockfile = Lockfile::new(
             vec![LockedPackage {
                 alias: "iframe_ad".into(),
@@ -548,28 +648,16 @@ managed_files = []
 
         let managed_paths = lockfile.managed_paths(Path::new("/tmp/project")).unwrap();
 
-        assert!(managed_paths.contains(&PathBuf::from(
-            "/tmp/project/.agents/skills/iframe-ad_01f556"
-        )));
-        assert!(managed_paths.contains(&PathBuf::from(
-            "/tmp/project/.claude/skills/iframe-ad_01f556"
-        )));
-        assert!(managed_paths.contains(&PathBuf::from(
-            "/tmp/project/.codex/skills/iframe-ad_01f556"
-        )));
-        assert!(managed_paths.contains(&PathBuf::from(
-            "/tmp/project/.github/skills/iframe-ad_01f556"
-        )));
-        assert!(managed_paths.contains(&PathBuf::from(
-            "/tmp/project/.cursor/skills/iframe-ad_01f556"
-        )));
-        assert!(managed_paths.contains(&PathBuf::from(
-            "/tmp/project/.opencode/skills/iframe-ad_01f556"
-        )));
+        assert!(managed_paths.contains(&PathBuf::from("/tmp/project/.agents/skills/iframe-ad")));
+        assert!(managed_paths.contains(&PathBuf::from("/tmp/project/.claude/skills/iframe-ad")));
+        assert!(managed_paths.contains(&PathBuf::from("/tmp/project/.codex/skills/iframe-ad")));
+        assert!(managed_paths.contains(&PathBuf::from("/tmp/project/.github/skills/iframe-ad")));
+        assert!(managed_paths.contains(&PathBuf::from("/tmp/project/.cursor/skills/iframe-ad")));
+        assert!(managed_paths.contains(&PathBuf::from("/tmp/project/.opencode/skills/iframe-ad")));
     }
 
     #[test]
-    fn expands_logical_file_outputs_to_namespaced_files() {
+    fn expands_logical_file_outputs_to_runtime_files() {
         let lockfile = Lockfile::new(
             vec![LockedPackage {
                 alias: "shared".into(),
@@ -609,36 +697,20 @@ managed_files = []
 
         let managed_paths = lockfile.managed_paths(Path::new("/tmp/project")).unwrap();
 
+        assert!(managed_paths.contains(&PathBuf::from("/tmp/project/.agents/commands/build.md")));
+        assert!(managed_paths.contains(&PathBuf::from("/tmp/project/.claude/agents/security.md")));
+        assert!(managed_paths.contains(&PathBuf::from("/tmp/project/.claude/commands/build.md")));
+        assert!(managed_paths.contains(&PathBuf::from("/tmp/project/.claude/rules/default.md")));
         assert!(managed_paths.contains(&PathBuf::from(
-            "/tmp/project/.agents/commands/build_01f556.md"
+            "/tmp/project/.github/agents/security.agent.md"
         )));
-        assert!(managed_paths.contains(&PathBuf::from(
-            "/tmp/project/.claude/agents/security_01f556.md"
-        )));
-        assert!(managed_paths.contains(&PathBuf::from(
-            "/tmp/project/.claude/commands/build_01f556.md"
-        )));
-        assert!(managed_paths.contains(&PathBuf::from(
-            "/tmp/project/.claude/rules/default_01f556.md"
-        )));
-        assert!(managed_paths.contains(&PathBuf::from(
-            "/tmp/project/.github/agents/security_01f556.agent.md"
-        )));
-        assert!(managed_paths.contains(&PathBuf::from(
-            "/tmp/project/.cursor/commands/build_01f556.md"
-        )));
-        assert!(managed_paths.contains(&PathBuf::from(
-            "/tmp/project/.cursor/rules/default_01f556.mdc"
-        )));
-        assert!(managed_paths.contains(&PathBuf::from(
-            "/tmp/project/.opencode/agents/security_01f556.md"
-        )));
-        assert!(managed_paths.contains(&PathBuf::from(
-            "/tmp/project/.opencode/commands/build_01f556.md"
-        )));
-        assert!(managed_paths.contains(&PathBuf::from(
-            "/tmp/project/.opencode/rules/default_01f556.md"
-        )));
+        assert!(managed_paths.contains(&PathBuf::from("/tmp/project/.cursor/commands/build.md")));
+        assert!(managed_paths.contains(&PathBuf::from("/tmp/project/.cursor/rules/default.mdc")));
+        assert!(
+            managed_paths.contains(&PathBuf::from("/tmp/project/.opencode/agents/security.md"))
+        );
+        assert!(managed_paths.contains(&PathBuf::from("/tmp/project/.opencode/commands/build.md")));
+        assert!(managed_paths.contains(&PathBuf::from("/tmp/project/.opencode/rules/default.md")));
     }
 
     #[test]

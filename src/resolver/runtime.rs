@@ -738,7 +738,9 @@ impl Resolution {
                 source,
                 digest: package.digest.clone(),
                 selected_components: package.selected_components.clone(),
-                skills: sorted_ids(
+                skills: emitted_artifact_ids(
+                    package,
+                    DependencyComponent::Skills,
                     package
                         .manifest
                         .discovered
@@ -746,7 +748,9 @@ impl Resolution {
                         .iter()
                         .map(|item| &item.id),
                 ),
-                agents: sorted_ids(
+                agents: emitted_artifact_ids(
+                    package,
+                    DependencyComponent::Agents,
                     package
                         .manifest
                         .discovered
@@ -754,7 +758,9 @@ impl Resolution {
                         .iter()
                         .map(|item| &item.id),
                 ),
-                rules: sorted_ids(
+                rules: emitted_artifact_ids(
+                    package,
+                    DependencyComponent::Rules,
                     package
                         .manifest
                         .discovered
@@ -762,7 +768,9 @@ impl Resolution {
                         .iter()
                         .map(|item| &item.id),
                 ),
-                commands: sorted_ids(
+                commands: emitted_artifact_ids(
+                    package,
+                    DependencyComponent::Commands,
                     package
                         .manifest
                         .discovered
@@ -814,7 +822,23 @@ fn sorted_ids<'a>(ids: impl Iterator<Item = &'a String>) -> Vec<String> {
     ids
 }
 
+fn emitted_artifact_ids<'a>(
+    package: &ResolvedPackage,
+    component: DependencyComponent,
+    ids: impl Iterator<Item = &'a String>,
+) -> Vec<String> {
+    if package.emits_runtime_outputs() && package.selects_component(component) {
+        sorted_ids(ids)
+    } else {
+        Vec::new()
+    }
+}
+
 impl ResolvedPackage {
+    pub fn emits_runtime_outputs(&self) -> bool {
+        !matches!(self.source, PackageSource::Root) || self.manifest.manifest.publish_root
+    }
+
     pub fn selects_component(&self, component: DependencyComponent) -> bool {
         self.selected_components
             .as_ref()

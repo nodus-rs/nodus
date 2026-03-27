@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{Adapter, Adapters, ArtifactKind, ManagedFile};
+use super::{Adapter, Adapters, ArtifactKind, ManagedArtifactNames, ManagedFile};
 use crate::lockfile::{Lockfile, managed_mcp_server_name};
 use crate::manifest::{DependencyComponent, McpServerConfig};
 use crate::paths::display_path;
@@ -68,6 +68,8 @@ pub(crate) fn build_output_plan(
     merge_existing_mcp: bool,
 ) -> Result<OutputPlan> {
     let mut plan = OutputAccumulator::default();
+    let managed_names =
+        ManagedArtifactNames::from_resolved_packages(packages.iter().map(|(package, _)| package));
 
     for (package, snapshot_root) in packages {
         if matches!(package.source, PackageSource::Root) && !package.manifest.manifest.publish_root
@@ -112,7 +114,13 @@ pub(crate) fn build_output_plan(
             {
                 merge_files(
                     &mut plan.files,
-                    super::agents::skill_files(project_root, package, snapshot_root, skill)?,
+                    super::agents::skill_files(
+                        &managed_names,
+                        project_root,
+                        package,
+                        snapshot_root,
+                        skill,
+                    )?,
                 )?;
                 plan.managed_files
                     .insert(format!(".agents/skills/{}", skill.id));
@@ -125,7 +133,13 @@ pub(crate) fn build_output_plan(
             {
                 merge_files(
                     &mut plan.files,
-                    super::claude::skill_files(project_root, package, snapshot_root, skill)?,
+                    super::claude::skill_files(
+                        &managed_names,
+                        project_root,
+                        package,
+                        snapshot_root,
+                        skill,
+                    )?,
                 )?;
                 plan.managed_files
                     .insert(format!(".claude/skills/{}", skill.id));
@@ -138,7 +152,13 @@ pub(crate) fn build_output_plan(
             {
                 merge_files(
                     &mut plan.files,
-                    super::codex::skill_files(project_root, package, snapshot_root, skill)?,
+                    super::codex::skill_files(
+                        &managed_names,
+                        project_root,
+                        package,
+                        snapshot_root,
+                        skill,
+                    )?,
                 )?;
                 plan.managed_files
                     .insert(format!(".codex/skills/{}", skill.id));
@@ -151,7 +171,13 @@ pub(crate) fn build_output_plan(
             {
                 merge_files(
                     &mut plan.files,
-                    super::copilot::skill_files(project_root, package, snapshot_root, skill)?,
+                    super::copilot::skill_files(
+                        &managed_names,
+                        project_root,
+                        package,
+                        snapshot_root,
+                        skill,
+                    )?,
                 )?;
                 plan.managed_files
                     .insert(format!(".github/skills/{}", skill.id));
@@ -164,7 +190,13 @@ pub(crate) fn build_output_plan(
             {
                 merge_files(
                     &mut plan.files,
-                    super::cursor::skill_files(project_root, package, snapshot_root, skill)?,
+                    super::cursor::skill_files(
+                        &managed_names,
+                        project_root,
+                        package,
+                        snapshot_root,
+                        skill,
+                    )?,
                 )?;
                 plan.managed_files
                     .insert(format!(".cursor/skills/{}", skill.id));
@@ -177,7 +209,13 @@ pub(crate) fn build_output_plan(
             {
                 merge_files(
                     &mut plan.files,
-                    super::opencode::skill_files(project_root, package, snapshot_root, skill)?,
+                    super::opencode::skill_files(
+                        &managed_names,
+                        project_root,
+                        package,
+                        snapshot_root,
+                        skill,
+                    )?,
                 )?;
                 plan.managed_files
                     .insert(format!(".opencode/skills/{}", skill.id));
@@ -196,7 +234,13 @@ pub(crate) fn build_output_plan(
             {
                 merge_file(
                     &mut plan.files,
-                    super::claude::agent_file(project_root, package, snapshot_root, agent)?,
+                    super::claude::agent_file(
+                        &managed_names,
+                        project_root,
+                        package,
+                        snapshot_root,
+                        agent,
+                    )?,
                 )?;
                 plan.managed_files
                     .insert(format!(".claude/agents/{}.md", agent.id));
@@ -209,7 +253,13 @@ pub(crate) fn build_output_plan(
             {
                 merge_file(
                     &mut plan.files,
-                    super::copilot::agent_file(project_root, package, snapshot_root, agent)?,
+                    super::copilot::agent_file(
+                        &managed_names,
+                        project_root,
+                        package,
+                        snapshot_root,
+                        agent,
+                    )?,
                 )?;
                 plan.managed_files
                     .insert(format!(".github/agents/{}", agent.id));
@@ -222,7 +272,13 @@ pub(crate) fn build_output_plan(
             {
                 merge_file(
                     &mut plan.files,
-                    super::opencode::agent_file(project_root, package, snapshot_root, agent)?,
+                    super::opencode::agent_file(
+                        &managed_names,
+                        project_root,
+                        package,
+                        snapshot_root,
+                        agent,
+                    )?,
                 )?;
                 plan.managed_files
                     .insert(format!(".opencode/agents/{}.md", agent.id));
@@ -241,7 +297,13 @@ pub(crate) fn build_output_plan(
             {
                 merge_file(
                     &mut plan.files,
-                    super::claude::rule_file(project_root, package, snapshot_root, rule)?,
+                    super::claude::rule_file(
+                        &managed_names,
+                        project_root,
+                        package,
+                        snapshot_root,
+                        rule,
+                    )?,
                 )?;
                 plan.managed_files
                     .insert(format!(".claude/rules/{}.md", rule.id));
@@ -254,7 +316,13 @@ pub(crate) fn build_output_plan(
             {
                 merge_file(
                     &mut plan.files,
-                    super::opencode::rule_file(project_root, package, snapshot_root, rule)?,
+                    super::opencode::rule_file(
+                        &managed_names,
+                        project_root,
+                        package,
+                        snapshot_root,
+                        rule,
+                    )?,
                 )?;
                 plan.managed_files
                     .insert(format!(".opencode/rules/{}.md", rule.id));
@@ -267,7 +335,13 @@ pub(crate) fn build_output_plan(
             {
                 merge_file(
                     &mut plan.files,
-                    super::cursor::rule_file(project_root, package, snapshot_root, rule)?,
+                    super::cursor::rule_file(
+                        &managed_names,
+                        project_root,
+                        package,
+                        snapshot_root,
+                        rule,
+                    )?,
                 )?;
                 plan.managed_files
                     .insert(format!(".cursor/rules/{}.mdc", rule.id));
@@ -286,7 +360,13 @@ pub(crate) fn build_output_plan(
             {
                 merge_file(
                     &mut plan.files,
-                    super::agents::command_file(project_root, package, snapshot_root, command)?,
+                    super::agents::command_file(
+                        &managed_names,
+                        project_root,
+                        package,
+                        snapshot_root,
+                        command,
+                    )?,
                 )?;
                 plan.managed_files
                     .insert(format!(".agents/commands/{}.md", command.id));
@@ -299,7 +379,13 @@ pub(crate) fn build_output_plan(
             {
                 merge_file(
                     &mut plan.files,
-                    super::claude::command_file(project_root, package, snapshot_root, command)?,
+                    super::claude::command_file(
+                        &managed_names,
+                        project_root,
+                        package,
+                        snapshot_root,
+                        command,
+                    )?,
                 )?;
                 plan.managed_files
                     .insert(format!(".claude/commands/{}.md", command.id));
@@ -312,7 +398,13 @@ pub(crate) fn build_output_plan(
             {
                 merge_file(
                     &mut plan.files,
-                    super::cursor::command_file(project_root, package, snapshot_root, command)?,
+                    super::cursor::command_file(
+                        &managed_names,
+                        project_root,
+                        package,
+                        snapshot_root,
+                        command,
+                    )?,
                 )?;
                 plan.managed_files
                     .insert(format!(".cursor/commands/{}.md", command.id));
@@ -325,7 +417,13 @@ pub(crate) fn build_output_plan(
             {
                 merge_file(
                     &mut plan.files,
-                    super::opencode::command_file(project_root, package, snapshot_root, command)?,
+                    super::opencode::command_file(
+                        &managed_names,
+                        project_root,
+                        package,
+                        snapshot_root,
+                        command,
+                    )?,
                 )?;
                 plan.managed_files
                     .insert(format!(".opencode/commands/{}.md", command.id));

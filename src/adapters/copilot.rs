@@ -4,20 +4,23 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 
 use crate::adapters::{
-    ArtifactKind, ManagedFile, managed_artifact_path, managed_skill_root, namespaced_skill_id,
+    ArtifactKind, ManagedArtifactNames, ManagedFile, managed_artifact_path, managed_skill_id,
+    managed_skill_root,
 };
 use crate::manifest::{FileEntry, SkillEntry};
 use crate::resolver::ResolvedPackage;
 
 pub fn skill_files(
+    names: &ManagedArtifactNames,
     project_root: &Path,
     package: &ResolvedPackage,
     snapshot_root: &Path,
     skill: &SkillEntry,
 ) -> Result<Vec<ManagedFile>> {
     let source_root = snapshot_root.join(&skill.path);
-    let managed_skill_id = namespaced_skill_id(package, &skill.id);
+    let managed_skill_id = managed_skill_id(names, package, &skill.id);
     let target_root = managed_skill_root(
+        names,
         project_root,
         crate::adapters::Adapter::Copilot,
         package,
@@ -52,6 +55,7 @@ pub fn skill_files(
 }
 
 pub fn agent_file(
+    names: &ManagedArtifactNames,
     project_root: &Path,
     package: &ResolvedPackage,
     snapshot_root: &Path,
@@ -59,6 +63,7 @@ pub fn agent_file(
 ) -> Result<ManagedFile> {
     copy_file(
         managed_artifact_path(
+            names,
             project_root,
             crate::adapters::Adapter::Copilot,
             ArtifactKind::Agent,

@@ -188,11 +188,15 @@ fn capture_watch_state(
     reporter: &Reporter,
 ) -> Result<RelayWatchState> {
     let workspace = load_workspace(project_root, cache_root, reporter)?;
+    let managed_names = crate::adapters::ManagedArtifactNames::from_resolved_packages(
+        workspace.resolution.packages.iter(),
+    );
     let mut managed = BTreeMap::new();
     for package in packages {
         let dependency = dependency_context(&workspace, package)?;
         let linked_repo = resolve_existing_link(&workspace.local_config, &dependency)?;
         let mappings = build_mappings(
+            &managed_names,
             &dependency,
             &workspace.project_root,
             workspace.selected_adapters,
