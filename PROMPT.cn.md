@@ -83,7 +83,7 @@ cargo install nodus
 macOS / Linux 也可以用预构建安装脚本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nodus-rs/nodus/main/install.sh | bash
+curl -fsSL https://nodus.elata.ai/install.sh | bash
 ```
 
 Homebrew：
@@ -95,7 +95,7 @@ brew install nodus-rs/nodus/nodus
 Windows PowerShell：
 
 ```powershell
-irm https://raw.githubusercontent.com/nodus-rs/nodus/main/install.ps1 | iex
+irm https://nodus.elata.ai/install.ps1 | iex
 ```
 
 安装完成后再次验证：

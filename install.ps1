@@ -62,7 +62,7 @@ function Show-PowerShell-Hint {
     if ($isLegacyDesktop) {
         Log "Hint: You are running Windows PowerShell $psVersion."
         Log "Hint: For best compatibility, install PowerShell 7+ and run:"
-        Log ("  pwsh -NoProfile -Command ""irm https://raw.githubusercontent.com/{0}/main/install.ps1 | iex""" -f $RepoSlug)
+        Log '  pwsh -NoProfile -Command "irm https://nodus.elata.ai/install.ps1 | iex"'
     }
 }
 

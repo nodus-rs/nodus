@@ -65,7 +65,7 @@ cargo install nodus
 在 macOS 或 Linux 上安装最新预构建版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nodus-rs/nodus/main/install.sh | bash
+curl -fsSL https://nodus.elata.ai/install.sh | bash
 ```
 
 通过 Homebrew 安装：
@@ -77,7 +77,7 @@ brew install nodus-rs/nodus/nodus
 在 Windows 上通过 PowerShell 安装最新预构建版本：
 
 ```powershell
-irm https://raw.githubusercontent.com/nodus-rs/nodus/main/install.ps1 | iex
+irm https://nodus.elata.ai/install.ps1 | iex
 ```
 
 <details>
@@ -88,7 +88,7 @@ irm https://raw.githubusercontent.com/nodus-rs/nodus/main/install.ps1 | iex
 ```powershell
 winget install --id Microsoft.PowerShell --source winget
 # 先重启终端，让 `pwsh` 生效。
-pwsh -NoProfile -Command "irm https://raw.githubusercontent.com/nodus-rs/nodus/main/install.ps1 | iex"
+pwsh -NoProfile -Command "irm https://nodus.elata.ai/install.ps1 | iex"
 ```
 
 </details>
@@ -336,20 +336,20 @@ Windows: %LOCALAPPDATA%\nodus\
 在 macOS 或 Linux 上：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nodus-rs/nodus/main/install.sh | bash -s -- --version v0.1.0
+curl -fsSL https://nodus.elata.ai/install.sh | bash -s -- --version v0.1.0
 ```
 
 在 Windows 上：
 
 ```powershell
-$env:NODUS_VERSION='v0.1.0'; irm https://raw.githubusercontent.com/nodus-rs/nodus/main/install.ps1 | iex
+$env:NODUS_VERSION='v0.1.0'; irm https://nodus.elata.ai/install.ps1 | iex
 ```
 
 如果 Windows 上失败，可以先设置版本号，再通过 `pwsh` 执行：
 
 ```powershell
 $env:NODUS_VERSION='v0.1.0'
-pwsh -NoProfile -Command "irm https://raw.githubusercontent.com/nodus-rs/nodus/main/install.ps1 | iex"
+pwsh -NoProfile -Command "irm https://nodus.elata.ai/install.ps1 | iex"
 ```
 
 ## 什么时候用 `sync`，什么时候用 `update`

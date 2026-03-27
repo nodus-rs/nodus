@@ -124,3 +124,39 @@ jobs:
           files: |
             dist/${{ env.ASSET_BASENAME }}.${{ matrix.archive_ext }}
             dist/${{ env.ASSET_BASENAME }}.${{ matrix.archive_ext }}.sha256
+
+  notify-downstreams:
+    name: Notify downstream repos
+    needs: binaries
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target_repository:
+          - nodus-rs/homebrew-nodus
+          - nodus-rs/nodus-website
+
+    env:
+      RELEASE_TAG: ${{ inputs.tag_name || github.event.release.tag_name }}
+
+    steps:
+      - name: Dispatch release update event
+        env:
+          GH_TOKEN: ${{ secrets.NODUS_RELEASE_AUTOMATION_TOKEN }}
+          TARGET_REPOSITORY: ${{ matrix.target_repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "NODUS_RELEASE_AUTOMATION_TOKEN is required to notify ${TARGET_REPOSITORY}." >&2
+            exit 1
+          fi
+
+          payload="$(printf '{"event_type":"nodus_release_published","client_payload":{"tag_name":"%s","source_repository":"%s"}}' "${RELEASE_TAG}" "${GITHUB_REPOSITORY}")"
+
+          curl -fsSL \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            "https://api.github.com/repos/${TARGET_REPOSITORY}/dispatches" \
+            -d "${payload}"

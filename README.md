@@ -61,7 +61,7 @@ cargo install nodus
 Install the latest prebuilt binary on macOS or Linux:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nodus-rs/nodus/main/install.sh | bash
+curl -fsSL https://nodus.elata.ai/install.sh | bash
 ```
 
 Install with Homebrew:
@@ -73,7 +73,7 @@ brew install nodus-rs/nodus/nodus
 Install the latest prebuilt binary on Windows with PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/nodus-rs/nodus/main/install.ps1 | iex
+irm https://nodus.elata.ai/install.ps1 | iex
 ```
 
 <details>
@@ -84,7 +84,7 @@ If the command fails (for example, `pwsh` is not recognized), install PowerShell
 ```powershell
 winget install --id Microsoft.PowerShell --source winget
 # Restart terminal first so `pwsh` is available on PATH.
-pwsh -NoProfile -Command "irm https://raw.githubusercontent.com/nodus-rs/nodus/main/install.ps1 | iex"
+pwsh -NoProfile -Command "irm https://nodus.elata.ai/install.ps1 | iex"
 ```
 
 </details>
@@ -284,20 +284,20 @@ Global installs do not support `copilot`, and `--global` cannot be combined with
 Install a specific release with the Unix installer script:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nodus-rs/nodus/main/install.sh | bash -s -- --version v0.1.0
+curl -fsSL https://nodus.elata.ai/install.sh | bash -s -- --version v0.1.0
 ```
 
 Install a specific release on Windows:
 
 ```powershell
-$env:NODUS_VERSION='v0.1.0'; irm https://raw.githubusercontent.com/nodus-rs/nodus/main/install.ps1 | iex
+$env:NODUS_VERSION='v0.1.0'; irm https://nodus.elata.ai/install.ps1 | iex
 ```
 
 If this command fails on Windows, install PowerShell 7, restart your terminal, then run through `pwsh`:
 
 ```powershell
 $env:NODUS_VERSION='v0.1.0'
-pwsh -NoProfile -Command "irm https://raw.githubusercontent.com/nodus-rs/nodus/main/install.ps1 | iex"
+pwsh -NoProfile -Command "irm https://nodus.elata.ai/install.ps1 | iex"
 ```
 
 ## When To Use `sync` vs `update`
