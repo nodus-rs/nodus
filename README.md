@@ -299,10 +299,13 @@ Common dependency forms:
 playbook = { path = "vendor/playbook" }
 tooling = { github = "owner/tooling", version = "^1.2.0" }
 shared = { github = "owner/shared", tag = "v1.4.0", components = ["skills"] }
+paused = { github = "owner/paused", tag = "v1.0.0", enabled = false }
 
 [dev-dependencies]
 internal = { path = "vendor/internal" }
 ```
+
+Set `enabled = false` to keep a dependency declared in `nodus.toml` without resolving it, syncing its managed outputs, or tracking it in `nodus.lock`.
 
 Direct dependencies can also map files or directories into the consuming repo:
 

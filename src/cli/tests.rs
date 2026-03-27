@@ -586,6 +586,31 @@ tooling = { path = "vendor/tooling" }
 }
 
 #[test]
+fn list_command_marks_disabled_dependencies() {
+    let temp = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    write_file(
+        &temp.path().join("nodus.toml"),
+        r#"
+[dependencies]
+tooling = { path = "vendor/tooling", enabled = false }
+"#,
+    );
+    write_skill(
+        &temp.path().join("vendor/tooling/skills/tooling"),
+        "Tooling",
+    );
+
+    let output = run_command_output(Command::List { json: false }, temp.path(), cache.path());
+    assert!(output.contains("disabled"));
+
+    let output = run_command_output(Command::List { json: true }, temp.path(), cache.path());
+    let json: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(json["dependencies"][0]["alias"], "tooling");
+    assert_eq!(json["dependencies"][0]["enabled"], false);
+}
+
+#[test]
 fn list_command_emits_version_requested_ref_for_semver_dependencies() {
     let temp = TempDir::new().unwrap();
     let cache = TempDir::new().unwrap();

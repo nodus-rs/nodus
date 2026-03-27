@@ -18,6 +18,7 @@ use crate::report::Reporter;
 #[derive(Debug, Clone, Serialize)]
 pub struct PackageInfo {
     alias: String,
+    enabled: bool,
     name: String,
     version: Option<String>,
     version_requirement: Option<String>,
@@ -179,6 +180,7 @@ fn load_package_info(
                 path: package_root,
                 tag: None,
             },
+            true,
             None,
             None,
             role,
@@ -211,6 +213,7 @@ fn load_package_info(
             branch: checkout.branch,
             rev: checkout.rev,
         },
+        true,
         None,
         None,
         role,
@@ -282,6 +285,7 @@ fn load_from_dependency_spec(
                     path: declared_path.clone(),
                     tag: dependency.tag.clone(),
                 },
+                dependency.is_enabled(),
                 dependency.effective_selected_components(),
                 None,
                 PackageRole::Dependency,
@@ -308,6 +312,7 @@ fn load_from_dependency_spec(
                     branch: checkout.branch,
                     rev: checkout.rev,
                 },
+                dependency.is_enabled(),
                 dependency.effective_selected_components(),
                 dependency.version.as_ref().map(ToString::to_string),
                 PackageRole::Dependency,
@@ -329,6 +334,7 @@ fn package_info_from_loaded(
     alias: String,
     manifest: LoadedManifest,
     source: PackageInfoSource,
+    enabled: bool,
     selected_components: Option<Vec<DependencyComponent>>,
     version_requirement: Option<String>,
     role: PackageRole,
@@ -345,16 +351,16 @@ fn package_info_from_loaded(
     let mut dependencies = manifest
         .manifest
         .dependencies
-        .keys()
-        .cloned()
+        .iter()
+        .map(render_dependency_name)
         .collect::<Vec<_>>();
     dependencies.sort();
     let mut dev_dependencies = if role == PackageRole::Root {
         manifest
             .manifest
             .dev_dependencies
-            .keys()
-            .cloned()
+            .iter()
+            .map(render_dependency_name)
             .collect::<Vec<_>>()
     } else {
         Vec::new()
@@ -363,6 +369,7 @@ fn package_info_from_loaded(
 
     PackageInfo {
         alias,
+        enabled,
         name: manifest
             .manifest
             .name
@@ -516,6 +523,9 @@ impl PackageInfo {
             paint_label(reporter, "alias:"),
             self.alias
         ));
+        if !self.enabled {
+            lines.push(format!("{} disabled", paint_label(reporter, "status:")));
+        }
         if let Some(api_version) = &self.api_version {
             lines.push(format!(
                 "{} {api_version}",
@@ -777,6 +787,14 @@ fn render_items(items: &[String]) -> String {
     }
 }
 
+fn render_dependency_name((alias, dependency): (&String, &DependencySpec)) -> String {
+    if dependency.is_enabled() {
+        alias.clone()
+    } else {
+        format!("{alias} (disabled)")
+    }
+}
+
 fn short_rev(rev: &str) -> String {
     rev.chars().take(12).collect()
 }
@@ -1030,6 +1048,28 @@ enabled = ["codex"]
         assert!(output.contains("artifacts:"));
         assert!(output.contains("rules  = [safe]"));
         assert!(!output.contains("dev-dependencies:"));
+    }
+
+    #[test]
+    fn info_marks_disabled_direct_dependencies() {
+        let root = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        let dependency = root.path().join("vendor/playbook-ios");
+
+        write_file(
+            &root.path().join("nodus.toml"),
+            r#"
+[dependencies.playbook_ios]
+path = "vendor/playbook-ios"
+enabled = false
+"#,
+        );
+        write_file(&dependency.join("nodus.toml"), "name = \"playbook-ios\"\n");
+        write_skill(&dependency, "Review");
+
+        let output = capture_info_output(root.path(), cache.path(), "playbook_ios", None, None);
+
+        assert!(output.contains("status: disabled"));
     }
 
     #[test]

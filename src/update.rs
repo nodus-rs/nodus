@@ -87,7 +87,7 @@ fn update_direct_dependencies_in_dir_mode(
 ) -> Result<UpdateSummary> {
     crate::relay::ensure_no_pending_relay_edits_in_dir(cwd, cache_root)?;
     let mut root = load_root_from_dir(cwd)?;
-    let dependency_count = root.manifest.all_dependency_entries().len();
+    let dependency_count = root.manifest.active_dependency_entries().len();
     if dependency_count == 0 {
         reporter.note("no dependencies configured")?;
         return Ok(UpdateSummary {
@@ -100,7 +100,7 @@ fn update_direct_dependencies_in_dir_mode(
     let existing_lockfile = load_lockfile(cwd)?;
     let dependencies = root
         .manifest
-        .all_dependency_entries()
+        .active_dependency_entries()
         .into_iter()
         .map(|entry| DependencySnapshot {
             alias: entry.alias.to_string(),

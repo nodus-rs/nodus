@@ -102,6 +102,8 @@ pub struct DependencySpec {
     pub components: Option<Vec<DependencyComponent>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub managed: Option<Vec<ManagedPathSpec>>,
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

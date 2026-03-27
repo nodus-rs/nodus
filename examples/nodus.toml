@@ -86,6 +86,11 @@ local_playbook = { path = "vendor/playbook" }
 # Common case: follow compatible release tags instead of pinning one exact tag.
 axiom = { github = "CharlesWiltgen/Axiom", version = "^2.34.0" }
 
+# Common case: keep a dependency declared but inactive for now.
+# Disabled dependencies stay in the manifest, but Nodus skips resolving,
+# syncing, and lockfile tracking until you re-enable them.
+paused = { github = "acme/paused-package", tag = "v1.0.0", enabled = false }
+
 [dependencies.shared]
 # Use the expanded table form when you want more room for comments or when you
 # need nested configuration such as `[[dependencies.<alias>.managed]]`.

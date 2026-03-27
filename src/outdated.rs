@@ -226,7 +226,7 @@ pub fn check_outdated_json_in_dir(cwd: &Path, cache_root: &Path) -> Result<Outda
 
 fn collect_outdated_reports_in_dir(cwd: &Path, cache_root: &Path) -> Result<OutdatedReportSet> {
     let root = load_root_from_dir(cwd)?;
-    let dependency_count = root.manifest.all_dependency_entries().len();
+    let dependency_count = root.manifest.active_dependency_entries().len();
     if dependency_count == 0 {
         return Ok(OutdatedReportSet {
             dependency_count,
@@ -238,7 +238,7 @@ fn collect_outdated_reports_in_dir(cwd: &Path, cache_root: &Path) -> Result<Outd
     let lockfile = load_lockfile(cwd)?;
     let dependencies = root
         .manifest
-        .all_dependency_entries()
+        .active_dependency_entries()
         .into_iter()
         .map(|entry| DependencySnapshot {
             alias: entry.alias.to_string(),
@@ -798,5 +798,37 @@ mod tests {
         assert_eq!(summary.dependency_count, 0);
         assert_eq!(summary.outdated_count, 0);
         assert!(output.contents().contains("no dependencies configured"));
+    }
+
+    #[test]
+    fn ignores_disabled_dependencies() {
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        let repo = TempDir::new().unwrap();
+        write_skill(&repo.path().join("skills/review"), "Review");
+        init_git_repo(repo.path());
+        run_git(repo.path(), &["tag", "v0.1.0"]);
+
+        write_file(
+            &project.path().join("nodus.toml"),
+            &format!(
+                r#"
+[dependencies]
+review = {{ path = "vendor/review" }}
+disabled = {{ url = "{}", tag = "v0.1.0", enabled = false }}
+"#,
+                repo.path().to_string_lossy(),
+            ),
+        );
+        write_skill(
+            &project.path().join("vendor/review/skills/review"),
+            "Review",
+        );
+
+        let report = check_outdated_json_in_dir(project.path(), cache.path()).unwrap();
+
+        assert_eq!(report.dependency_count, 1);
+        assert_eq!(report.dependencies.len(), 1);
+        assert_eq!(report.dependencies[0].alias, "review");
     }
 }

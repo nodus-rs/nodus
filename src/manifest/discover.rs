@@ -129,6 +129,7 @@ pub(super) fn load_claude_marketplace_wrapper(
                 version: None,
                 components: None,
                 managed: None,
+                enabled: true,
             },
         );
 

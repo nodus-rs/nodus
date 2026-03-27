@@ -1068,6 +1068,7 @@ fn serializes_dependencies_as_inline_tables() {
                 DependencyComponent::Skills,
             ]),
             managed: None,
+            enabled: true,
         },
     );
 
@@ -1079,6 +1080,30 @@ fn serializes_dependencies_as_inline_tables() {
     assert!(encoded.contains("version = \"^0.1.0\""));
     assert!(encoded.contains("components = [\"skills\", \"rules\"]"));
     assert!(!encoded.contains("url = "));
+}
+
+#[test]
+fn serializes_disabled_dependencies() {
+    let mut manifest = Manifest::default();
+    manifest.dependencies.insert(
+        "playbook_ios".into(),
+        DependencySpec {
+            github: Some("wenext-limited/playbook-ios".into()),
+            url: None,
+            path: None,
+            tag: Some("v0.1.0".into()),
+            branch: None,
+            revision: None,
+            version: None,
+            components: None,
+            managed: None,
+            enabled: false,
+        },
+    );
+
+    let encoded = serialize_manifest(&manifest).unwrap();
+
+    assert!(encoded.contains("enabled = false"));
 }
 
 #[test]
@@ -1174,6 +1199,7 @@ fn serializes_managed_dependencies_as_expanded_tables() {
                     target: PathBuf::from("docs/templates"),
                 },
             ]),
+            enabled: true,
         },
     );
 
@@ -1203,6 +1229,7 @@ fn serializes_dev_dependencies() {
             version: None,
             components: Some(vec![DependencyComponent::Skills]),
             managed: None,
+            enabled: true,
         },
     );
 
@@ -1366,6 +1393,7 @@ fn rejects_dependencies_with_multiple_git_sources() {
         version: None,
         components: None,
         managed: None,
+        enabled: true,
     };
 
     let error = dependency.source_kind().unwrap_err().to_string();
@@ -1390,6 +1418,30 @@ playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.1.0", compone
         dependency.explicit_components_sorted().unwrap(),
         vec![DependencyComponent::Skills, DependencyComponent::Agents]
     );
+}
+
+#[test]
+fn active_dependency_entries_skip_disabled_dependencies() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[dependencies]
+enabled_dep = { github = "wenext-limited/playbook-ios", tag = "v0.1.0" }
+disabled_dep = { github = "wenext-limited/playbook-ios", tag = "v0.1.0", enabled = false }
+"#,
+    );
+
+    let loaded = load_root_from_dir(temp.path()).unwrap();
+    let active = loaded
+        .manifest
+        .active_dependency_entries()
+        .into_iter()
+        .map(|entry| entry.alias.to_string())
+        .collect::<Vec<_>>();
+
+    assert_eq!(active, vec!["enabled_dep"]);
 }
 
 #[test]

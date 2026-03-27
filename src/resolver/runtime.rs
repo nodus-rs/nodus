@@ -1004,7 +1004,7 @@ fn resolve_package(
 
     let dependencies = manifest
         .manifest
-        .dependency_entries_for_role(role)
+        .active_dependency_entries_for_role(role)
         .into_iter()
         .map(|entry| resolve_dependency(&manifest, role, entry.alias, entry.spec, context, state))
         .collect::<Result<Vec<_>>>()?;
@@ -1463,7 +1463,7 @@ impl Resolution {
             let mut dependencies: Vec<_> = package
                 .manifest
                 .manifest
-                .dependency_entries_for_role(package_role)
+                .active_dependency_entries_for_role(package_role)
                 .into_iter()
                 .map(|entry| entry.alias.to_string())
                 .collect();
@@ -5100,6 +5100,53 @@ shared = { path = "vendor/shared", components = ["skills"] }
             .to_string();
         assert!(error.contains("run `nodus sync`"));
         assert!(error.contains("run `nodus doctor`"));
+    }
+
+    #[test]
+    fn sync_prunes_disabled_dependencies_from_outputs_and_lockfile() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_manifest(
+            temp.path(),
+            r#"
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+        );
+        write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+
+        sync_all(temp.path(), cache.path());
+
+        let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+        let dependency = resolution
+            .packages
+            .iter()
+            .find(|package| package.alias == "shared")
+            .unwrap();
+        let managed_skill_id = namespaced_skill_id(dependency, "review");
+        let managed_skill_path = temp
+            .path()
+            .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"));
+        assert!(managed_skill_path.exists());
+
+        write_manifest(
+            temp.path(),
+            r#"
+[dependencies]
+shared = { path = "vendor/shared", enabled = false }
+"#,
+        );
+
+        sync_all(temp.path(), cache.path());
+
+        assert!(!managed_skill_path.exists());
+        let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+        assert!(
+            !lockfile
+                .packages
+                .iter()
+                .any(|package| package.alias == "shared")
+        );
     }
 
     #[test]

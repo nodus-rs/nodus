@@ -239,6 +239,13 @@ impl Manifest {
             .collect()
     }
 
+    pub fn active_dependency_entries(&self) -> Vec<DependencyEntry<'_>> {
+        self.all_dependency_entries()
+            .into_iter()
+            .filter(|entry| entry.spec.is_enabled())
+            .collect()
+    }
+
     pub fn dependency_entries_for_role(&self, role: PackageRole) -> Vec<DependencyEntry<'_>> {
         match role {
             PackageRole::Root => self.all_dependency_entries(),
@@ -252,6 +259,16 @@ impl Manifest {
                 })
                 .collect(),
         }
+    }
+
+    pub fn active_dependency_entries_for_role(
+        &self,
+        role: PackageRole,
+    ) -> Vec<DependencyEntry<'_>> {
+        self.dependency_entries_for_role(role)
+            .into_iter()
+            .filter(|entry| entry.spec.is_enabled())
+            .collect()
     }
 
     pub fn enabled_adapters(&self) -> Option<&[Adapter]> {
@@ -405,6 +422,10 @@ fn validate_dependency_entry(package: &LoadedManifest, entry: DependencyEntry<'_
 }
 
 impl DependencySpec {
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
     pub fn inline_fields(&self) -> Vec<String> {
         self.key_value_fields()
     }
@@ -439,6 +460,9 @@ impl DependencySpec {
                 .collect::<Vec<_>>()
                 .join(", ");
             fields.push(format!("components = [{encoded}]"));
+        }
+        if !self.enabled {
+            fields.push("enabled = false".to_string());
         }
         fields
     }

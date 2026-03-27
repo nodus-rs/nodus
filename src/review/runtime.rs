@@ -531,7 +531,7 @@ impl ReviewCollector {
         let dependencies = self.packages[index]
             .manifest
             .manifest
-            .dependency_entries_for_role(target.role)
+            .active_dependency_entries_for_role(target.role)
             .into_iter()
             .map(|entry| (entry.alias.to_string(), entry.kind, entry.spec.clone()))
             .collect::<Vec<_>>();

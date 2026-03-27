@@ -150,6 +150,7 @@ fn add_dependency_in_dir_with_adapters_mode(
                 sorted
             }),
             managed: None,
+            enabled: true,
         },
     );
     let selection = resolve_adapter_selection(
@@ -1050,6 +1051,7 @@ mod tests {
                 version: None,
                 components: None,
                 managed: None,
+                enabled: true,
             },
         );
 
@@ -1074,6 +1076,7 @@ mod tests {
                 version: None,
                 components: None,
                 managed: None,
+                enabled: true,
             },
         );
 

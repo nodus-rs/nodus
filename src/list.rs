@@ -19,6 +19,8 @@ pub struct DependencyList {
 pub struct DependencyListEntry {
     pub alias: String,
     pub kind: DependencyKind,
+    #[serde(skip_serializing_if = "is_true")]
+    pub enabled: bool,
     pub source: DependencyListSource,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requested_ref: Option<DependencyListRequestedRef>,
@@ -108,6 +110,7 @@ pub fn list_dependencies_json_in_dir(cwd: &Path) -> Result<DependencyList> {
             Ok(DependencyListEntry {
                 alias: alias.to_string(),
                 kind: entry.kind,
+                enabled: spec.is_enabled(),
                 source,
                 requested_ref,
                 selected_components: spec.effective_selected_components(),
@@ -167,6 +170,9 @@ fn display_alias(dependency: &DependencyListEntry) -> String {
 
 fn dependency_summary(dependency: &DependencyListEntry) -> String {
     let mut parts = Vec::new();
+    if !dependency.enabled {
+        parts.push("disabled".to_string());
+    }
     parts.push(match &dependency.source {
         DependencyListSource::Path { path } => format!("path {path}"),
         DependencyListSource::Git { url } => format!("git {url}"),
@@ -208,4 +214,8 @@ fn render_locked_summary(locked: Option<&DependencyListLocked>) -> String {
 
 fn short_value(value: &str) -> String {
     value.chars().take(12).collect()
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
 }
