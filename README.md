@@ -42,6 +42,14 @@ For most users, the main command is:
 nodus add <package>
 ```
 
+If you want your agent to learn how to use Nodus automatically inside this repo, start with:
+
+```bash
+nodus add WendellXY/nodus
+```
+
+That installs Nodus's own package into the repo so the agent can pick up the managed skills and instructions it publishes. If this is a brand-new repo and Nodus cannot infer your tool yet, add an adapter on the first run, for example `--adapter codex`.
+
 ## Install
 
 Install from crates.io:
@@ -83,10 +91,10 @@ pwsh -NoProfile -Command "irm https://raw.githubusercontent.com/WendellXY/nodus/
 
 ## Quick Start
 
-Install a package for Codex:
+If you want the agent in this repo to learn Nodus first, run:
 
 ```bash
-nodus add WendellXY/nodus --adapter codex
+nodus add WendellXY/nodus
 ```
 
 That one command:
@@ -95,7 +103,13 @@ That one command:
 - records the dependency in `nodus.toml`
 - resolves the latest tag by default
 - locks the exact resolved revision in `nodus.lock`
-- writes managed runtime files for the selected adapter
+- writes managed runtime files for the detected or configured adapter
+
+If your repo does not already expose adapter signals such as `.codex/`, `.claude/`, or `.github/skills`, make the first install explicit:
+
+```bash
+nodus add WendellXY/nodus --adapter codex
+```
 
 Validate the result:
 
