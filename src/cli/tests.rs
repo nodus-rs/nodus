@@ -11,7 +11,8 @@ use tempfile::TempDir;
 use walkdir::WalkDir;
 
 use super::args::{Cli, Command};
-use super::dispatch::{run_command_in_dir, should_auto_check_for_updates};
+use super::output::should_auto_check_for_updates;
+use super::router::run_command_in_dir;
 use crate::adapters::Adapter;
 use crate::report::{ColorMode, Reporter};
 use crate::resolver;
