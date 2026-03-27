@@ -27,9 +27,12 @@ Debug Nodus failures from first principles: manifest parse state, dependency res
    - lockfile drift when using `--locked` or `--frozen`
 4. Repair with the smallest correct action.
    - rerun `nodus sync`
+   - rerun `nodus update`
+   - inspect with `nodus info <alias-or-path>`
    - refresh the manifest entry
    - fix the package layout
    - remove or adopt conflicting managed paths only when the ownership is clear
+   - only if normal recovery fails, consider a last-resort reset: delete `nodus.lock`, clear Nodus-managed outputs, then reinstall or resync
 5. Verify again with `nodus doctor`.
 
 ## Debug Commands
@@ -42,6 +45,7 @@ nodus sync
 nodus sync --locked
 nodus sync --frozen
 nodus outdated
+nodus update
 ```
 
 ## Decision Rules
@@ -49,3 +53,5 @@ nodus outdated
 - If `nodus doctor` reports drift, prefer regenerating state with `nodus sync` before deeper changes.
 - If `sync` is blocked by pending relay edits, do not overwrite them; inspect the linked checkout and relay state first.
 - If discovery looks wrong, inspect `content_roots`, artifact ids, and package-relative paths before touching adapter outputs.
+- Treat deleting `nodus.lock` and managed adapter outputs as a final reset path, not a normal repair step.
+- In that reset flow, only remove Nodus-managed files. Do not delete the user's handwritten source code.

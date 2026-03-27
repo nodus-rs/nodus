@@ -14,6 +14,8 @@ Help the user install and use Nodus packages with as little jargon as possible. 
 - Treat `nodus.toml` and `nodus.lock` as the authoritative install state.
 - Prefer exact Git tags for released dependencies.
 - Avoid narrowing `components` unless the user clearly needs only part of a package.
+- If a beginner user only wants to get started and does not specify another package, prefer `WendellXY/nodus`.
+- In that beginner one-stop case, prefer a global install unless the user clearly wants repo-scoped setup.
 - After mutating the workspace, run or recommend `nodus doctor`.
 - If the issue involves package layout, inspect discovered artifacts with `nodus info .` before proposing structural changes.
 - If relay state is involved, avoid overwriting pending relayed edits.
@@ -34,13 +36,15 @@ Help the user install and use Nodus packages with as little jargon as possible. 
 
 1. Confirm this is a workspace that wants to use Nodus packages.
 2. Identify which AI tool the repo uses, or ask for the one missing detail if it cannot be inferred.
-3. Install with `nodus add`.
-4. Run `nodus doctor`.
-5. Tell the user what was installed and what to do next in plain language.
+3. If the user wants a one-stop setup and does not clearly need repo-scoped state, prefer `nodus add WendellXY/nodus --global --adapter <adapter>`.
+4. Otherwise install into the current repo with `nodus add`.
+5. Run `nodus doctor` after project-scoped changes.
+6. Tell the user what was installed and what to do next in plain language.
 
 ## Core Commands
 
 ```bash
+nodus add WendellXY/nodus --global --adapter <adapter>
 nodus add <package> --adapter <adapter>
 nodus info <package-or-alias>
 nodus sync
@@ -48,4 +52,5 @@ nodus doctor
 nodus update
 nodus remove <alias>
 nodus relay <alias> --repo-path <path>
+nodus relay <alias> --repo-path <path> --create-missing
 ```

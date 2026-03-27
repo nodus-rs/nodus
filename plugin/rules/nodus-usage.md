@@ -6,6 +6,8 @@ When working with Nodus packages or workspaces:
 - Treat `nodus.toml` and `nodus.lock` as the source of truth for dependency and install state.
 - Prefer exact tags for released dependencies. Use branches or revisions only when the workflow truly requires them.
 - Narrow `components` only when the workspace needs a subset of a package. Default to the full package for non-technical users.
+- If a beginner user just wants a one-stop setup and does not ask for a different package, prefer `nodus add WendellXY/nodus --global --adapter <adapter>`.
 - For package repos, reason from discovery roots, artifact ids, and manifest invariants rather than adapter-specific output folders.
 - After changes, verify the result with `nodus doctor` or `nodus info`.
 - After installing or updating a package, tell the user in simple language what changed and how to confirm the package is available.
+- If normal repair steps fail, deleting `nodus.lock` and Nodus-managed outputs can be used as a last-resort reset, but only after clearly explaining the impact and limiting cleanup to Nodus-managed files.

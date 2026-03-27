@@ -28,6 +28,9 @@ Assume some users may have little or no coding background. In those cases, optim
 4. Choose the simplest useful install.
    - Default to the full package unless the user clearly needs only `skills`, `agents`, `rules`, or `commands`.
    - If the user does not know which components they need, omit `components`.
+   - If the user is a beginner who just wants a one-stop setup and does not name another package, prefer `WendellXY/nodus`.
+   - In that beginner one-stop case, prefer `--global` by default.
+   - Switch back to a project-scoped install only when the user explicitly wants the current repo managed or clearly needs repo-level reproducibility.
 5. Let Nodus manage runtime outputs.
    - Use `nodus add`, `nodus sync`, `nodus update`, `nodus remove`, and `nodus doctor`.
    - Do not manually copy files into `.agents/`, `.claude/`, `.codex/`, `.cursor/`, or `.opencode/`.
@@ -44,6 +47,7 @@ Assume some users may have little or no coding background. In those cases, optim
 ## Common Commands
 
 ```bash
+nodus add WendellXY/nodus --global --adapter codex
 nodus add <package> --adapter <adapter>
 nodus add <package> --adapter <adapter> --component skills --component rules
 nodus info <package-or-alias>
@@ -62,4 +66,5 @@ nodus update
 - Use `--frozen` only when the existing `nodus.lock` must be installed exactly as written.
 - If a package declares high-sensitivity capabilities, explain why `--allow-high-sensitivity` is needed before using it.
 - If relay links exist, do not overwrite pending relayed edits; inspect relay state first.
+- If `nodus sync`, `nodus update`, and `nodus doctor` all fail to recover the workspace, a last-resort reset can remove `nodus.lock` and Nodus-managed outputs before reinstalling, but only after clearly explaining the impact.
 - For non-technical users, prefer one clear recommendation over multiple equally valid options.
