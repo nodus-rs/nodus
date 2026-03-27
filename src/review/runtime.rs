@@ -418,9 +418,9 @@ fn resolve_from_dependency_spec(
 ) -> Result<ResolvedReviewTarget> {
     let target = resolve_inspection_target(alias, dependency, root_manifest, cache_root, reporter)?;
     let source = match target.source {
-        ResolvedInspectionSource::Path { resolved_root, .. } => {
-            ReviewSource::Path { path: resolved_root }
-        }
+        ResolvedInspectionSource::Path { resolved_root, .. } => ReviewSource::Path {
+            path: resolved_root,
+        },
         ResolvedInspectionSource::Git {
             url,
             tag,
