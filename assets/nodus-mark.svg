@@ -1,43 +1,59 @@
 <svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="nodus-n" x1="162" y1="154" x2="350" y2="362" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#FFB067"/>
-      <stop offset="0.5" stop-color="#E86A2F"/>
-      <stop offset="1" stop-color="#B7410E"/>
+    <radialGradient id="nodus-bg" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(180 144) rotate(52.3) scale(446.234)">
+      <stop stop-color="#3A2F29"/>
+      <stop offset="0.58" stop-color="#241C19"/>
+      <stop offset="1" stop-color="#130F0E"/>
+    </radialGradient>
+    <linearGradient id="nodus-accent" x1="160" y1="154" x2="354" y2="348" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFD7A8"/>
+      <stop offset="0.48" stop-color="#F18A39"/>
+      <stop offset="1" stop-color="#BF4715"/>
     </linearGradient>
-    <linearGradient id="nodus-highlight" x1="198" y1="168" x2="314" y2="302" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#FFD2A8" stop-opacity="0.95"/>
-      <stop offset="1" stop-color="#FFD2A8" stop-opacity="0"/>
+    <linearGradient id="nodus-ring" x1="128" y1="110" x2="384" y2="402" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7B665E" stop-opacity="0.7"/>
+      <stop offset="1" stop-color="#433732" stop-opacity="0.3"/>
     </linearGradient>
-    <mask id="gear-mask">
-      <rect width="512" height="512" fill="black"/>
-      <circle cx="256" cy="256" r="174" fill="white"/>
-      <circle cx="256" cy="256" r="126" fill="black"/>
-      <rect x="236" y="26" width="40" height="86" rx="12" fill="white"/>
-      <rect x="236" y="400" width="40" height="86" rx="12" fill="white"/>
-      <rect x="400" y="236" width="86" height="40" rx="12" fill="white"/>
-      <rect x="26" y="236" width="86" height="40" rx="12" fill="white"/>
-      <rect x="236" y="26" width="40" height="86" rx="12" transform="rotate(45 256 256)" fill="white"/>
-      <rect x="236" y="26" width="40" height="86" rx="12" transform="rotate(90 256 256)" fill="white"/>
-      <rect x="236" y="26" width="40" height="86" rx="12" transform="rotate(135 256 256)" fill="white"/>
-      <rect x="236" y="26" width="40" height="86" rx="12" transform="rotate(180 256 256)" fill="white"/>
-      <rect x="236" y="26" width="40" height="86" rx="12" transform="rotate(225 256 256)" fill="white"/>
-      <rect x="236" y="26" width="40" height="86" rx="12" transform="rotate(270 256 256)" fill="white"/>
-      <rect x="236" y="26" width="40" height="86" rx="12" transform="rotate(315 256 256)" fill="white"/>
-    </mask>
+    <filter id="nodus-shadow" x="58" y="58" width="396" height="396" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset dy="16"/>
+      <feGaussianBlur stdDeviation="18"/>
+      <feComposite in2="hardAlpha" operator="out"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.0470588 0 0 0 0 0.0352941 0 0 0 0 0.0313725 0 0 0 0.45 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_1_1"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_1_1" result="shape"/>
+    </filter>
   </defs>
 
-  <rect width="512" height="512" fill="#231C1A" mask="url(#gear-mask)"/>
+  <g filter="url(#nodus-shadow)">
+    <circle cx="256" cy="256" r="208" fill="url(#nodus-bg)"/>
+  </g>
 
-  <circle cx="256" cy="256" r="124" fill="#161110" fill-opacity="0.08"/>
-  <circle cx="256" cy="256" r="120" stroke="#4B403C" stroke-width="8"/>
+  <circle cx="256" cy="256" r="182" stroke="url(#nodus-ring)" stroke-width="10"/>
+  <circle cx="256" cy="256" r="154" stroke="#201815" stroke-width="2" opacity="0.85"/>
 
-  <path d="M168 350V162H212L300 276V162H344V350H300L212 236V350H168Z" fill="url(#nodus-n)"/>
-  <path d="M212 162L300 276V350H274V286L186 172V162H212Z" fill="#8F2F12" fill-opacity="0.35"/>
-  <path d="M194 176H212L296 285V301L194 176Z" fill="url(#nodus-highlight)"/>
+  <circle cx="256" cy="92" r="16" fill="#2A201C"/>
+  <circle cx="420" cy="256" r="16" fill="#2A201C"/>
+  <circle cx="256" cy="420" r="16" fill="#2A201C"/>
+  <circle cx="92" cy="256" r="16" fill="#2A201C"/>
 
-  <circle cx="256" cy="118" r="10" fill="#231C1A"/>
-  <circle cx="394" cy="256" r="10" fill="#231C1A"/>
-  <circle cx="256" cy="394" r="10" fill="#231C1A"/>
-  <circle cx="118" cy="256" r="10" fill="#231C1A"/>
+  <circle cx="256" cy="92" r="10" fill="#F5A04C"/>
+  <circle cx="420" cy="256" r="10" fill="#D65A22"/>
+  <circle cx="256" cy="420" r="10" fill="#F18A39"/>
+  <circle cx="92" cy="256" r="10" fill="#FFD7A8"/>
+
+  <path d="M176 334V178L336 334V178" stroke="url(#nodus-accent)" stroke-width="58" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M176 178L336 334" stroke="#FFF1DE" stroke-width="14" stroke-linecap="round" opacity="0.24"/>
+
+  <circle cx="176" cy="334" r="24" fill="#FFD7A8"/>
+  <circle cx="176" cy="178" r="24" fill="#F39A46"/>
+  <circle cx="336" cy="334" r="24" fill="#D85A22"/>
+  <circle cx="336" cy="178" r="24" fill="#F39A46"/>
+
+  <circle cx="176" cy="334" r="10" fill="#2B201B" opacity="0.16"/>
+  <circle cx="176" cy="178" r="10" fill="#2B201B" opacity="0.14"/>
+  <circle cx="336" cy="334" r="10" fill="#2B201B" opacity="0.2"/>
+  <circle cx="336" cy="178" r="10" fill="#2B201B" opacity="0.14"/>
+  <circle cx="256" cy="256" r="6" fill="#FFE8C8" opacity="0.9"/>
 </svg>
