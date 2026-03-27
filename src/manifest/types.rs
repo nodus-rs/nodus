@@ -253,6 +253,37 @@ pub(super) struct ClaudePluginMetadata {
     pub(super) version: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub(super) struct CodexMarketplace {
+    pub(super) plugins: Vec<CodexMarketplacePlugin>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct CodexMarketplacePlugin {
+    pub(super) name: String,
+    pub(super) source: CodexMarketplaceSource,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct CodexMarketplaceSource {
+    pub(super) source: String,
+    pub(super) path: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct CodexPluginMetadata {
+    #[serde(default)]
+    pub(super) version: Option<String>,
+    #[serde(default, rename = "mcpServers")]
+    pub(super) mcp_servers: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct CodexPluginMcpConfig {
+    #[serde(default, rename = "mcpServers")]
+    pub(super) mcp_servers: BTreeMap<String, McpServerConfig>,
+}
+
 fn is_false(value: &bool) -> bool {
     !*value
 }

@@ -43,6 +43,38 @@ fn write_claude_plugin_json(root: &Path, version: &str) {
     );
 }
 
+fn write_codex_marketplace(root: &Path, contents: &str) {
+    write_file(&root.join(".agents/plugins/marketplace.json"), contents);
+}
+
+fn write_codex_plugin_json(root: &Path, version: &str, mcp_servers_path: Option<&str>) {
+    let mut fields = vec![
+        String::from(r#"  "name": "plugin""#),
+        format!(r#"  "version": "{version}""#),
+    ];
+    if let Some(mcp_servers_path) = mcp_servers_path {
+        fields.push(format!(r#"  "mcpServers": "{mcp_servers_path}""#));
+    }
+    write_file(
+        &root.join(".codex-plugin/plugin.json"),
+        &format!("{{\n{}\n}}\n", fields.join(",\n")),
+    );
+}
+
+fn write_codex_mcp_config(root: &Path) {
+    write_file(
+        &root.join(".mcp.json"),
+        r#"{
+  "mcpServers": {
+    "figma": {
+      "url": "http://127.0.0.1:3845/mcp"
+    }
+  }
+}
+"#,
+    );
+}
+
 #[test]
 fn loads_root_manifest_without_required_metadata() {
     let temp = TempDir::new().unwrap();
@@ -421,6 +453,35 @@ fn reads_claude_plugin_version_from_json() {
 }
 
 #[test]
+fn reads_codex_plugin_version_and_mcp_servers_from_json() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_codex_mcp_config(temp.path());
+    write_codex_plugin_json(temp.path(), "2.34.0", Some("./.mcp.json"));
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    assert_eq!(
+        loaded.manifest.version,
+        Some(Version::parse("2.34.0").unwrap())
+    );
+    let server = loaded.manifest.mcp_servers.get("figma").unwrap();
+    assert!(server.command.is_none());
+    assert_eq!(server.url.as_deref(), Some("http://127.0.0.1:3845/mcp"));
+    let package_files = loaded.package_files().unwrap();
+    assert!(
+        package_files.contains(
+            &temp
+                .path()
+                .join(".codex-plugin/plugin.json")
+                .canonicalize()
+                .unwrap()
+        )
+    );
+    assert!(package_files.contains(&temp.path().join(".mcp.json").canonicalize().unwrap()));
+}
+
+#[test]
 fn rejects_marketplace_with_invalid_json() {
     let temp = TempDir::new().unwrap();
     write_marketplace(temp.path(), "{");
@@ -621,6 +682,89 @@ fn rejects_marketplace_with_plugin_root_interpolation_in_mcp_server() {
         .unwrap_err()
         .to_string();
     assert!(error.contains("${CLAUDE_PLUGIN_ROOT}"));
+}
+
+#[test]
+fn accepts_dependency_repo_with_codex_marketplace_wrapper() {
+    let temp = TempDir::new().unwrap();
+    write_codex_marketplace(
+        temp.path(),
+        r#"{
+  "plugins": [
+    {
+      "name": "Axiom",
+      "source": {
+        "source": "local",
+        "path": "./plugins/axiom"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}"#,
+    );
+    write_file(
+        &temp.path().join("plugins/axiom/skills/review/SKILL.md"),
+        "---\nname: Review\ndescription: Review code safely.\n---\n# Review\n",
+    );
+    write_codex_plugin_json(&temp.path().join("plugins/axiom"), "2.34.0", None);
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    assert!(loaded.discovered.is_empty());
+    let dependency = loaded.manifest.dependencies.get("axiom").unwrap();
+    assert_eq!(
+        dependency.path.as_deref(),
+        Some(Path::new("./plugins/axiom"))
+    );
+    assert_eq!(
+        loaded.manifest.version,
+        Some(Version::parse("2.34.0").unwrap())
+    );
+
+    let package_files = loaded.package_files().unwrap();
+    assert!(
+        package_files.contains(
+            &temp
+                .path()
+                .join(".agents/plugins/marketplace.json")
+                .canonicalize()
+                .unwrap()
+        )
+    );
+}
+
+#[test]
+fn rejects_codex_marketplace_with_plugin_source_that_points_at_package_root() {
+    let temp = TempDir::new().unwrap();
+    write_codex_marketplace(
+        temp.path(),
+        r#"{
+  "plugins": [
+    {
+      "name": "Axiom",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}"#,
+    );
+    write_codex_plugin_json(temp.path(), "2.34.0", None);
+
+    let error = load_dependency_from_dir(temp.path())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("must not point at the package root"));
 }
 
 #[test]

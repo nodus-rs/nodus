@@ -4,8 +4,9 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use super::discover::{
-    canonicalize_existing_path, discover_package_contents, load_claude_marketplace_wrapper,
-    load_claude_plugin_version, load_manifest_str, quote, should_try_claude_marketplace_fallback,
+    canonicalize_existing_path, discover_package_contents, import_codex_plugin_metadata,
+    load_claude_marketplace_wrapper, load_claude_plugin_version, load_codex_marketplace_wrapper,
+    load_manifest_str, quote, should_try_plugin_wrapper_fallback,
 };
 use super::{DependencyKind, LoadedManifest, MANIFEST_FILE, Manifest, PackageRole};
 use crate::paths::display_path;
@@ -44,11 +45,15 @@ pub fn load_from_dir(root: &Path, role: PackageRole) -> Result<LoadedManifest> {
         manifest_contents_override: None,
     };
 
-    if should_try_claude_marketplace_fallback(&loaded) {
+    if should_try_plugin_wrapper_fallback(&loaded) {
         if let Some(marketplace_loaded) = load_claude_marketplace_wrapper(&loaded)? {
+            loaded = marketplace_loaded;
+        } else if let Some(marketplace_loaded) = load_codex_marketplace_wrapper(&loaded)? {
             loaded = marketplace_loaded;
         }
     }
+
+    import_codex_plugin_metadata(&mut loaded)?;
 
     if loaded.manifest.version.is_none() {
         loaded.manifest.version = load_claude_plugin_version(&loaded.root)?;

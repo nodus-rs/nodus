@@ -7,7 +7,8 @@ use semver::Version;
 use toml::Table;
 
 use super::types::{
-    ClaudeMarketplace, ClaudeMarketplaceMcpServers, ClaudePluginMetadata, SkillFrontmatter,
+    ClaudeMarketplace, ClaudeMarketplaceMcpServers, ClaudePluginMetadata, CodexMarketplace,
+    CodexPluginMcpConfig, CodexPluginMetadata, SkillFrontmatter,
 };
 use super::*;
 
@@ -22,7 +23,7 @@ pub(super) fn load_manifest_str(path: &Path, contents: &str) -> Result<(Manifest
     Ok((manifest, collect_ignored_field_warnings(&raw_table)))
 }
 
-pub(super) fn should_try_claude_marketplace_fallback(loaded: &LoadedManifest) -> bool {
+pub(super) fn should_try_plugin_wrapper_fallback(loaded: &LoadedManifest) -> bool {
     loaded.discovered.is_empty()
         && loaded.manifest.dependencies.is_empty()
         && loaded.manifest.mcp_servers.is_empty()
@@ -153,6 +154,122 @@ pub(super) fn load_claude_marketplace_wrapper(
     }))
 }
 
+pub(super) fn load_codex_marketplace_wrapper(
+    loaded: &LoadedManifest,
+) -> Result<Option<LoadedManifest>> {
+    let marketplace_path = loaded
+        .root
+        .join(".agents")
+        .join("plugins")
+        .join("marketplace.json");
+    if !marketplace_path.exists() {
+        return Ok(None);
+    }
+
+    let contents = fs::read_to_string(&marketplace_path)
+        .with_context(|| format!("failed to read {}", marketplace_path.display()))?;
+    let marketplace: CodexMarketplace = serde_json::from_str(&contents)
+        .with_context(|| format!("failed to parse JSON in {}", marketplace_path.display()))?;
+    if marketplace.plugins.is_empty() {
+        bail!(
+            "{} must declare at least one plugin",
+            marketplace_path.display()
+        );
+    }
+
+    let mut manifest = loaded.manifest.clone();
+    let mut single_plugin_version = None;
+    let mut aliases = HashSet::new();
+    let plugin_count = marketplace.plugins.len();
+    for plugin in marketplace.plugins {
+        let name = plugin.name.trim();
+        if name.is_empty() {
+            bail!(
+                "{} plugin names must not be empty",
+                marketplace_path.display()
+            );
+        }
+
+        let source_kind = plugin.source.source.trim();
+        if source_kind != "local" {
+            bail!(
+                "{} plugin `{name}` uses unsupported source kind `{source_kind}`",
+                marketplace_path.display()
+            );
+        }
+
+        let source = plugin.source.path.trim();
+        if source.is_empty() {
+            bail!(
+                "{} plugin `{name}` must declare a non-empty `source.path`",
+                marketplace_path.display()
+            );
+        }
+
+        let alias = normalize_dependency_alias(name)?;
+        if !aliases.insert(alias.clone()) {
+            bail!(
+                "{} contains duplicate plugin alias `{alias}` after normalization",
+                marketplace_path.display()
+            );
+        }
+
+        let source_path = PathBuf::from(source);
+        let plugin_root = loaded
+            .resolve_existing_path(&source_path)
+            .with_context(|| format!("plugin `{name}` has invalid source path `{source}`"))?;
+        if !plugin_root.is_dir() {
+            bail!(
+                "plugin `{name}` source path `{source}` must point to a directory, found {}",
+                plugin_root.display()
+            );
+        }
+        if plugin_root == loaded.root {
+            bail!("plugin `{name}` source path `{source}` must not point at the package root");
+        }
+
+        let plugin_manifest = load_dependency_from_dir(&plugin_root).with_context(|| {
+            format!(
+                "plugin `{name}` source path `{source}` does not match the Nodus package layout"
+            )
+        })?;
+
+        manifest.dependencies.insert(
+            alias,
+            DependencySpec {
+                github: None,
+                url: None,
+                path: Some(source_path),
+                tag: None,
+                branch: None,
+                revision: None,
+                version: None,
+                components: None,
+                managed: None,
+            },
+        );
+
+        if plugin_count == 1 {
+            single_plugin_version = plugin_manifest.effective_version();
+        }
+    }
+
+    if manifest.version.is_none() {
+        manifest.version = single_plugin_version;
+    }
+
+    Ok(Some(LoadedManifest {
+        root: loaded.root.clone(),
+        manifest_path: loaded.manifest_path.clone(),
+        manifest,
+        discovered: PackageContents::default(),
+        warnings: loaded.warnings.clone(),
+        extra_package_files: vec![marketplace_path],
+        allows_empty_dependency_wrapper: true,
+        manifest_contents_override: None,
+    }))
+}
+
 fn import_marketplace_mcp_servers(
     manifest: &mut Manifest,
     plugin_name: &str,
@@ -186,6 +303,75 @@ fn import_marketplace_mcp_servers(
         manifest.mcp_servers.insert(id.to_string(), server);
     }
 
+    Ok(())
+}
+
+pub(super) fn import_codex_plugin_metadata(loaded: &mut LoadedManifest) -> Result<()> {
+    let metadata_path = loaded.root.join(".codex-plugin").join("plugin.json");
+    if !metadata_path.exists() {
+        return Ok(());
+    }
+
+    let contents = fs::read_to_string(&metadata_path)
+        .with_context(|| format!("failed to read {}", metadata_path.display()))?;
+    let metadata: CodexPluginMetadata = serde_json::from_str(&contents)
+        .with_context(|| format!("failed to parse JSON in {}", metadata_path.display()))?;
+
+    if loaded.manifest.version.is_none()
+        && let Some(version) = metadata.version.as_deref()
+    {
+        let version = version.trim();
+        if !version.is_empty() {
+            loaded.manifest.version = Some(Version::parse(version).with_context(|| {
+                format!(
+                    "failed to parse Codex plugin version `{version}` in {}",
+                    metadata_path.display()
+                )
+            })?);
+        }
+    }
+
+    loaded.extra_package_files.push(metadata_path.clone());
+
+    let Some(mcp_servers_path) = metadata.mcp_servers.as_deref() else {
+        return Ok(());
+    };
+
+    let mcp_servers_path = mcp_servers_path.trim();
+    if mcp_servers_path.is_empty() {
+        return Ok(());
+    }
+
+    let config_path = loaded
+        .resolve_existing_path(Path::new(mcp_servers_path))
+        .with_context(|| {
+            format!("Codex plugin metadata `mcpServers` path `{mcp_servers_path}` is invalid")
+        })?;
+    if !config_path.is_file() {
+        bail!("Codex plugin metadata `mcpServers` path `{mcp_servers_path}` must point to a file");
+    }
+
+    let contents = fs::read_to_string(&config_path)
+        .with_context(|| format!("failed to read {}", config_path.display()))?;
+    let config: CodexPluginMcpConfig = serde_json::from_str(&contents)
+        .with_context(|| format!("failed to parse JSON in {}", config_path.display()))?;
+    for (server_id, server) in config.mcp_servers {
+        let id = server_id.trim();
+        if id.is_empty() {
+            bail!("{} contains an empty MCP server id", config_path.display());
+        }
+        if loaded.manifest.mcp_servers.contains_key(id) {
+            bail!(
+                "{} declares duplicate MCP server `{id}`",
+                config_path.display()
+            );
+        }
+        loaded.manifest.mcp_servers.insert(id.to_string(), server);
+    }
+
+    loaded.extra_package_files.push(config_path);
+    loaded.extra_package_files.sort();
+    loaded.extra_package_files.dedup();
     Ok(())
 }
 

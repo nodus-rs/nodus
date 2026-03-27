@@ -2009,6 +2009,38 @@ mod tests {
         );
     }
 
+    fn write_codex_marketplace(path: &Path, contents: &str) {
+        write_file(&path.join(".agents/plugins/marketplace.json"), contents);
+    }
+
+    fn write_codex_plugin_json(path: &Path, version: &str, mcp_servers_path: Option<&str>) {
+        let mut fields = vec![
+            String::from(r#"  "name": "plugin""#),
+            format!(r#"  "version": "{version}""#),
+        ];
+        if let Some(mcp_servers_path) = mcp_servers_path {
+            fields.push(format!(r#"  "mcpServers": "{mcp_servers_path}""#));
+        }
+        write_file(
+            &path.join(".codex-plugin/plugin.json"),
+            &format!("{{\n{}\n}}\n", fields.join(",\n")),
+        );
+    }
+
+    fn write_codex_mcp_config(path: &Path) {
+        write_file(
+            &path.join(".mcp.json"),
+            r#"{
+  "mcpServers": {
+    "figma": {
+      "url": "http://127.0.0.1:3845/mcp"
+    }
+  }
+}
+"#,
+        );
+    }
+
     fn init_git_repo(path: &Path) {
         let run = |args: &[&str]| {
             let output = Command::new("git")
@@ -2853,6 +2885,100 @@ leaf = {{ url = "{}", tag = "v0.1.0" }}
         assert_eq!(dependency.tag, None);
         assert_eq!(dependency.branch.as_deref(), Some("main"));
         assert!(dependency.version.is_none());
+    }
+
+    #[test]
+    fn add_dependency_accepts_codex_marketplace_wrapper_and_syncs_plugin_contents() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+
+        let wrapper = TempDir::new().unwrap();
+        write_codex_marketplace(
+            wrapper.path(),
+            r#"{
+  "plugins": [
+    {
+      "name": "Axiom",
+      "source": {
+        "source": "local",
+        "path": "./plugins/axiom"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}"#,
+        );
+        write_skill(
+            &wrapper.path().join("plugins/axiom/skills/review"),
+            "Review",
+        );
+        write_codex_mcp_config(&wrapper.path().join("plugins/axiom"));
+        write_codex_plugin_json(
+            &wrapper.path().join("plugins/axiom"),
+            "2.34.0",
+            Some("./.mcp.json"),
+        );
+        init_git_repo(wrapper.path());
+        tag_repo(wrapper.path(), "v0.4.0");
+        let wrapper_alias = normalize_alias_from_url(&wrapper.path().to_string_lossy()).unwrap();
+
+        add_dependency_in_dir_with_adapters(
+            temp.path(),
+            cache.path(),
+            &wrapper.path().to_string_lossy(),
+            Some("v0.4.0"),
+            &Adapter::ALL,
+            &[],
+        )
+        .unwrap();
+
+        let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+        let wrapper_package = lockfile
+            .packages
+            .iter()
+            .find(|package| package.alias == wrapper_alias)
+            .unwrap();
+        assert_eq!(wrapper_package.version_tag.as_deref(), Some("2.34.0"));
+        assert!(wrapper_package.skills.is_empty());
+        assert_eq!(wrapper_package.dependencies, vec!["axiom"]);
+
+        let plugin_package = lockfile
+            .packages
+            .iter()
+            .find(|package| package.alias == "axiom")
+            .unwrap();
+        assert_eq!(plugin_package.version_tag.as_deref(), Some("2.34.0"));
+        assert_eq!(
+            plugin_package.source.path.as_deref(),
+            Some("./plugins/axiom")
+        );
+        assert_eq!(plugin_package.skills, vec!["review"]);
+        assert_eq!(plugin_package.mcp_servers, vec!["figma"]);
+
+        let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+        let plugin_package = resolution
+            .packages
+            .iter()
+            .find(|package| package.alias == "axiom")
+            .unwrap();
+        let managed_skill_id = namespaced_skill_id(plugin_package, "review");
+        assert!(
+            temp.path()
+                .join(format!(".codex/skills/{managed_skill_id}/SKILL.md"))
+                .exists()
+        );
+
+        let json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(temp.path().join(".mcp.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            json["mcpServers"]["axiom__figma"]["url"].as_str(),
+            Some("http://127.0.0.1:3845/mcp")
+        );
     }
 
     #[test]
