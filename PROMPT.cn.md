@@ -522,11 +522,35 @@ nodus info <package>
 2. 再用 `nodus relay` 把这些修改回传到一个本地维护者 checkout
 3. Git 提交、push、发版仍然由用户自己完成
 
+先帮用户把目标问清楚，不要把这几件事混成一件：
+
+1. 只是先把**当前消费仓库**里的受管理输出改好
+2. 要把修改**回流到本地维护者 checkout**
+3. 最终还要把结果**推回 remote**
+
+如果用户还没有本地维护者 checkout，但又说要“回流到源仓库”，先提醒他：
+
+- `nodus relay` 需要一个本地源仓库 checkout 作为写回目标
+- 如果本地没有，就先 clone 远端仓库，再把那个目录作为 `--repo-path`
+
+推荐说法：
+
+- “如果你只是想先把当前仓库改好，不需要先 clone 维护者仓库。”
+- “如果你要把这些修改回流到源包，就需要先有一个本地 checkout；如果没有，我先帮你 clone 一份。”
+- “如果你最后还要把修改推回 remote，`nodus relay` 之后还要在那个 checkout 里做 Git 提交和 push。”
+
 这时你应该明确提醒：
 
 - `nodus relay` 回写的是**本地源仓库 checkout**，不是直接推送远端仓库
 - 如果只是更新源仓库里已经存在的 `skills/`、`agents/` 文件，默认直接用 `nodus relay`
 - 如果用户希望把**新建**的受管理 skill / agent 也写回源仓库，要显式使用 `--create-missing`
+
+如果用户没有本地 checkout，可以先这样做：
+
+```bash
+git clone <remote-repo> ../maintainer-checkout
+nodus relay <dependency> --repo-path ../maintainer-checkout
+```
 
 推荐命令示例：
 
@@ -541,6 +565,43 @@ nodus relay <dependency> --repo-path ../maintainer-checkout --via copilot --crea
 - 它只会为缺失的源文件创建 `skills/<id>/...` 和 `agents/<id>.md`
 - 这是**显式 opt-in** 能力，不要默认替用户打开
 - `--via <adapter>` 用来指定把哪个 adapter 的受管理输出当成创建新源文件的规范来源
+
+如果用户明确说“改完以后还要回到 remote”，你应该继续确认两件事：
+
+1. 是否先把本地维护者 checkout 同步到远端最新状态
+2. relay 完以后，是否还要继续做 Git 提交和 push
+
+推荐说法：
+
+- “你是只想回流到本地 checkout，还是还要继续推回远端？”
+- “在回流前，要不要先把本地维护者 checkout 拉到 remote 最新状态？”
+
+如果用户要把结果推回 remote，优先建议：
+
+```bash
+git -C ../maintainer-checkout pull --rebase
+nodus relay <dependency> --repo-path ../maintainer-checkout
+git -C ../maintainer-checkout status
+git -C ../maintainer-checkout add .
+git -C ../maintainer-checkout commit -m "<message>"
+git -C ../maintainer-checkout push
+```
+
+如果用户问“回流到 remote 以后，是否要更新本地”，先区分是哪一个“本地”：
+
+- 如果指**本地维护者 checkout**
+  - push 前通常应该先同步 remote 最新提交
+  - push 成功后通常不需要再额外更新，因为它已经是最新的
+- 如果指**当前消费仓库**
+  - `nodus relay` 不会自动把依赖版本更新到刚推送的远端状态
+  - 如果这个消费仓库之后也要消费刚推上去的变更，通常还需要后续执行：
+
+```bash
+nodus update
+nodus sync
+```
+
+  - 如果依赖是按 tag 固定的，还可能需要先发布新 tag，再让消费仓库更新到那个 tag
 
 如果用户一次 relay 多个依赖：
 
