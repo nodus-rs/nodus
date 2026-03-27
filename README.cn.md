@@ -98,7 +98,7 @@ pwsh -NoProfile -Command "irm https://raw.githubusercontent.com/WendellXY/nodus/
 
 如果你希望直接把需求交给 AI 助手处理，而不是自己研究 Nodus 命令，可以这样做：
 
-1. 打开 `PROMPT.cn.md`](./PROMPT.cn.md)
+1. 打开 [`PROMPT.cn.md`](./PROMPT.cn.md)
 2. 将全文复制给任意 AI 助手，例如 OpenCode、Cursor、Claude、Codex
 3. 再补一句你的目标，例如：
    - “帮我把 Nodus 接入当前项目，给 Codex 用”
