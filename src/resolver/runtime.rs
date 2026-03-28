@@ -183,6 +183,7 @@ trait ManagedCollisionResolver {
 
 struct TtyManagedCollisionResolver;
 
+#[allow(clippy::too_many_arguments)]
 pub fn sync_in_dir_with_adapters(
     cwd: &Path,
     cache_root: &Path,
@@ -236,6 +237,7 @@ pub fn sync_in_dir_with_adapters_frozen(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn sync_in_dir_with_adapters_dry_run(
     cwd: &Path,
     cache_root: &Path,
