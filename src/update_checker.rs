@@ -946,6 +946,132 @@ mod tests {
             .is_ok_and(|output| output.status.success())
     }
 
+    #[cfg(not(target_os = "windows"))]
+    fn zip_available() -> bool {
+        ProcessCommand::new("zip")
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn python_command() -> Option<&'static str> {
+        ["python3", "python"].into_iter().find(|candidate| {
+            ProcessCommand::new(candidate)
+                .args(["-c", "import sys"])
+                .output()
+                .is_ok_and(|output| output.status.success())
+        })
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn create_zip_archive(asset_root: &Path, asset_path: &Path, files: &[&str]) {
+        if zip_available() {
+            let zip_status = ProcessCommand::new("zip")
+                .arg("-qr")
+                .arg(asset_path)
+                .args(files)
+                .current_dir(asset_root)
+                .status()
+                .unwrap();
+            assert!(zip_status.success());
+            return;
+        }
+
+        if let Some(python) = python_command() {
+            let python_status = ProcessCommand::new(python)
+                .arg("-c")
+                .arg(
+                    "import pathlib, sys, zipfile\nroot = pathlib.Path(sys.argv[1])\nout = pathlib.Path(sys.argv[2])\nfiles = sys.argv[3:]\nwith zipfile.ZipFile(out, 'w', compression=zipfile.ZIP_DEFLATED) as archive:\n    for name in files:\n        archive.write(root / name, arcname=name)\n",
+                )
+                .arg(asset_root)
+                .arg(asset_path)
+                .args(files)
+                .status()
+                .unwrap();
+            assert!(python_status.success());
+            return;
+        }
+
+        assert!(
+            pwsh_available(),
+            "expected one of `zip`, `python3`, `python`, or `pwsh` to be available"
+        );
+
+        let quoted_files = files
+            .iter()
+            .map(|file| format!("'{}'", file.replace('\'', "''")))
+            .collect::<Vec<_>>()
+            .join(",");
+        let compress_cmd = format!(
+            "Compress-Archive -Path {quoted_files} -DestinationPath '{}' -Force",
+            asset_path.to_string_lossy().replace('\'', "''")
+        );
+        let zip_status = ProcessCommand::new("pwsh")
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                &compress_cmd,
+            ])
+            .current_dir(asset_root)
+            .status()
+            .unwrap();
+        assert!(zip_status.success());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn write_fake_unzip(fake_bin: &Path) {
+        fs::write(
+            fake_bin.join("unzip"),
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+archive=''
+destination=''
+quiet=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -q)
+      quiet=1
+      shift
+      ;;
+    -d)
+      destination="$2"
+      shift 2
+      ;;
+    *)
+      archive="$1"
+      shift
+      ;;
+  esac
+done
+python_cmd=''
+for candidate in python3 python; do
+  if command -v "$candidate" >/dev/null 2>&1; then
+    python_cmd="$candidate"
+    break
+  fi
+done
+[ -n "$python_cmd" ] || { printf 'missing python for fake unzip\n' >&2; exit 1; }
+"$python_cmd" - "$archive" "$destination" <<'PY'
+import pathlib, sys, zipfile
+archive = pathlib.Path(sys.argv[1])
+destination = pathlib.Path(sys.argv[2])
+destination.mkdir(parents=True, exist_ok=True)
+with zipfile.ZipFile(archive) as zf:
+    zf.extractall(destination)
+PY
+"#,
+        )
+        .unwrap();
+        let status = ProcessCommand::new("chmod")
+            .args(["+x", fake_bin.join("unzip").to_str().unwrap()])
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
     #[test]
     fn parses_release_tags_with_or_without_a_v_prefix() {
         assert_eq!(
@@ -1581,18 +1707,11 @@ HTTP/2 200 \r\n\
         fs::write(asset_root.join("nodus.exe"), "windows-binary").unwrap();
         fs::write(asset_root.join("README.md"), "readme").unwrap();
         fs::write(asset_root.join("LICENSE"), "license").unwrap();
-        let zip_status = ProcessCommand::new("zip")
-            .args([
-                "-qr",
-                asset_path.to_str().unwrap(),
-                "nodus.exe",
-                "README.md",
-                "LICENSE",
-            ])
-            .current_dir(&asset_root)
-            .status()
-            .unwrap();
-        assert!(zip_status.success());
+        create_zip_archive(
+            &asset_root,
+            &asset_path,
+            &["nodus.exe", "README.md", "LICENSE"],
+        );
 
         fs::write(
             fake_bin.join("uname"),
@@ -1612,6 +1731,7 @@ HTTP/2 200 \r\n\
             "#!/usr/bin/env bash\ncase \"$1\" in\n  -w|-u) printf '%s\\n' \"$2\" ;;\n  *) printf 'unexpected cygpath args: %s\\n' \"$*\" >&2; exit 1 ;;\nesac\n",
         )
         .unwrap();
+        write_fake_unzip(&fake_bin);
         for helper in ["uname", "curl", "cygpath"] {
             let status = ProcessCommand::new("chmod")
                 .args(["+x", fake_bin.join(helper).to_str().unwrap()])
@@ -1674,18 +1794,11 @@ HTTP/2 200 \r\n\
         fs::write(asset_root.join("nodus.exe"), "windows-binary").unwrap();
         fs::write(asset_root.join("README.md"), "readme").unwrap();
         fs::write(asset_root.join("LICENSE"), "license").unwrap();
-        let zip_status = ProcessCommand::new("zip")
-            .args([
-                "-qr",
-                asset_path.to_str().unwrap(),
-                "nodus.exe",
-                "README.md",
-                "LICENSE",
-            ])
-            .current_dir(&asset_root)
-            .status()
-            .unwrap();
-        assert!(zip_status.success());
+        create_zip_archive(
+            &asset_root,
+            &asset_path,
+            &["nodus.exe", "README.md", "LICENSE"],
+        );
 
         fs::write(
             fake_bin.join("uname"),
@@ -1705,6 +1818,7 @@ HTTP/2 200 \r\n\
             "#!/usr/bin/env bash\ncase \"$1\" in\n  -w|-u) printf '%s\\n' \"$2\" ;;\n  *) printf 'unexpected cygpath args: %s\\n' \"$*\" >&2; exit 1 ;;\nesac\n",
         )
         .unwrap();
+        write_fake_unzip(&fake_bin);
         for helper in ["uname", "curl", "cygpath"] {
             let status = ProcessCommand::new("chmod")
                 .args(["+x", fake_bin.join(helper).to_str().unwrap()])
