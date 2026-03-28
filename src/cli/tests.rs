@@ -890,6 +890,13 @@ fn parses_sync_frozen_flag() {
 }
 
 #[test]
+fn rejects_sync_locked_with_frozen() {
+    let error = Cli::try_parse_from(["nodus", "sync", "--locked", "--frozen"]).unwrap_err();
+
+    assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+}
+
+#[test]
 fn parses_repeatable_add_component_flags() {
     let cli = Cli::try_parse_from([
         "nodus",
@@ -1489,7 +1496,7 @@ fn update_dry_run_keeps_manifest_and_lockfile_unchanged() {
 }
 
 #[test]
-fn sync_dry_run_locked_and_frozen_leave_state_unchanged() {
+fn sync_dry_run_locked_and_frozen_modes_leave_state_unchanged() {
     let temp = TempDir::new().unwrap();
     let cache = TempDir::new().unwrap();
     let (_repo, url) = create_git_dependency();

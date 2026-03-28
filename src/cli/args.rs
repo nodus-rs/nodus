@@ -233,10 +233,15 @@ pub(super) enum Command {
     },
     #[command(about = "Resolve dependencies and write managed runtime outputs")]
     Sync {
-        #[arg(long, help = "Fail if nodus.lock would change")]
+        #[arg(
+            long,
+            conflicts_with = "frozen",
+            help = "Fail if nodus.lock would change"
+        )]
         locked: bool,
         #[arg(
             long,
+            conflicts_with = "locked",
             help = "Install exact Git revisions from nodus.lock and fail if the lockfile is missing or stale"
         )]
         frozen: bool,
