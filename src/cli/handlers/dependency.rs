@@ -15,6 +15,7 @@ pub(crate) struct AddCommand {
     pub(crate) adapter: Vec<Adapter>,
     pub(crate) component: Vec<DependencyComponent>,
     pub(crate) sync_on_launch: bool,
+    pub(crate) accept_all_dependencies: bool,
     pub(crate) dry_run: bool,
 }
 
@@ -30,6 +31,7 @@ pub(crate) fn handle_add(context: &CommandContext<'_>, command: AddCommand) -> a
         adapter,
         component,
         sync_on_launch,
+        accept_all_dependencies,
         dry_run,
     } = command;
     if global && sync_on_launch {
@@ -54,6 +56,7 @@ pub(crate) fn handle_add(context: &CommandContext<'_>, command: AddCommand) -> a
         adapters: &adapter,
         components: &component,
         sync_on_launch,
+        accept_all_dependencies,
     };
     let summary = if dry_run {
         crate::git::add_dependency_at_paths_with_adapters_dry_run(
@@ -72,17 +75,17 @@ pub(crate) fn handle_add(context: &CommandContext<'_>, command: AddCommand) -> a
             context.reporter,
         )?
     };
-    if !summary.workspace_members.is_empty() {
+    if !summary.dependency_members.is_empty() {
         let intro = if dry_run {
-            "workspace dependency preview:"
+            "dependency child selection:"
         } else {
-            "workspace dependency members:"
+            "dependency child packages:"
         };
         context.reporter.line(intro)?;
         context
             .reporter
             .line(format!("  config: {}", summary.dependency_preview))?;
-        for member in &summary.workspace_members {
+        for member in &summary.dependency_members {
             let status = if member.enabled {
                 "enabled"
             } else {
@@ -91,6 +94,18 @@ pub(crate) fn handle_add(context: &CommandContext<'_>, command: AddCommand) -> a
             context
                 .reporter
                 .line(format!("  {} ({status})", member.id))?;
+        }
+        if summary
+            .dependency_members
+            .iter()
+            .all(|member| !member.enabled)
+        {
+            let message = if dry_run {
+                "multiple child packages were detected; Nodus would record the wrapper only. Edit `members` after install or rerun with `--accept-all-dependencies` to enable every child package."
+            } else {
+                "multiple child packages were detected; Nodus recorded the wrapper only. Edit `members` in `nodus.toml` to enable the child packages you want."
+            };
+            context.reporter.note(message)?;
         }
     }
     let message = if dry_run {

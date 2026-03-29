@@ -928,6 +928,19 @@ fn package_dependency_aliases(
         .map(|entry| entry.alias.to_string())
         .collect();
 
+    if package_role == PackageRole::Dependency
+        && package.manifest.manifest.workspace.is_none()
+        && package.manifest.discovered.is_empty()
+    {
+        let selected = package
+            .selected_workspace_members
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .collect::<HashSet<_>>();
+        dependencies.retain(|alias| selected.contains(alias));
+    }
+
     let workspace_members = package.manifest.resolved_workspace_members()?;
     if !workspace_members.is_empty() {
         let selected = match &package.selected_workspace_members {

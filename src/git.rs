@@ -38,7 +38,7 @@ pub struct AddSummary {
     pub adapters: Vec<Adapter>,
     pub managed_file_count: usize,
     pub dependency_preview: String,
-    pub workspace_members: Vec<WorkspaceMemberStatus>,
+    pub dependency_members: Vec<DependencyMemberStatus>,
 }
 
 #[derive(Debug, Clone)]
@@ -49,7 +49,7 @@ pub struct RemoveSummary {
 }
 
 #[derive(Debug, Clone)]
-pub struct WorkspaceMemberStatus {
+pub struct DependencyMemberStatus {
     pub id: String,
     pub enabled: bool,
 }
@@ -62,6 +62,7 @@ pub struct AddDependencyOptions<'a> {
     pub adapters: &'a [Adapter],
     pub components: &'a [DependencyComponent],
     pub sync_on_launch: bool,
+    pub accept_all_dependencies: bool,
 }
 
 impl GitCheckout {
@@ -71,6 +72,51 @@ impl GitCheckout {
             .or_else(|| self.branch.clone())
             .unwrap_or_else(|| self.rev.clone())
     }
+}
+
+fn selectable_dependency_members(
+    dependency_manifest: &crate::manifest::LoadedManifest,
+) -> Result<Vec<String>> {
+    let workspace_members = dependency_manifest.resolved_workspace_members()?;
+    if !workspace_members.is_empty() {
+        return Ok(workspace_members
+            .into_iter()
+            .map(|member| member.id)
+            .collect());
+    }
+
+    if dependency_manifest.discovered.is_empty() {
+        let wrapper_dependencies = dependency_manifest
+            .manifest
+            .active_dependency_entries_for_role(PackageRole::Dependency)
+            .into_iter()
+            .map(|entry| entry.alias.to_string())
+            .collect::<Vec<_>>();
+        if !wrapper_dependencies.is_empty() {
+            return Ok(wrapper_dependencies);
+        }
+    }
+
+    Ok(Vec::new())
+}
+
+fn resolve_dependency_member_statuses(
+    member_ids: Vec<String>,
+    accept_all_dependencies: bool,
+) -> Vec<DependencyMemberStatus> {
+    let enable_all = match member_ids.len() {
+        0 => false,
+        1 => true,
+        _ => accept_all_dependencies,
+    };
+
+    member_ids
+        .into_iter()
+        .map(|id| DependencyMemberStatus {
+            id,
+            enabled: enable_all,
+        })
+        .collect()
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -160,14 +206,10 @@ fn add_dependency_at_paths_with_adapters_mode(
     let github = github_slug_from_url(&checkout.url);
     let dependency_manifest = load_dependency_from_dir(&checkout.path)
         .with_context(|| format!("dependency `{alias}` does not match the Nodus package layout"))?;
-    let workspace_members = dependency_manifest
-        .resolved_workspace_members()?
-        .into_iter()
-        .map(|member| WorkspaceMemberStatus {
-            id: member.id,
-            enabled: true,
-        })
-        .collect::<Vec<_>>();
+    let dependency_members = resolve_dependency_member_statuses(
+        selectable_dependency_members(&dependency_manifest)?,
+        options.accept_all_dependencies,
+    );
 
     let mut root = load_root_from_dir_allow_missing(&install_paths.config_root)?;
     if root.manifest.contains_dependency_alias(&alias) {
@@ -206,12 +248,16 @@ fn add_dependency_at_paths_with_adapters_mode(
             sorted.dedup();
             sorted
         }),
-        members: (!workspace_members.is_empty()).then(|| {
-            workspace_members
-                .iter()
-                .map(|member| member.id.clone())
-                .collect::<Vec<_>>()
-        }),
+        members: dependency_members
+            .iter()
+            .any(|member| member.enabled)
+            .then(|| {
+                dependency_members
+                    .iter()
+                    .filter(|member| member.enabled)
+                    .map(|member| member.id.clone())
+                    .collect::<Vec<_>>()
+            }),
         managed: None,
         enabled: true,
     };
@@ -263,7 +309,7 @@ fn add_dependency_at_paths_with_adapters_mode(
         adapters: sync_summary.adapters,
         managed_file_count: sync_summary.managed_file_count,
         dependency_preview,
-        workspace_members,
+        dependency_members,
     })
 }
 

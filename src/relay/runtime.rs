@@ -1797,6 +1797,7 @@ mod tests {
                 adapters,
                 components: &[],
                 sync_on_launch: false,
+                accept_all_dependencies: false,
             },
             &reporter,
         )
@@ -3138,6 +3139,7 @@ tag = "v0.2.0"
                 adapters: &[Adapter::Claude],
                 components: &[],
                 sync_on_launch: false,
+                accept_all_dependencies: false,
             },
             &reporter,
         )

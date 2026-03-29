@@ -259,6 +259,26 @@ authentication = "ON_INSTALL"
     write_skill(&path.join("plugins/firebase/skills/checks"), "Checks");
 }
 
+fn write_single_workspace_dependency(path: &Path) {
+    write_manifest(
+        path,
+        r#"
+[workspace]
+members = ["plugins/axiom"]
+
+[workspace.package.axiom]
+path = "plugins/axiom"
+name = "Axiom"
+
+[workspace.package.axiom.codex]
+category = "Productivity"
+installation = "AVAILABLE"
+authentication = "ON_INSTALL"
+"#,
+    );
+    write_skill(&path.join("plugins/axiom/skills/review"), "Review");
+}
+
 fn tag_repo(path: &Path, tag: &str) {
     run_git(path, &["tag", tag]);
 }
@@ -480,6 +500,26 @@ fn add_dependency_in_dir_with_adapters(
     adapters: &[Adapter],
     components: &[DependencyComponent],
 ) -> Result<AddSummary> {
+    add_dependency_in_dir_with_adapters_accept_all(
+        project_root,
+        cache_root,
+        url,
+        tag,
+        adapters,
+        components,
+        false,
+    )
+}
+
+fn add_dependency_in_dir_with_adapters_accept_all(
+    project_root: &Path,
+    cache_root: &Path,
+    url: &str,
+    tag: Option<&str>,
+    adapters: &[Adapter],
+    components: &[DependencyComponent],
+    accept_all_dependencies: bool,
+) -> Result<AddSummary> {
     let reporter = Reporter::silent();
     add_dependency_in_dir_with_adapters_impl(
         project_root,
@@ -492,6 +532,7 @@ fn add_dependency_in_dir_with_adapters(
             adapters,
             components,
             sync_on_launch: false,
+            accept_all_dependencies,
         },
         &reporter,
     )
@@ -517,6 +558,7 @@ fn add_dependency_in_dir_with_git_ref(
             adapters,
             components,
             sync_on_launch: false,
+            accept_all_dependencies: false,
         },
         &reporter,
     )
@@ -792,7 +834,7 @@ fn resolve_workspace_root_includes_all_members() {
 }
 
 #[test]
-fn add_dependency_writes_all_workspace_members_to_manifest() {
+fn add_dependency_leaves_multi_workspace_members_disabled_by_default() {
     let project = TempDir::new().unwrap();
     let cache = cache_dir();
     let repo = create_workspace_dependency();
@@ -809,7 +851,84 @@ fn add_dependency_writes_all_workspace_members_to_manifest() {
 
     assert_eq!(
         summary
-            .workspace_members
+            .dependency_members
+            .iter()
+            .map(|member| (member.id.as_str(), member.enabled))
+            .collect::<Vec<_>>(),
+        vec![("axiom", false), ("firebase", false)]
+    );
+    assert!(!summary.dependency_preview.contains("members = ["));
+
+    let loaded = load_root_from_dir(project.path()).unwrap();
+    let dependency = loaded
+        .manifest
+        .dependencies
+        .get(&normalize_alias_from_url(&repo.path().to_string_lossy()).unwrap())
+        .unwrap();
+    assert!(dependency.members.is_none());
+}
+
+#[test]
+fn add_dependency_auto_enables_single_workspace_member() {
+    let project = TempDir::new().unwrap();
+    let cache = cache_dir();
+    let repo = TempDir::new().unwrap();
+    write_single_workspace_dependency(repo.path());
+    init_git_repo(repo.path());
+    tag_repo(repo.path(), "v0.2.0");
+
+    let summary = add_dependency_in_dir_with_adapters(
+        project.path(),
+        cache.path(),
+        &repo.path().to_string_lossy(),
+        Some("v0.2.0"),
+        &Adapter::ALL,
+        &[],
+    )
+    .unwrap();
+
+    assert_eq!(
+        summary
+            .dependency_members
+            .iter()
+            .map(|member| (member.id.as_str(), member.enabled))
+            .collect::<Vec<_>>(),
+        vec![("axiom", true)]
+    );
+    assert!(summary.dependency_preview.contains("members = [\"axiom\"]"));
+
+    let loaded = load_root_from_dir(project.path()).unwrap();
+    let dependency = loaded
+        .manifest
+        .dependencies
+        .get(&normalize_alias_from_url(&repo.path().to_string_lossy()).unwrap())
+        .unwrap();
+    assert_eq!(
+        dependency.members.as_deref(),
+        Some(&["axiom".to_string()][..])
+    );
+}
+
+#[test]
+fn add_dependency_accepts_all_workspace_members_when_requested() {
+    let project = TempDir::new().unwrap();
+    let cache = cache_dir();
+    let repo = create_workspace_dependency();
+
+    let summary = add_dependency_in_dir_with_adapters_accept_all(
+        project.path(),
+        cache.path(),
+        &repo.path().to_string_lossy(),
+        Some("v0.2.0"),
+        &Adapter::ALL,
+        &[],
+        true,
+    )
+    .unwrap();
+
+    assert_eq!(
+        summary
+            .dependency_members
             .iter()
             .map(|member| (member.id.as_str(), member.enabled))
             .collect::<Vec<_>>(),
@@ -830,6 +949,78 @@ fn add_dependency_writes_all_workspace_members_to_manifest() {
     assert_eq!(
         dependency.members.as_deref(),
         Some(&["axiom".to_string(), "firebase".to_string()][..])
+    );
+}
+
+#[test]
+fn add_dependency_leaves_multi_marketplace_plugins_disabled_by_default() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+
+    let wrapper = TempDir::new().unwrap();
+    write_marketplace(
+        wrapper.path(),
+        r#"{
+  "plugins": [
+    {
+      "name": "Axiom",
+      "source": "./plugins/axiom"
+    },
+    {
+      "name": "Firebase",
+      "source": "./plugins/firebase"
+    }
+  ]
+}"#,
+    );
+    write_skill(
+        &wrapper.path().join("plugins/axiom/skills/review"),
+        "Review",
+    );
+    write_skill(
+        &wrapper.path().join("plugins/firebase/skills/checks"),
+        "Checks",
+    );
+    init_git_repo(wrapper.path());
+    rename_current_branch(wrapper.path(), "main");
+    let wrapper_alias = normalize_alias_from_url(&wrapper.path().to_string_lossy()).unwrap();
+
+    let summary = add_dependency_in_dir_with_adapters(
+        temp.path(),
+        cache.path(),
+        &wrapper.path().to_string_lossy(),
+        None,
+        &Adapter::ALL,
+        &[],
+    )
+    .unwrap();
+
+    assert_eq!(
+        summary
+            .dependency_members
+            .iter()
+            .map(|member| (member.id.as_str(), member.enabled))
+            .collect::<Vec<_>>(),
+        vec![("axiom", false), ("firebase", false)]
+    );
+    assert!(!summary.dependency_preview.contains("members = ["));
+
+    let manifest = load_root_from_dir(temp.path()).unwrap();
+    let dependency = manifest.manifest.dependencies.get(&wrapper_alias).unwrap();
+    assert!(dependency.members.is_none());
+
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    let wrapper_package = lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == wrapper_alias)
+        .unwrap();
+    assert!(wrapper_package.dependencies.is_empty());
+    assert!(
+        !lockfile
+            .packages
+            .iter()
+            .any(|package| package.alias == "axiom" || package.alias == "firebase")
     );
 }
 
@@ -1663,7 +1854,7 @@ fn add_dependency_accepts_claude_marketplace_wrapper_with_hook_only_plugin_sourc
 }
 
 #[test]
-fn add_dependency_accepts_claude_marketplace_remote_sources_and_syncs_contents() {
+fn add_dependency_accepts_all_claude_marketplace_remote_sources_and_syncs_contents() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();
 
@@ -1709,13 +1900,14 @@ fn add_dependency_accepts_claude_marketplace_remote_sources_and_syncs_contents()
     init_git_repo(wrapper.path());
     rename_current_branch(wrapper.path(), "main");
 
-    add_dependency_in_dir_with_adapters(
+    add_dependency_in_dir_with_adapters_accept_all(
         temp.path(),
         cache.path(),
         &wrapper.path().to_string_lossy(),
         None,
         &Adapter::ALL,
         &[],
+        true,
     )
     .unwrap();
 
@@ -2053,7 +2245,7 @@ fn consumed_packages_do_not_export_dev_dependencies() {
         &temp.path().join(MANIFEST_FILE),
         r#"
 [dependencies]
-wrapper = { path = "vendor/wrapper" }
+wrapper = { path = "vendor/wrapper", members = ["shared"] }
 "#,
     );
     write_file(
@@ -2199,6 +2391,7 @@ fn global_add_installs_to_all_detected_supported_adapters() {
             adapters: &[],
             components: &[],
             sync_on_launch: false,
+            accept_all_dependencies: false,
         },
         &reporter,
     )
@@ -2267,6 +2460,7 @@ fn global_remove_prunes_home_scoped_outputs() {
             adapters: &[],
             components: &[],
             sync_on_launch: false,
+            accept_all_dependencies: false,
         },
         &reporter,
     )
@@ -2319,6 +2513,7 @@ fn global_add_requires_supported_detected_adapters_when_none_are_explicit() {
             adapters: &[],
             components: &[],
             sync_on_launch: false,
+            accept_all_dependencies: false,
         },
         &reporter,
     )
@@ -2354,6 +2549,7 @@ fn global_add_rejects_sync_on_launch() {
             adapters: &[],
             components: &[],
             sync_on_launch: true,
+            accept_all_dependencies: false,
         },
         &reporter,
     )

@@ -28,6 +28,7 @@ pub(super) fn run_command_in_dir(
             adapter,
             component,
             sync_on_launch,
+            accept_all_dependencies,
             dry_run,
         } => dependency::handle_add(
             &context,
@@ -42,6 +43,7 @@ pub(super) fn run_command_in_dir(
                 adapter,
                 component,
                 sync_on_launch,
+                accept_all_dependencies,
                 dry_run,
             },
         ),

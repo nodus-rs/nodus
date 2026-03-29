@@ -31,12 +31,13 @@ const ADD_LONG_ABOUT: &str = r#"Add a package to the current repo and immediatel
   - a full Git URL
   - a local path
 
-By default Nodus installs the whole package. Only narrow it with `--component` when you know you want just part of the package."#;
+By default Nodus installs the whole package. Wrapper packages that expose multiple child packages are added with no child packages enabled until you select `members` manually or pass `--accept-all-dependencies`."#;
 
 const ADD_AFTER_LONG_HELP: &str = r#"Examples:
   nodus add nodus-rs/nodus --adapter codex
   nodus add ./vendor/playbook --adapter claude
   nodus add owner/repo --tag v1.2.3 --adapter codex
+  nodus add owner/marketplace --accept-all-dependencies --adapter codex
   nodus add owner/repo --global --adapter codex
 
 After a project-scoped install, run `nodus doctor` to confirm the repo is consistent."#;
@@ -207,6 +208,11 @@ pub(super) enum Command {
             help = "Persist project startup hooks so supported tools run `nodus sync` when they open this repository"
         )]
         sync_on_launch: bool,
+        #[arg(
+            long = "accept-all-dependencies",
+            help = "Enable every child package exposed by a workspace or marketplace wrapper instead of leaving multi-package wrappers disabled by default"
+        )]
+        accept_all_dependencies: bool,
         #[arg(
             long = "dry-run",
             help = "Preview project changes without writing to the project or linked repo; may still populate the shared store to compute the result"

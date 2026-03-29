@@ -237,18 +237,25 @@ fn resolve_package(
         &package_managed_paths,
     )?;
 
-    let dependencies = manifest
-        .manifest
-        .active_dependency_entries_for_role(role)
-        .into_iter()
-        .map(|entry| (entry.alias.to_string(), entry.spec.clone()))
-        .chain(workspace_member_dependencies(
-            &manifest,
-            role,
-            selected_workspace_members.clone(),
-        )?)
-        .map(|(alias, spec)| resolve_dependency(&manifest, role, &alias, &spec, context, state))
-        .collect::<Result<Vec<_>>>()?;
+    if role == PackageRole::Dependency
+        && selected_workspace_members.is_some()
+        && !supports_dependency_member_selection(&manifest)?
+    {
+        bail!(
+            "dependency `{alias}` field `members` is supported only for workspace dependencies and dependency wrappers"
+        );
+    }
+
+    let dependencies =
+        selected_declared_dependencies(&manifest, role, selected_workspace_members.clone())?
+            .into_iter()
+            .chain(workspace_member_dependencies(
+                &manifest,
+                role,
+                selected_workspace_members.clone(),
+            )?)
+            .map(|(alias, spec)| resolve_dependency(&manifest, role, &alias, &spec, context, state))
+            .collect::<Result<Vec<_>>>()?;
 
     let digest = compute_package_digest(&manifest, &extra_package_files)?;
     let resolved = ResolvedPackage {
@@ -294,11 +301,6 @@ fn resolve_dependency(
                 tag: dependency.tag.clone(),
             };
             let dependency_manifest = load_dependency_from_dir(&dependency_root)?;
-            if dependency_manifest.manifest.workspace.is_none() && dependency.members.is_some() {
-                bail!(
-                    "dependency `{alias}` field `members` is supported only for workspace dependencies"
-                );
-            }
             let (incoming_managed_paths, extra_package_files, managed_migration) =
                 resolve_incoming_managed_paths(
                     parent_role,
@@ -371,11 +373,6 @@ fn resolve_dependency(
                 rev: checkout.rev,
             };
             let dependency_manifest = load_dependency_from_dir(&dependency_root)?;
-            if dependency_manifest.manifest.workspace.is_none() && dependency.members.is_some() {
-                bail!(
-                    "dependency `{alias}` field `members` is supported only for workspace dependencies"
-                );
-            }
             let (incoming_managed_paths, extra_package_files, managed_migration) =
                 resolve_incoming_managed_paths(
                     parent_role,
@@ -550,6 +547,59 @@ fn union_selected_workspace_members(
             Some(left)
         }
     }
+}
+
+fn supports_dependency_member_selection(manifest: &LoadedManifest) -> Result<bool> {
+    if !manifest.resolved_workspace_members()?.is_empty() {
+        return Ok(true);
+    }
+
+    Ok(manifest.manifest.workspace.is_none()
+        && manifest.discovered.is_empty()
+        && !manifest
+            .manifest
+            .active_dependency_entries_for_role(PackageRole::Dependency)
+            .is_empty())
+}
+
+fn selected_declared_dependencies(
+    manifest: &LoadedManifest,
+    role: PackageRole,
+    selected_members: Option<Vec<String>>,
+) -> Result<Vec<(String, DependencySpec)>> {
+    let dependencies = manifest
+        .manifest
+        .active_dependency_entries_for_role(role)
+        .into_iter()
+        .map(|entry| (entry.alias.to_string(), entry.spec.clone()))
+        .collect::<Vec<_>>();
+    if dependencies.is_empty()
+        || role == PackageRole::Root
+        || manifest.manifest.workspace.is_some()
+        || !manifest.discovered.is_empty()
+    {
+        return Ok(dependencies);
+    }
+
+    let requested = selected_members.unwrap_or_default();
+    let available = dependencies
+        .iter()
+        .map(|(alias, _)| alias.as_str())
+        .collect::<HashSet<_>>();
+    for member in &requested {
+        if !available.contains(member.as_str()) {
+            bail!(
+                "wrapper dependency selects unknown member `{member}` in {}",
+                manifest.root.display()
+            );
+        }
+    }
+
+    let selected = requested.into_iter().collect::<HashSet<_>>();
+    Ok(dependencies
+        .into_iter()
+        .filter(|(alias, _)| selected.contains(alias.as_str()))
+        .collect())
 }
 
 fn workspace_member_dependencies(

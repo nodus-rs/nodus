@@ -570,6 +570,7 @@ mod tests {
                 adapters: &[Adapter::Codex],
                 components: &[],
                 sync_on_launch: false,
+                accept_all_dependencies: false,
             },
             &reporter,
         )
@@ -604,6 +605,7 @@ mod tests {
                 adapters: &[Adapter::Codex],
                 components: &[],
                 sync_on_launch: false,
+                accept_all_dependencies: false,
             },
             &reporter,
         )
@@ -639,6 +641,7 @@ mod tests {
                 adapters: &[Adapter::Codex],
                 components: &[],
                 sync_on_launch: false,
+                accept_all_dependencies: false,
             },
             &reporter,
         )
@@ -676,6 +679,7 @@ mod tests {
                 adapters: &[Adapter::Codex],
                 components: &[],
                 sync_on_launch: false,
+                accept_all_dependencies: false,
             },
             &reporter,
         )
@@ -713,6 +717,7 @@ mod tests {
                 adapters: &[Adapter::Codex],
                 components: &[],
                 sync_on_launch: false,
+                accept_all_dependencies: false,
             },
             &reporter,
         )
@@ -750,6 +755,7 @@ mod tests {
                 adapters: &[Adapter::Codex],
                 components: &[],
                 sync_on_launch: false,
+                accept_all_dependencies: false,
             },
             &reporter,
         )

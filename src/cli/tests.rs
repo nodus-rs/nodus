@@ -733,6 +733,7 @@ fn list_command_emits_json_with_locked_metadata() {
             adapter: vec![Adapter::Codex],
             component: vec![],
             sync_on_launch: false,
+            accept_all_dependencies: false,
             dry_run: false,
         },
         temp.path(),
@@ -863,6 +864,7 @@ fn list_command_emits_version_requested_ref_for_semver_dependencies() {
             adapter: vec![Adapter::Codex],
             component: vec![],
             sync_on_launch: false,
+            accept_all_dependencies: false,
             dry_run: false,
         },
         temp.path(),
@@ -981,6 +983,20 @@ fn parses_sync_on_launch_flags() {
     match sync.command {
         Command::Sync { sync_on_launch, .. } => assert!(sync_on_launch),
         other => panic!("expected sync command, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_accept_all_dependencies_flag() {
+    let cli =
+        Cli::try_parse_from(["nodus", "add", "example/repo", "--accept-all-dependencies"]).unwrap();
+
+    match cli.command {
+        Command::Add {
+            accept_all_dependencies,
+            ..
+        } => assert!(accept_all_dependencies),
+        other => panic!("expected add command, got {other:?}"),
     }
 }
 
@@ -1180,6 +1196,7 @@ fn add_command_emits_resolving_and_adding_lines() {
             adapter: vec![Adapter::Claude],
             component: vec![],
             sync_on_launch: false,
+            accept_all_dependencies: false,
             dry_run: false,
         },
         temp.path(),
@@ -1222,6 +1239,7 @@ fn info_command_renders_version_requirement_for_semver_dependencies() {
             adapter: vec![Adapter::Claude],
             component: vec![],
             sync_on_launch: false,
+            accept_all_dependencies: false,
             dry_run: false,
         },
         temp.path(),
@@ -1271,6 +1289,7 @@ fn add_dry_run_previews_without_writing_project_files() {
             adapter: vec![Adapter::Claude],
             component: vec![],
             sync_on_launch: false,
+            accept_all_dependencies: false,
             dry_run: true,
         },
         temp.path(),
@@ -1285,7 +1304,7 @@ fn add_dry_run_previews_without_writing_project_files() {
 }
 
 #[test]
-fn add_dry_run_previews_workspace_members_and_config() {
+fn add_dry_run_previews_dependency_members_and_config() {
     let temp = TempDir::new().unwrap();
     let cache = TempDir::new().unwrap();
     let (_repo, url) = create_workspace_dependency();
@@ -1302,17 +1321,19 @@ fn add_dry_run_previews_workspace_members_and_config() {
             adapter: vec![Adapter::Claude],
             component: vec![],
             sync_on_launch: false,
+            accept_all_dependencies: false,
             dry_run: true,
         },
         temp.path(),
         cache.path(),
     );
 
-    assert!(output.contains("workspace dependency preview:"));
+    assert!(output.contains("dependency child selection:"));
     assert!(output.contains("config:"));
-    assert!(output.contains("members = [\"axiom\", \"firebase\"]"));
-    assert!(output.contains("axiom (enabled)"));
-    assert!(output.contains("firebase (enabled)"));
+    assert!(!output.contains("members = [\"axiom\", \"firebase\"]"));
+    assert!(output.contains("axiom (disabled)"));
+    assert!(output.contains("firebase (disabled)"));
+    assert!(output.contains("multiple child packages were detected"));
 }
 
 #[test]
@@ -1449,6 +1470,7 @@ fn outdated_command_emits_json_without_status_lines() {
             adapter: vec![Adapter::Codex],
             component: vec![],
             sync_on_launch: false,
+            accept_all_dependencies: false,
             dry_run: false,
         },
         temp.path(),
@@ -1494,6 +1516,7 @@ fn update_command_emits_updating_and_finished_lines() {
             adapter: vec![Adapter::Codex],
             component: vec![],
             sync_on_launch: false,
+            accept_all_dependencies: false,
             dry_run: false,
         },
         temp.path(),
@@ -1534,6 +1557,7 @@ fn remove_dry_run_keeps_manifest_and_lockfile_unchanged() {
             adapter: vec![Adapter::Claude],
             component: vec![],
             sync_on_launch: false,
+            accept_all_dependencies: false,
             dry_run: false,
         },
         temp.path(),
@@ -1592,6 +1616,7 @@ fn update_dry_run_keeps_manifest_and_lockfile_unchanged() {
             adapter: vec![Adapter::Codex],
             component: vec![],
             sync_on_launch: false,
+            accept_all_dependencies: false,
             dry_run: false,
         },
         temp.path(),
@@ -1652,6 +1677,7 @@ fn sync_dry_run_locked_and_frozen_modes_leave_state_unchanged() {
             adapter: vec![Adapter::Claude],
             component: vec![],
             sync_on_launch: false,
+            accept_all_dependencies: false,
             dry_run: false,
         },
         temp.path(),
@@ -1731,6 +1757,7 @@ fn relay_dry_run_does_not_persist_local_config_or_repo_edits() {
             adapter: vec![Adapter::Claude],
             component: vec![],
             sync_on_launch: false,
+            accept_all_dependencies: false,
             dry_run: false,
         },
         temp.path(),
@@ -1805,6 +1832,7 @@ fn relay_dry_run_previews_state_only_local_config_changes() {
             adapter: vec![Adapter::Claude],
             component: vec![],
             sync_on_launch: false,
+            accept_all_dependencies: false,
             dry_run: false,
         },
         temp.path(),
@@ -1952,6 +1980,7 @@ fn relay_supports_multiple_dependencies_in_one_command() {
             adapter: vec![Adapter::Claude],
             component: vec![],
             sync_on_launch: false,
+            accept_all_dependencies: false,
             dry_run: false,
         },
         temp.path(),
@@ -1979,6 +2008,7 @@ fn relay_supports_multiple_dependencies_in_one_command() {
             adapter: vec![Adapter::Claude],
             component: vec![],
             sync_on_launch: false,
+            accept_all_dependencies: false,
             dry_run: false,
         },
         temp.path(),
