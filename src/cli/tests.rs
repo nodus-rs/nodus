@@ -624,7 +624,11 @@ fn doctor_help_describes_when_to_run_it() {
         .to_string();
 
     assert!(help.contains("Validate that `nodus.toml`, `nodus.lock`, the shared store"));
-    assert!(help.contains("Run this after `nodus add`, `nodus sync`, `nodus update`, or `nodus remove`"));
+    assert!(
+        help.contains(
+            "Run this after `nodus add`, `nodus sync`, `nodus update`, or `nodus remove`"
+        )
+    );
     assert!(help.contains("nodus doctor --json"));
 }
 
