@@ -1232,35 +1232,37 @@ fn serializes_content_roots_and_publish_root() {
 
 #[test]
 fn serializes_workspace_and_dependency_members() {
-    let mut manifest = Manifest::default();
-    manifest.workspace = Some(WorkspaceConfig {
-        members: vec![
-            PathBuf::from("plugins/axiom"),
-            PathBuf::from("plugins/firebase"),
-        ],
-        package: BTreeMap::from([
-            (
-                "axiom".into(),
-                WorkspaceMemberSpec {
-                    path: PathBuf::from("plugins/axiom"),
-                    name: Some("Axiom".into()),
-                    codex: Some(WorkspaceMemberCodexSpec {
-                        category: "Productivity".into(),
-                        installation: "AVAILABLE".into(),
-                        authentication: "ON_INSTALL".into(),
-                    }),
-                },
-            ),
-            (
-                "firebase".into(),
-                WorkspaceMemberSpec {
-                    path: PathBuf::from("plugins/firebase"),
-                    name: Some("Firebase".into()),
-                    codex: None,
-                },
-            ),
-        ]),
-    });
+    let mut manifest = Manifest {
+        workspace: Some(WorkspaceConfig {
+            members: vec![
+                PathBuf::from("plugins/axiom"),
+                PathBuf::from("plugins/firebase"),
+            ],
+            package: BTreeMap::from([
+                (
+                    "axiom".into(),
+                    WorkspaceMemberSpec {
+                        path: PathBuf::from("plugins/axiom"),
+                        name: Some("Axiom".into()),
+                        codex: Some(WorkspaceMemberCodexSpec {
+                            category: "Productivity".into(),
+                            installation: "AVAILABLE".into(),
+                            authentication: "ON_INSTALL".into(),
+                        }),
+                    },
+                ),
+                (
+                    "firebase".into(),
+                    WorkspaceMemberSpec {
+                        path: PathBuf::from("plugins/firebase"),
+                        name: Some("Firebase".into()),
+                        codex: None,
+                    },
+                ),
+            ]),
+        }),
+        ..Manifest::default()
+    };
     manifest.dependencies.insert(
         "bundle".into(),
         DependencySpec {

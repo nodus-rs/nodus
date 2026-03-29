@@ -89,6 +89,14 @@ struct PackageWorkspaceMember {
     enabled: bool,
 }
 
+struct PackageInfoContext {
+    enabled: bool,
+    selected_components: Option<Vec<DependencyComponent>>,
+    selected_workspace_members: Option<Vec<String>>,
+    version_requirement: Option<String>,
+    role: PackageRole,
+}
+
 #[derive(Debug, Default, Deserialize)]
 struct CargoManifest {
     #[serde(default)]
@@ -199,11 +207,13 @@ fn load_package_info(
                 path: package_root,
                 tag: None,
             },
-            true,
-            None,
-            None,
-            None,
-            role,
+            PackageInfoContext {
+                enabled: true,
+                selected_components: None,
+                selected_workspace_members: None,
+                version_requirement: None,
+                role,
+            },
         ));
     }
 
@@ -233,11 +243,13 @@ fn load_package_info(
             branch: checkout.branch,
             rev: checkout.rev,
         },
-        true,
-        None,
-        None,
-        None,
-        role,
+        PackageInfoContext {
+            enabled: true,
+            selected_components: None,
+            selected_workspace_members: None,
+            version_requirement: None,
+            role,
+        },
     ))
 }
 
@@ -285,11 +297,13 @@ fn load_from_dependency_spec(
         target.alias,
         target.manifest,
         source,
-        target.enabled,
-        target.selected_components,
-        target.selected_workspace_members,
-        target.version_requirement,
-        target.role,
+        PackageInfoContext {
+            enabled: target.enabled,
+            selected_components: target.selected_components,
+            selected_workspace_members: target.selected_workspace_members,
+            version_requirement: target.version_requirement,
+            role: target.role,
+        },
     ))
 }
 
@@ -301,12 +315,15 @@ fn package_info_from_loaded(
     alias: String,
     manifest: LoadedManifest,
     source: PackageInfoSource,
-    enabled: bool,
-    selected_components: Option<Vec<DependencyComponent>>,
-    selected_workspace_members: Option<Vec<String>>,
-    version_requirement: Option<String>,
-    role: PackageRole,
+    context: PackageInfoContext,
 ) -> PackageInfo {
+    let PackageInfoContext {
+        enabled,
+        selected_components,
+        selected_workspace_members,
+        version_requirement,
+        role,
+    } = context;
     let mut warnings = manifest.warnings.clone();
     let cargo_metadata = load_cargo_metadata(&manifest.root, &mut warnings);
     let mut adapters = manifest
