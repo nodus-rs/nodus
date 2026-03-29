@@ -758,8 +758,7 @@ fn discover_skills(root: &Path, discovery_root: &Path) -> Result<Vec<SkillEntry>
         if should_ignore_discovery_entry(&entry.path()) {
             continue;
         }
-        let file_type = entry.file_type()?;
-        if !file_type.is_dir() {
+        if !entry.path().is_dir() {
             bail!(
                 "`{}` entries must be directories",
                 skills_relative_root.display()

@@ -892,16 +892,27 @@ impl PackageContents {
     pub fn files(&self, package: &LoadedManifest) -> Result<Vec<PathBuf>> {
         let mut files = Vec::new();
         for skill in &self.skills {
-            files.extend(collect_files(&package.resolve_existing_path(&skill.path)?)?);
+            let logical_root = package.root.join(&skill.path);
+            let resolved_root = package.resolve_existing_path(&skill.path)?;
+            for file in collect_files(&resolved_root)? {
+                let relative = file.strip_prefix(&resolved_root).with_context(|| {
+                    format!(
+                        "failed to make {} relative to {}",
+                        file.display(),
+                        resolved_root.display()
+                    )
+                })?;
+                files.push(logical_root.join(relative));
+            }
         }
         for agent in &self.agents {
-            files.push(package.resolve_existing_path(&agent.path)?);
+            files.push(package.root.join(&agent.path));
         }
         for rule in &self.rules {
-            files.push(package.resolve_existing_path(&rule.path)?);
+            files.push(package.root.join(&rule.path));
         }
         for command in &self.commands {
-            files.push(package.resolve_existing_path(&command.path)?);
+            files.push(package.root.join(&command.path));
         }
         files.sort();
         files.dedup();

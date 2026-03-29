@@ -27,6 +27,44 @@ fn write_file(path: &Path, contents: &str) {
     file.write_all(contents.as_bytes()).unwrap();
 }
 
+#[cfg(unix)]
+fn create_directory_symlink_impl(target: &Path, link: &Path) -> io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(windows)]
+fn create_directory_symlink_impl(target: &Path, link: &Path) -> io::Result<()> {
+    std::os::windows::fs::symlink_dir(target, link)
+}
+
+fn create_directory_symlink(target: &Path, link: &Path) -> bool {
+    if let Some(parent) = link.parent() {
+        fs::create_dir_all(parent).unwrap();
+    }
+    match create_directory_symlink_impl(target, link) {
+        Ok(()) => true,
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => false,
+        Err(error) => panic!(
+            "failed to create directory symlink {} -> {}: {error}",
+            link.display(),
+            target.display()
+        ),
+    }
+}
+
+fn run_git(path: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn write_manifest(path: &Path, contents: &str) {
     write_file(&path.join(MANIFEST_FILE), contents);
 }
@@ -153,26 +191,13 @@ fn resolution_file_name(
 }
 
 fn init_git_repo(path: &Path) {
-    let run = |args: &[&str]| {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(path)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    };
-
-    run(&["init"]);
-    run(&["config", "user.email", "test@example.com"]);
-    run(&["config", "user.name", "Test User"]);
-    run(&["config", "core.autocrlf", "false"]);
+    run_git(path, &["init"]);
+    run_git(path, &["config", "user.email", "test@example.com"]);
+    run_git(path, &["config", "user.name", "Test User"]);
+    run_git(path, &["config", "core.autocrlf", "false"]);
     write_file(&path.join(".gitattributes"), "* text eol=lf\n");
-    run(&["add", "."]);
-    run(&["commit", "-m", "initial"]);
+    run_git(path, &["add", "."]);
+    run_git(path, &["commit", "-m", "initial"]);
 }
 
 fn create_git_dependency() -> (TempDir, String) {
@@ -235,29 +260,11 @@ authentication = "ON_INSTALL"
 }
 
 fn tag_repo(path: &Path, tag: &str) {
-    let output = Command::new("git")
-        .args(["tag", tag])
-        .current_dir(path)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    run_git(path, &["tag", tag]);
 }
 
 fn rename_current_branch(path: &Path, branch: &str) {
-    let output = Command::new("git")
-        .args(["branch", "-m", branch])
-        .current_dir(path)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    run_git(path, &["branch", "-m", branch]);
 }
 
 fn commit_all(path: &Path, message: &str) {
@@ -1054,6 +1061,59 @@ fn add_dependency_rejects_repo_without_supported_directories() {
     .to_string();
 
     assert!(error.contains("does not match the Nodus package layout"));
+}
+
+#[test]
+fn add_dependency_accepts_repo_with_symlinked_submodule_skills() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+
+    let shared = TempDir::new().unwrap();
+    write_skill(&shared.path().join("skills/review"), "Review");
+    init_git_repo(shared.path());
+    rename_current_branch(shared.path(), "main");
+
+    let repo = TempDir::new().unwrap();
+    init_git_repo(repo.path());
+    run_git(
+        repo.path(),
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            &shared.path().to_string_lossy(),
+            "vendor/shared",
+        ],
+    );
+    if !create_directory_symlink(
+        Path::new("../vendor/shared/skills/review"),
+        &repo.path().join("skills/review"),
+    ) {
+        return;
+    }
+    run_git(repo.path(), &["add", "."]);
+    run_git(repo.path(), &["commit", "-m", "add shared skill"]);
+    rename_current_branch(repo.path(), "main");
+
+    add_dependency_in_dir_with_adapters(
+        temp.path(),
+        cache.path(),
+        &repo.path().to_string_lossy(),
+        None,
+        &Adapter::ALL,
+        &[],
+    )
+    .unwrap();
+
+    let alias = normalize_alias_from_url(&repo.path().to_string_lossy()).unwrap();
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    let package = lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == alias)
+        .unwrap();
+    assert_eq!(package.skills, vec!["review"]);
 }
 
 #[test]

@@ -861,6 +861,7 @@ fn ensure_shared_checkout(
                         rev,
                     ],
                 )?;
+                ensure_checkout_submodules(checkout_path, allow_network)?;
                 return Ok(());
             }
             Err(error) if !allow_network => {
@@ -929,7 +930,39 @@ fn ensure_shared_checkout(
             "--force",
             rev,
         ],
-    )
+    )?;
+    ensure_checkout_submodules(checkout_path, allow_network)?;
+    Ok(())
+}
+
+fn ensure_checkout_submodules(checkout_path: &Path, allow_network: bool) -> Result<()> {
+    if !checkout_path.join(".gitmodules").exists() {
+        return Ok(());
+    }
+
+    git_run(checkout_path, ["submodule", "sync", "--recursive"])?;
+    let update = git_run(
+        checkout_path,
+        [
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "update",
+            "--init",
+            "--recursive",
+        ],
+    );
+    match update {
+        Ok(()) => Ok(()),
+        Err(error) if !allow_network => Err(error).context(format!(
+            "shared checkout at {} has missing or invalid git submodules",
+            checkout_path.display()
+        )),
+        Err(error) => Err(error).context(format!(
+            "failed to populate git submodules in shared checkout {}",
+            checkout_path.display()
+        )),
+    }
 }
 
 fn remove_invalid_shared_checkout(checkout_path: &Path, mirror_path: &Path) -> Result<()> {

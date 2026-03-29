@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use semver::Version;
@@ -16,6 +16,31 @@ fn write_file(path: &Path, contents: &str) {
     }
     let mut file = fs::File::create(path).unwrap();
     file.write_all(contents.as_bytes()).unwrap();
+}
+
+#[cfg(unix)]
+fn create_directory_symlink_impl(target: &Path, link: &Path) -> io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(windows)]
+fn create_directory_symlink_impl(target: &Path, link: &Path) -> io::Result<()> {
+    std::os::windows::fs::symlink_dir(target, link)
+}
+
+fn create_directory_symlink(target: &Path, link: &Path) -> bool {
+    if let Some(parent) = link.parent() {
+        fs::create_dir_all(parent).unwrap();
+    }
+    match create_directory_symlink_impl(target, link) {
+        Ok(()) => true,
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => false,
+        Err(error) => panic!(
+            "failed to create directory symlink {} -> {}: {error}",
+            link.display(),
+            target.display()
+        ),
+    }
 }
 
 fn write_valid_skill(root: &Path) {
@@ -399,6 +424,40 @@ fn accepts_dependency_repo_with_claude_marketplace_wrapper() {
                 .canonicalize()
                 .unwrap()
         )
+    );
+}
+
+#[test]
+fn discovers_symlinked_skill_directories_inside_package_root() {
+    let temp = TempDir::new().unwrap();
+    write_file(
+        &temp.path().join("vendor/shared/skills/review/SKILL.md"),
+        "---\nname: Review\ndescription: Review code safely.\n---\n# Review\n",
+    );
+    if !create_directory_symlink(
+        Path::new("../vendor/shared/skills/review"),
+        &temp.path().join("skills/review"),
+    ) {
+        return;
+    }
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+    let package_files = loaded.package_files().unwrap();
+
+    assert_eq!(
+        loaded
+            .discovered
+            .skills
+            .iter()
+            .map(|skill| skill.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["review"]
+    );
+    assert!(
+        package_files
+            .iter()
+            .any(|path| path.ends_with(Path::new("skills/review/SKILL.md"))),
+        "{package_files:?}"
     );
 }
 
