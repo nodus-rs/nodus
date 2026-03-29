@@ -62,6 +62,7 @@ enum PackageInfoSource {
     },
     Git {
         url: String,
+        subpath: Option<PathBuf>,
         tag: Option<String>,
         branch: Option<String>,
         rev: String,
@@ -239,6 +240,7 @@ fn load_package_info(
         manifest,
         PackageInfoSource::Git {
             url: checkout.url,
+            subpath: None,
             tag: checkout.tag,
             branch: checkout.branch,
             rev: checkout.rev,
@@ -283,11 +285,13 @@ fn load_from_dependency_spec(
         },
         ResolvedInspectionSource::Git {
             url,
+            subpath,
             tag,
             branch,
             rev,
         } => PackageInfoSource::Git {
             url,
+            subpath,
             tag,
             branch,
             rev,
@@ -673,11 +677,15 @@ impl PackageInfo {
             },
             PackageInfoSource::Git {
                 url,
+                subpath,
                 tag,
                 branch,
                 rev,
             } => {
                 let mut details = Vec::new();
+                if let Some(subpath) = subpath {
+                    details.push(format!("subpath {}", display_path(subpath)));
+                }
                 if let Some(tag) = tag {
                     details.push(format!("tag {tag}"));
                 }

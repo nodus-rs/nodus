@@ -426,6 +426,7 @@ fn resolve_from_dependency_spec(
             tag,
             branch,
             rev,
+            ..
         } => ReviewSource::Git {
             url,
             tag,

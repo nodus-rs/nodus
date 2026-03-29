@@ -392,6 +392,66 @@ fn accepts_dependency_repo_with_claude_marketplace_wrapper() {
 }
 
 #[test]
+fn accepts_dependency_repo_with_structured_claude_marketplace_sources() {
+    let temp = TempDir::new().unwrap();
+    write_marketplace(
+        temp.path(),
+        r#"{
+  "plugins": [
+    {
+      "name": "External",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/acme/external.git",
+        "sha": "aa70dbdbbbb843e94a794c10c2b13f5dd66b5e40"
+      }
+    },
+    {
+      "name": "Subdir",
+      "source": {
+        "source": "git-subdir",
+        "url": "owner/repo",
+        "path": "plugins/subdir",
+        "ref": "main"
+      }
+    },
+    {
+      "name": "Stagehand",
+      "source": {
+        "source": "github",
+        "repo": "browserbase/agent-browse"
+      }
+    }
+  ]
+}"#,
+    );
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    let external = loaded.manifest.dependencies.get("external").unwrap();
+    assert_eq!(external.github.as_deref(), Some("acme/external"));
+    assert_eq!(
+        external.revision.as_deref(),
+        Some("aa70dbdbbbb843e94a794c10c2b13f5dd66b5e40")
+    );
+    assert!(external.subpath.is_none());
+
+    let subdir = loaded.manifest.dependencies.get("subdir").unwrap();
+    assert_eq!(subdir.github.as_deref(), Some("owner/repo"));
+    assert_eq!(subdir.branch.as_deref(), Some("main"));
+    assert_eq!(subdir.subpath.as_deref(), Some(Path::new("plugins/subdir")));
+
+    let stagehand = loaded.manifest.dependencies.get("stagehand").unwrap();
+    assert_eq!(
+        stagehand.github.as_deref(),
+        Some("browserbase/agent-browse")
+    );
+    assert!(stagehand.revision.is_none());
+    assert!(stagehand.branch.is_none());
+    assert!(stagehand.subpath.is_none());
+}
+
+#[test]
 fn imports_firebase_style_marketplace_mcp_servers() {
     let temp = TempDir::new().unwrap();
     write_marketplace(
@@ -1164,6 +1224,7 @@ fn serializes_dependencies_as_inline_tables() {
             github: Some("wenext-limited/playbook-ios".into()),
             url: None,
             path: None,
+            subpath: None,
             tag: Some("v0.1.0".into()),
             branch: None,
             revision: None,
@@ -1197,6 +1258,7 @@ fn serializes_disabled_dependencies() {
             github: Some("wenext-limited/playbook-ios".into()),
             url: None,
             path: None,
+            subpath: None,
             tag: Some("v0.1.0".into()),
             branch: None,
             revision: None,
@@ -1269,6 +1331,7 @@ fn serializes_workspace_and_dependency_members() {
             github: Some("acme/bundle".into()),
             url: None,
             path: None,
+            subpath: None,
             tag: Some("v1.0.0".into()),
             branch: None,
             revision: None,
@@ -1350,6 +1413,7 @@ fn serializes_managed_dependencies_as_expanded_tables() {
             github: Some("org/superpowers".into()),
             url: None,
             path: None,
+            subpath: None,
             tag: Some("v1.2.3".into()),
             branch: None,
             revision: None,
@@ -1416,6 +1480,7 @@ fn serializes_dev_dependencies() {
             github: Some("org/tooling".into()),
             url: None,
             path: None,
+            subpath: None,
             tag: Some("v1.2.3".into()),
             branch: None,
             revision: None,
@@ -1581,6 +1646,7 @@ fn rejects_dependencies_with_multiple_git_sources() {
         github: Some("wenext-limited/playbook-ios".into()),
         url: Some("https://github.com/wenext-limited/playbook-ios".into()),
         path: None,
+        subpath: None,
         tag: Some("v0.1.0".into()),
         branch: None,
         revision: None,

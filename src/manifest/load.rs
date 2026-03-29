@@ -35,6 +35,7 @@ pub fn load_root_from_dir_allow_missing(root: &Path) -> Result<LoadedManifest> {
         warnings: Vec::new(),
         extra_package_files: Vec::new(),
         allows_empty_dependency_wrapper: false,
+        allows_unpinned_git_dependencies: false,
         manifest_contents_override: None,
     };
     loaded.validate(PackageRole::Root)?;
@@ -68,6 +69,7 @@ pub fn load_from_dir(root: &Path, role: PackageRole) -> Result<LoadedManifest> {
         warnings,
         extra_package_files: Vec::new(),
         allows_empty_dependency_wrapper: false,
+        allows_unpinned_git_dependencies: false,
         manifest_contents_override: None,
     };
 

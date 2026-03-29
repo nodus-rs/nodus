@@ -102,6 +102,7 @@ pub enum PackageSource {
     },
     Git {
         url: String,
+        subpath: Option<PathBuf>,
         tag: Option<String>,
         branch: Option<String>,
         rev: String,
@@ -792,12 +793,13 @@ impl Resolution {
                 },
                 PackageSource::Git {
                     url,
+                    subpath,
                     tag,
                     branch,
                     rev,
                 } => LockedSource {
                     kind: "git".into(),
-                    path: None,
+                    path: subpath.as_ref().map(|path| display_path(path)),
                     url: Some(url.clone()),
                     tag: tag.clone(),
                     branch: branch.clone(),

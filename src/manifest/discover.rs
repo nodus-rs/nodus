@@ -7,10 +7,12 @@ use semver::Version;
 use toml::Table;
 
 use super::types::{
-    ClaudeMarketplace, ClaudeMarketplaceMcpServers, ClaudePluginMetadata, CodexMarketplace,
-    CodexPluginMcpConfig, CodexPluginMetadata, SkillFrontmatter,
+    ClaudeMarketplace, ClaudeMarketplaceMcpServers, ClaudeMarketplaceRemoteSource,
+    ClaudeMarketplaceSource, ClaudePluginMetadata, CodexMarketplace, CodexPluginMcpConfig,
+    CodexPluginMetadata, SkillFrontmatter,
 };
 use super::*;
+use crate::git::github_slug_from_url;
 
 pub(super) fn load_manifest_str(path: &Path, contents: &str) -> Result<(Manifest, Vec<String>)> {
     let raw_value: toml::Value = toml::from_str(contents)
@@ -62,14 +64,6 @@ pub(super) fn load_claude_marketplace_wrapper(
             );
         }
 
-        let source = plugin.source.trim();
-        if source.is_empty() {
-            bail!(
-                "{} plugin `{name}` must declare a non-empty `source`",
-                marketplace_path.display()
-            );
-        }
-
         let declared_version = plugin
             .version
             .as_deref()
@@ -92,52 +86,83 @@ pub(super) fn load_claude_marketplace_wrapper(
                 marketplace_path.display()
             );
         }
+        match plugin.source {
+            ClaudeMarketplaceSource::LocalPath(source) => {
+                let source = source.trim();
+                if source.is_empty() {
+                    bail!(
+                        "{} plugin `{name}` must declare a non-empty `source`",
+                        marketplace_path.display()
+                    );
+                }
 
-        let source_path = PathBuf::from(source);
-        let plugin_root = loaded
-            .resolve_existing_path(&source_path)
-            .with_context(|| format!("plugin `{name}` has invalid source `{source}`"))?;
-        if !plugin_root.is_dir() {
-            bail!(
-                "plugin `{name}` source `{source}` must point to a directory, found {}",
-                plugin_root.display()
-            );
-        }
-        if plugin_root == loaded.root {
-            let Some(mcp_servers) = plugin.mcp_servers else {
-                bail!("plugin `{name}` source `{source}` must not point at the package root");
-            };
-            import_marketplace_mcp_servers(&mut manifest, name, mcp_servers, &marketplace_path)?;
-            if plugin_count == 1 {
-                single_plugin_version = declared_version;
+                let source_path = PathBuf::from(source);
+                let plugin_root = loaded
+                    .resolve_existing_path(&source_path)
+                    .with_context(|| format!("plugin `{name}` has invalid source `{source}`"))?;
+                if !plugin_root.is_dir() {
+                    bail!(
+                        "plugin `{name}` source `{source}` must point to a directory, found {}",
+                        plugin_root.display()
+                    );
+                }
+                if plugin_root == loaded.root {
+                    let Some(mcp_servers) = plugin.mcp_servers else {
+                        bail!(
+                            "plugin `{name}` source `{source}` must not point at the package root"
+                        );
+                    };
+                    import_marketplace_mcp_servers(
+                        &mut manifest,
+                        name,
+                        mcp_servers,
+                        &marketplace_path,
+                    )?;
+                    if plugin_count == 1 {
+                        single_plugin_version = declared_version;
+                    }
+                    continue;
+                }
+
+                let plugin_manifest = load_dependency_from_dir(&plugin_root).with_context(|| {
+                    format!(
+                        "plugin `{name}` source `{source}` does not match the Nodus package layout"
+                    )
+                })?;
+
+                manifest.dependencies.insert(
+                    alias,
+                    DependencySpec {
+                        github: None,
+                        url: None,
+                        path: Some(source_path),
+                        subpath: None,
+                        tag: None,
+                        branch: None,
+                        revision: None,
+                        version: None,
+                        components: None,
+                        members: None,
+                        managed: None,
+                        enabled: true,
+                    },
+                );
+
+                if plugin_count == 1 {
+                    single_plugin_version =
+                        declared_version.or_else(|| plugin_manifest.effective_version());
+                }
             }
-            continue;
-        }
+            ClaudeMarketplaceSource::Remote(source) => {
+                manifest.dependencies.insert(
+                    alias,
+                    dependency_from_claude_marketplace_source(name, source, &marketplace_path)?,
+                );
 
-        let plugin_manifest = load_dependency_from_dir(&plugin_root).with_context(|| {
-            format!("plugin `{name}` source `{source}` does not match the Nodus package layout")
-        })?;
-
-        manifest.dependencies.insert(
-            alias,
-            DependencySpec {
-                github: None,
-                url: None,
-                path: Some(source_path),
-                tag: None,
-                branch: None,
-                revision: None,
-                version: None,
-                components: None,
-                members: None,
-                managed: None,
-                enabled: true,
-            },
-        );
-
-        if plugin_count == 1 {
-            single_plugin_version =
-                declared_version.or_else(|| plugin_manifest.effective_version());
+                if plugin_count == 1 {
+                    single_plugin_version = declared_version;
+                }
+            }
         }
     }
 
@@ -153,6 +178,7 @@ pub(super) fn load_claude_marketplace_wrapper(
         warnings: loaded.warnings.clone(),
         extra_package_files: vec![marketplace_path],
         allows_empty_dependency_wrapper: true,
+        allows_unpinned_git_dependencies: true,
         manifest_contents_override: None,
     }))
 }
@@ -243,6 +269,7 @@ pub(super) fn load_codex_marketplace_wrapper(
                 github: None,
                 url: None,
                 path: Some(source_path),
+                subpath: None,
                 tag: None,
                 branch: None,
                 revision: None,
@@ -271,8 +298,101 @@ pub(super) fn load_codex_marketplace_wrapper(
         warnings: loaded.warnings.clone(),
         extra_package_files: vec![marketplace_path],
         allows_empty_dependency_wrapper: true,
+        allows_unpinned_git_dependencies: false,
         manifest_contents_override: None,
     }))
+}
+
+fn dependency_from_claude_marketplace_source(
+    plugin_name: &str,
+    source: ClaudeMarketplaceRemoteSource,
+    marketplace_path: &Path,
+) -> Result<DependencySpec> {
+    let source_kind = source.source.trim();
+    if source_kind.is_empty() {
+        bail!(
+            "{} plugin `{plugin_name}` must declare a non-empty `source.source`",
+            marketplace_path.display()
+        );
+    }
+
+    let (github, url) = match source_kind {
+        "url" | "git-subdir" => {
+            let raw = source.url.as_deref().map(str::trim).unwrap_or_default();
+            if raw.is_empty() {
+                bail!(
+                    "{} plugin `{plugin_name}` source kind `{source_kind}` must declare a non-empty `source.url`",
+                    marketplace_path.display()
+                );
+            }
+            match github_slug_from_url(raw) {
+                Some(repo) => (Some(repo), None),
+                None => (None, Some(raw.to_string())),
+            }
+        }
+        "github" => {
+            let repo = source.repo.as_deref().map(str::trim).unwrap_or_default();
+            if repo.is_empty() {
+                bail!(
+                    "{} plugin `{plugin_name}` source kind `github` must declare a non-empty `source.repo`",
+                    marketplace_path.display()
+                );
+            }
+            (Some(repo.to_string()), None)
+        }
+        other => {
+            bail!(
+                "{} plugin `{plugin_name}` uses unsupported source kind `{other}`",
+                marketplace_path.display()
+            )
+        }
+    };
+
+    let subpath = source
+        .path
+        .as_deref()
+        .map(|value| {
+            normalize_manifest_relative_path(value, &format!("plugin `{plugin_name}` source.path"))
+        })
+        .transpose()
+        .with_context(|| marketplace_path.display().to_string())?;
+
+    if source_kind == "git-subdir" && subpath.is_none() {
+        bail!(
+            "{} plugin `{plugin_name}` source kind `git-subdir` must declare `source.path`",
+            marketplace_path.display()
+        );
+    }
+
+    let revision = source
+        .sha
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let branch = revision.is_none().then(|| {
+        source
+            .git_ref
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    });
+
+    Ok(DependencySpec {
+        github,
+        url,
+        path: None,
+        subpath,
+        tag: None,
+        branch: branch.flatten(),
+        revision,
+        version: None,
+        components: None,
+        members: None,
+        managed: None,
+        enabled: true,
+    })
 }
 
 fn import_marketplace_mcp_servers(

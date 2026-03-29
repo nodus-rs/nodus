@@ -18,6 +18,7 @@ pub(crate) enum ResolvedInspectionSource {
     },
     Git {
         url: String,
+        subpath: Option<PathBuf>,
         tag: Option<String>,
         branch: Option<String>,
         rev: String,
@@ -123,11 +124,36 @@ pub(crate) fn resolve_inspection_target(
             let checkout = ensure_git_dependency(
                 cache_root,
                 &url,
-                Some(dependency.requested_git_ref()?),
+                dependency.requested_git_ref_or_none()?,
                 true,
                 reporter,
             )?;
-            let manifest = load_dependency_from_dir(&checkout.path).with_context(|| {
+            let canonical_checkout = checkout.path.canonicalize().with_context(|| {
+                format!(
+                    "failed to canonicalize dependency `{alias}` checkout {}",
+                    checkout.path.display()
+                )
+            })?;
+            let package_root = if let Some(subpath) = dependency.subpath.as_deref() {
+                let path = canonical_checkout.join(subpath);
+                let canonical = path.canonicalize().with_context(|| {
+                    format!(
+                        "failed to resolve dependency `{alias}` subpath {}",
+                        path.display()
+                    )
+                })?;
+                if !canonical.starts_with(&canonical_checkout) {
+                    bail!(
+                        "dependency `{alias}` subpath `{}` escapes the git checkout {}",
+                        subpath.display(),
+                        canonical_checkout.display()
+                    );
+                }
+                canonical
+            } else {
+                checkout.path.clone()
+            };
+            let manifest = load_dependency_from_dir(&package_root).with_context(|| {
                 format!("dependency `{alias}` does not match the Nodus package layout")
             })?;
             Ok(ResolvedInspectionTarget {
@@ -135,6 +161,7 @@ pub(crate) fn resolve_inspection_target(
                 manifest,
                 source: ResolvedInspectionSource::Git {
                     url: checkout.url,
+                    subpath: dependency.subpath.clone(),
                     tag: checkout.tag,
                     branch: checkout.branch,
                     rev: checkout.rev,

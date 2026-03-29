@@ -188,6 +188,7 @@ fn add_dependency_at_paths_with_adapters_mode(
         github: github.clone(),
         url: github.is_none().then_some(checkout.url.clone()),
         path: None,
+        subpath: None,
         tag: options
             .version_req
             .is_none()
@@ -1161,6 +1162,7 @@ mod tests {
                 github: None,
                 url: Some("https://github.com/wenext-limited/playbook-ios".into()),
                 path: None,
+                subpath: None,
                 tag: Some("v0.1.0".into()),
                 branch: None,
                 revision: None,
@@ -1187,6 +1189,7 @@ mod tests {
                 github: None,
                 url: Some("https://github.com/wenext-limited/playbook-ios".into()),
                 path: None,
+                subpath: None,
                 tag: Some("v0.1.0".into()),
                 branch: None,
                 revision: None,

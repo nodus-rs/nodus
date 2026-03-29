@@ -415,6 +415,12 @@ fn validate_dependency_entry(package: &LoadedManifest, entry: DependencyEntry<'_
             if url.trim().is_empty() {
                 bail!("{label} `{alias}` has an empty git source");
             }
+            if let Some(subpath) = &dependency.subpath {
+                normalize_manifest_relative_path(
+                    subpath,
+                    &format!("{label} `{alias}` field `subpath`"),
+                )?;
+            }
             let tag = dependency.tag.as_deref().map(str::trim).unwrap_or_default();
             let branch = dependency
                 .branch
@@ -431,7 +437,7 @@ fn validate_dependency_entry(package: &LoadedManifest, entry: DependencyEntry<'_
                 + usize::from(!revision.is_empty());
             match requested_ref_count {
                 0 => {
-                    if dependency.version.is_none() {
+                    if dependency.version.is_none() && !package.allows_unpinned_git_dependencies {
                         bail!(
                             "{label} `{alias}` must declare `tag`, `branch`, `revision`, or `version` for git sources"
                         )
@@ -460,6 +466,9 @@ fn validate_dependency_entry(package: &LoadedManifest, entry: DependencyEntry<'_
             };
             if dependency.version.is_some() {
                 bail!("{label} `{alias}` must not declare `version` for path sources");
+            }
+            if dependency.subpath.is_some() {
+                bail!("{label} `{alias}` must not declare `subpath` for path sources");
             }
             let dependency_root = package.resolve_existing_path(path)?;
             if !dependency_root.is_dir() {
@@ -519,6 +528,9 @@ impl DependencySpec {
         }
         if let Some(path) = &self.path {
             fields.push(format!("path = {}", quote(&display_path(path))));
+        }
+        if let Some(subpath) = &self.subpath {
+            fields.push(format!("subpath = {}", quote(&display_path(subpath))));
         }
         if let Some(tag) = &self.tag {
             fields.push(format!("tag = {}", quote(tag)));
@@ -617,6 +629,12 @@ impl DependencySpec {
     }
 
     pub fn requested_git_ref(&self) -> Result<RequestedGitRef<'_>> {
+        self.requested_git_ref_or_none()?.ok_or_else(|| {
+            anyhow::anyhow!("git dependency must declare `tag`, `branch`, `revision`, or `version`")
+        })
+    }
+
+    pub fn requested_git_ref_or_none(&self) -> Result<Option<RequestedGitRef<'_>>> {
         match (
             self.tag
                 .as_deref()
@@ -631,18 +649,10 @@ impl DependencySpec {
                 .map(str::trim)
                 .filter(|value| !value.is_empty()),
         ) {
-            (Some(tag), None, None) => Ok(RequestedGitRef::Tag(tag)),
-            (None, Some(branch), None) => Ok(RequestedGitRef::Branch(branch)),
-            (None, None, Some(revision)) => Ok(RequestedGitRef::Revision(revision)),
-            (None, None, None) => self
-                .version
-                .as_ref()
-                .map(RequestedGitRef::VersionReq)
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "git dependency must declare `tag`, `branch`, `revision`, or `version`"
-                    )
-                }),
+            (Some(tag), None, None) => Ok(Some(RequestedGitRef::Tag(tag))),
+            (None, Some(branch), None) => Ok(Some(RequestedGitRef::Branch(branch))),
+            (None, None, Some(revision)) => Ok(Some(RequestedGitRef::Revision(revision))),
+            (None, None, None) => Ok(self.version.as_ref().map(RequestedGitRef::VersionReq)),
             _ => bail!(
                 "git dependency must not declare more than one of `tag`, `branch`, or `revision`"
             ),

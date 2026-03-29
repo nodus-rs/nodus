@@ -119,6 +119,8 @@ pub struct DependencySpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subpath: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
@@ -239,6 +241,7 @@ pub struct LoadedManifest {
     pub warnings: Vec<String>,
     pub(super) extra_package_files: Vec<PathBuf>,
     pub(super) allows_empty_dependency_wrapper: bool,
+    pub(super) allows_unpinned_git_dependencies: bool,
     pub(super) manifest_contents_override: Option<Vec<u8>>,
 }
 
@@ -295,11 +298,33 @@ pub(super) struct ClaudeMarketplace {
 #[derive(Debug, Deserialize)]
 pub(super) struct ClaudeMarketplacePlugin {
     pub(super) name: String,
-    pub(super) source: String,
+    pub(super) source: ClaudeMarketplaceSource,
     #[serde(default)]
     pub(super) version: Option<String>,
     #[serde(default, rename = "mcpServers")]
     pub(super) mcp_servers: Option<ClaudeMarketplaceMcpServers>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub(super) enum ClaudeMarketplaceSource {
+    LocalPath(String),
+    Remote(ClaudeMarketplaceRemoteSource),
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct ClaudeMarketplaceRemoteSource {
+    pub(super) source: String,
+    #[serde(default)]
+    pub(super) url: Option<String>,
+    #[serde(default)]
+    pub(super) repo: Option<String>,
+    #[serde(default)]
+    pub(super) path: Option<PathBuf>,
+    #[serde(default)]
+    pub(super) sha: Option<String>,
+    #[serde(default, rename = "ref")]
+    pub(super) git_ref: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

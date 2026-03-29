@@ -36,8 +36,14 @@ pub struct DependencyListEntry {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum DependencyListSource {
-    Path { path: String },
-    Git { url: String },
+    Path {
+        path: String,
+    },
+    Git {
+        url: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        subpath: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -86,6 +92,7 @@ pub fn list_dependencies_json_in_dir(cwd: &Path) -> Result<DependencyList> {
                 },
                 DependencySourceKind::Git => DependencyListSource::Git {
                     url: spec.resolved_git_url()?,
+                    subpath: spec.subpath.as_deref().map(display_path),
                 },
             };
             let requested_ref = match spec.source_kind()? {
@@ -158,7 +165,10 @@ fn dependency_summary(dependency: &DependencyListEntry) -> String {
     }
     parts.push(match &dependency.source {
         DependencyListSource::Path { path } => format!("path {path}"),
-        DependencyListSource::Git { url } => format!("git {url}"),
+        DependencyListSource::Git { url, subpath } => match subpath {
+            Some(subpath) => format!("git {url} (subpath {subpath})"),
+            None => format!("git {url}"),
+        },
     });
     if let Some(requested_ref) = &dependency.requested_ref {
         parts.push(format!("{} {}", requested_ref.kind, requested_ref.value));

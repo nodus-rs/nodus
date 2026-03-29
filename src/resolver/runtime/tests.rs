@@ -1282,6 +1282,123 @@ fn add_dependency_writes_marketplace_version_alongside_default_branch() {
 }
 
 #[test]
+fn add_dependency_accepts_claude_marketplace_remote_sources_and_syncs_contents() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+
+    let remote_root = TempDir::new().unwrap();
+    write_skill(&remote_root.path().join("skills/checks"), "Checks");
+    init_git_repo(remote_root.path());
+    rename_current_branch(remote_root.path(), "main");
+
+    let remote_subdir = TempDir::new().unwrap();
+    write_skill(
+        &remote_subdir.path().join("plugins/external/skills/review"),
+        "Review",
+    );
+    write_claude_plugin_json(&remote_subdir.path().join("plugins/external"), "1.2.3");
+    init_git_repo(remote_subdir.path());
+    rename_current_branch(remote_subdir.path(), "main");
+
+    let wrapper = TempDir::new().unwrap();
+    let marketplace = serde_json::json!({
+        "plugins": [
+            {
+                "name": "External Root",
+                "source": {
+                    "source": "url",
+                    "url": remote_root.path().to_string_lossy(),
+                }
+            },
+            {
+                "name": "External Subdir",
+                "source": {
+                    "source": "git-subdir",
+                    "url": remote_subdir.path().to_string_lossy(),
+                    "path": "plugins/external",
+                    "ref": "main"
+                }
+            }
+        ]
+    });
+    write_marketplace(
+        wrapper.path(),
+        &serde_json::to_string_pretty(&marketplace).unwrap(),
+    );
+    init_git_repo(wrapper.path());
+    rename_current_branch(wrapper.path(), "main");
+
+    add_dependency_in_dir_with_adapters(
+        temp.path(),
+        cache.path(),
+        &wrapper.path().to_string_lossy(),
+        None,
+        &Adapter::ALL,
+        &[],
+    )
+    .unwrap();
+
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    let root_package = lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == "external_root")
+        .unwrap();
+    assert_eq!(root_package.source.kind, "git");
+    assert_eq!(root_package.source.path, None);
+    assert_eq!(root_package.source.branch.as_deref(), Some("main"));
+
+    let subdir_package = lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == "external_subdir")
+        .unwrap();
+    assert_eq!(subdir_package.source.kind, "git");
+    assert_eq!(
+        subdir_package.source.path.as_deref(),
+        Some("plugins/external")
+    );
+    assert_eq!(subdir_package.source.branch.as_deref(), Some("main"));
+    assert_eq!(subdir_package.version_tag.as_deref(), Some("1.2.3"));
+
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let root_package = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "external_root")
+        .unwrap();
+    let subdir_package = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "external_subdir")
+        .unwrap();
+
+    assert!(matches!(
+        &root_package.source,
+        PackageSource::Git { subpath: None, branch, .. } if branch.as_deref() == Some("main")
+    ));
+    assert!(matches!(
+        &subdir_package.source,
+        PackageSource::Git { subpath, branch, .. }
+            if subpath.as_deref() == Some(Path::new("plugins/external"))
+                && branch.as_deref() == Some("main")
+    ));
+
+    let root_skill_id = namespaced_skill_id(root_package, "checks");
+    let subdir_skill_id = namespaced_skill_id(subdir_package, "review");
+    assert!(
+        temp.path()
+            .join(format!(".claude/skills/{root_skill_id}/SKILL.md"))
+            .exists()
+    );
+    assert!(
+        temp.path()
+            .join(format!(".claude/skills/{subdir_skill_id}/SKILL.md"))
+            .exists()
+    );
+}
+
+#[test]
 fn add_dependency_accepts_codex_marketplace_wrapper_and_syncs_plugin_contents() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();

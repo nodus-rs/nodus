@@ -51,20 +51,41 @@ struct ResolvePackageInput {
 }
 
 pub(super) fn validate_git_package(package: &ResolvedPackage, cache_root: &Path) -> Result<()> {
-    let PackageSource::Git { url, rev, .. } = &package.source else {
+    let PackageSource::Git {
+        url, subpath, rev, ..
+    } = &package.source
+    else {
         return Ok(());
     };
 
     let checkout_path = shared_checkout_path(cache_root, url, rev)?;
-    if package.root != checkout_path {
+    let canonical_checkout = checkout_path.canonicalize().with_context(|| {
+        format!(
+            "failed to canonicalize shared checkout {}",
+            checkout_path.display()
+        )
+    })?;
+    let expected_root = match subpath {
+        Some(subpath) => canonical_checkout
+            .join(subpath)
+            .canonicalize()
+            .with_context(|| {
+                format!(
+                    "failed to resolve git dependency subpath {}",
+                    subpath.display()
+                )
+            })?,
+        None => checkout_path.clone(),
+    };
+    if package.root != expected_root {
         bail!(
-            "git dependency `{}` resolved to {} instead of shared checkout {}",
+            "git dependency `{}` resolved to {} instead of expected package root {}",
             package.alias,
             package.root.display(),
-            checkout_path.display()
+            expected_root.display()
         );
     }
-    let current = current_rev(&package.root)?;
+    let current = current_rev(&checkout_path)?;
     if current.trim() != rev {
         bail!(
             "git dependency `{}` is checked out at {} instead of {}",
@@ -75,7 +96,7 @@ pub(super) fn validate_git_package(package: &ResolvedPackage, cache_root: &Path)
     }
 
     let mirror_path = shared_repository_path(cache_root, url)?;
-    validate_shared_checkout(&package.root, &mirror_path, url)
+    validate_shared_checkout(&checkout_path, &mirror_path, url)
 }
 
 pub(super) fn resolve_project(
@@ -307,9 +328,15 @@ fn resolve_dependency(
         }
         DependencySourceKind::Git => {
             let url = dependency.resolved_git_url()?;
-            let requested_ref = dependency.requested_git_ref()?;
+            let requested_ref = dependency.requested_git_ref_or_none()?;
             let checkout = if let Some(lockfile) = context.frozen_lockfile {
-                let locked = locked_git_source(lockfile, alias, &url, requested_ref)?;
+                let locked = locked_git_source(
+                    lockfile,
+                    alias,
+                    &url,
+                    dependency.subpath.as_deref(),
+                    requested_ref,
+                )?;
                 let rev = locked.rev.as_deref().ok_or_else(|| {
                     anyhow::anyhow!(
                         "dependency `{alias}` in {} does not record a git revision",
@@ -329,18 +356,21 @@ fn resolve_dependency(
                 ensure_git_dependency(
                     context.cache_root,
                     &url,
-                    Some(requested_ref),
+                    requested_ref,
                     context.mode == ResolveMode::Sync,
                     context.reporter,
                 )?
             };
+            let dependency_root =
+                resolve_git_dependency_root(alias, &checkout.path, dependency.subpath.as_deref())?;
             let source = PackageSource::Git {
                 url: checkout.url,
+                subpath: dependency.subpath.clone(),
                 tag: checkout.tag,
                 branch: checkout.branch,
                 rev: checkout.rev,
             };
-            let dependency_manifest = load_dependency_from_dir(&checkout.path)?;
+            let dependency_manifest = load_dependency_from_dir(&dependency_root)?;
             if dependency_manifest.manifest.workspace.is_none() && dependency.members.is_some() {
                 bail!(
                     "dependency `{alias}` field `members` is supported only for workspace dependencies"
@@ -352,7 +382,7 @@ fn resolve_dependency(
                     alias,
                     dependency,
                     &dependency_manifest,
-                    &checkout.path,
+                    &dependency_root,
                 )?;
             if let Some(managed_migration) = managed_migration {
                 state.managed_migrations.push(managed_migration);
@@ -361,7 +391,11 @@ fn resolve_dependency(
                 context,
                 ResolvePackageInput {
                     alias: alias.to_string(),
-                    package_root: checkout.path,
+                    package_root: if dependency.subpath.is_some() {
+                        dependency_manifest.root.clone()
+                    } else {
+                        dependency_root.clone()
+                    },
                     source,
                     role: PackageRole::Dependency,
                     selected_components: dependency.effective_selected_components(),
@@ -380,19 +414,22 @@ fn locked_git_source<'a>(
     lockfile: &'a Lockfile,
     alias: &str,
     url: &str,
-    requested_ref: RequestedGitRef<'_>,
+    subpath: Option<&Path>,
+    requested_ref: Option<RequestedGitRef<'_>>,
 ) -> Result<&'a LockedSource> {
     let matches_requested_ref = |source: &LockedSource| match requested_ref {
-        RequestedGitRef::Tag(tag) => source.tag.as_deref() == Some(tag) && source.branch.is_none(),
-        RequestedGitRef::Branch(branch) => {
+        Some(RequestedGitRef::Tag(tag)) => {
+            source.tag.as_deref() == Some(tag) && source.branch.is_none()
+        }
+        Some(RequestedGitRef::Branch(branch)) => {
             source.branch.as_deref() == Some(branch) && source.tag.is_none()
         }
-        RequestedGitRef::Revision(revision) => {
+        Some(RequestedGitRef::Revision(revision)) => {
             source.rev.as_deref() == Some(revision)
                 && source.tag.is_none()
                 && source.branch.is_none()
         }
-        RequestedGitRef::VersionReq(requirement) => {
+        Some(RequestedGitRef::VersionReq(requirement)) => {
             source
                 .tag
                 .as_deref()
@@ -400,6 +437,7 @@ fn locked_git_source<'a>(
                 .is_some_and(|version| requirement.matches(&version))
                 && source.branch.is_none()
         }
+        None => true,
     };
 
     let mut matching_sources = lockfile
@@ -408,6 +446,7 @@ fn locked_git_source<'a>(
         .filter(|package| {
             package.source.kind == "git"
                 && package.source.url.as_deref() == Some(url)
+                && package.source.path.as_deref() == subpath.map(display_path).as_deref()
                 && matches_requested_ref(&package.source)
         })
         .collect::<Vec<_>>();
@@ -440,6 +479,45 @@ fn locked_git_source<'a>(
     }
 
     Ok(&matching_sources[0].source)
+}
+
+fn resolve_git_dependency_root(
+    alias: &str,
+    checkout_root: &Path,
+    subpath: Option<&Path>,
+) -> Result<PathBuf> {
+    let canonical_checkout = checkout_root.canonicalize().with_context(|| {
+        format!(
+            "failed to canonicalize dependency `{alias}` checkout {}",
+            checkout_root.display()
+        )
+    })?;
+    let Some(subpath) = subpath else {
+        return Ok(checkout_root.to_path_buf());
+    };
+
+    let path = canonical_checkout.join(subpath);
+    let canonical = path.canonicalize().with_context(|| {
+        format!(
+            "failed to resolve dependency `{alias}` subpath {}",
+            path.display()
+        )
+    })?;
+    if !canonical.starts_with(&canonical_checkout) {
+        bail!(
+            "dependency `{alias}` subpath `{}` escapes the git checkout {}",
+            display_path(subpath),
+            canonical_checkout.display()
+        );
+    }
+    if !canonical.is_dir() {
+        bail!(
+            "dependency `{alias}` subpath `{}` must point to a directory, found {}",
+            display_path(subpath),
+            canonical.display()
+        );
+    }
+    Ok(canonical)
 }
 
 fn union_selected_components(
@@ -518,6 +596,7 @@ fn workspace_member_dependencies(
                     github: None,
                     url: None,
                     path: Some(member.path),
+                    subpath: None,
                     tag: None,
                     branch: None,
                     revision: None,
