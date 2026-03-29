@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -8,8 +8,8 @@ use toml::Table;
 
 use super::types::{
     ClaudeMarketplace, ClaudeMarketplaceMcpServers, ClaudeMarketplaceRemoteSource,
-    ClaudeMarketplaceSource, ClaudePluginMetadata, CodexMarketplace, CodexPluginMcpConfig,
-    CodexPluginMetadata, SkillFrontmatter,
+    ClaudeMarketplaceSource, ClaudePluginMcpConfig, ClaudePluginMetadata, CodexMarketplace,
+    CodexPluginMcpConfig, CodexPluginMetadata, SkillFrontmatter,
 };
 use super::*;
 use crate::git::github_slug_from_url;
@@ -411,23 +411,84 @@ fn import_marketplace_mcp_servers(
         }
     };
 
-    for (server_id, server) in servers {
-        let id = server_id.trim();
-        if id.is_empty() {
-            bail!(
-                "{} plugin `{plugin_name}` has an empty MCP server id",
-                marketplace_path.display()
-            );
+    insert_mcp_servers(
+        manifest,
+        servers,
+        &format!(
+            "{} plugin `{plugin_name}` MCP configuration",
+            marketplace_path.display()
+        ),
+    )?;
+
+    Ok(())
+}
+
+pub(super) fn import_claude_plugin_metadata(loaded: &mut LoadedManifest) -> Result<()> {
+    let metadata_path = loaded.root.join(".claude-plugin").join("plugin.json");
+    if !metadata_path.exists() {
+        return Ok(());
+    }
+    loaded.allows_empty_dependency_wrapper = true;
+
+    let contents = fs::read_to_string(&metadata_path)
+        .with_context(|| format!("failed to read {}", metadata_path.display()))?;
+    let metadata: ClaudePluginMetadata = serde_json::from_str(&contents)
+        .with_context(|| format!("failed to parse JSON in {}", metadata_path.display()))?;
+
+    if loaded.manifest.version.is_none()
+        && let Some(version) = metadata.version.as_deref()
+    {
+        let version = version.trim();
+        if !version.is_empty() {
+            loaded.manifest.version = Some(Version::parse(version).with_context(|| {
+                format!(
+                    "failed to parse Claude plugin version `{version}` in {}",
+                    metadata_path.display()
+                )
+            })?);
         }
-        if manifest.mcp_servers.contains_key(id) {
-            bail!(
-                "{} plugin `{plugin_name}` declares duplicate MCP server `{id}`",
-                marketplace_path.display()
-            );
-        }
-        manifest.mcp_servers.insert(id.to_string(), server);
     }
 
+    loaded.extra_package_files.push(metadata_path);
+
+    let config_path = loaded.root.join(".mcp.json");
+    if !config_path.exists() {
+        loaded.extra_package_files.sort();
+        loaded.extra_package_files.dedup();
+        return Ok(());
+    }
+    if !config_path.is_file() {
+        bail!(
+            "Claude plugin MCP config {} must point to a file",
+            config_path.display()
+        );
+    }
+
+    let contents = fs::read_to_string(&config_path)
+        .with_context(|| format!("failed to read {}", config_path.display()))?;
+    let config: ClaudePluginMcpConfig = serde_json::from_str(&contents)
+        .with_context(|| format!("failed to parse JSON in {}", config_path.display()))?;
+    let servers = match config {
+        ClaudePluginMcpConfig::Wrapped { mcp_servers } => mcp_servers,
+        ClaudePluginMcpConfig::Flat(servers) => servers,
+    };
+
+    let mut normalized_servers = BTreeMap::new();
+    for (server_id, server) in servers {
+        let server = normalize_claude_plugin_mcp_server(server);
+        normalized_servers.insert(server_id, server);
+    }
+    insert_mcp_servers(
+        &mut loaded.manifest,
+        normalized_servers,
+        &config_path.display().to_string(),
+    )?;
+
+    loaded
+        .extra_package_files
+        .push(canonicalize_existing_path(&config_path)?);
+    loaded.extra_package_files.sort();
+    loaded.extra_package_files.dedup();
     Ok(())
 }
 
@@ -436,6 +497,7 @@ pub(super) fn import_codex_plugin_metadata(loaded: &mut LoadedManifest) -> Resul
     if !metadata_path.exists() {
         return Ok(());
     }
+    loaded.allows_empty_dependency_wrapper = true;
 
     let contents = fs::read_to_string(&metadata_path)
         .with_context(|| format!("failed to read {}", metadata_path.display()))?;
@@ -480,24 +542,57 @@ pub(super) fn import_codex_plugin_metadata(loaded: &mut LoadedManifest) -> Resul
         .with_context(|| format!("failed to read {}", config_path.display()))?;
     let config: CodexPluginMcpConfig = serde_json::from_str(&contents)
         .with_context(|| format!("failed to parse JSON in {}", config_path.display()))?;
-    for (server_id, server) in config.mcp_servers {
-        let id = server_id.trim();
-        if id.is_empty() {
-            bail!("{} contains an empty MCP server id", config_path.display());
-        }
-        if loaded.manifest.mcp_servers.contains_key(id) {
-            bail!(
-                "{} declares duplicate MCP server `{id}`",
-                config_path.display()
-            );
-        }
-        loaded.manifest.mcp_servers.insert(id.to_string(), server);
-    }
+    insert_mcp_servers(
+        &mut loaded.manifest,
+        config.mcp_servers,
+        &config_path.display().to_string(),
+    )?;
 
     loaded.extra_package_files.push(config_path);
     loaded.extra_package_files.sort();
     loaded.extra_package_files.dedup();
     Ok(())
+}
+
+fn insert_mcp_servers(
+    manifest: &mut Manifest,
+    servers: BTreeMap<String, McpServerConfig>,
+    source_label: &str,
+) -> Result<()> {
+    for (server_id, server) in servers {
+        let id = server_id.trim();
+        if id.is_empty() {
+            bail!("{source_label} contains an empty MCP server id");
+        }
+        if manifest.mcp_servers.contains_key(id) {
+            bail!("{source_label} declares duplicate MCP server `{id}`");
+        }
+        manifest.mcp_servers.insert(id.to_string(), server);
+    }
+
+    Ok(())
+}
+
+fn normalize_claude_plugin_mcp_server(mut server: McpServerConfig) -> McpServerConfig {
+    let mut normalized_args = Vec::with_capacity(server.args.len());
+    let mut index = 0;
+    while index < server.args.len() {
+        if server.args[index] == "--cwd"
+            && server
+                .args
+                .get(index + 1)
+                .is_some_and(|value| value == "${CLAUDE_PLUGIN_ROOT}")
+        {
+            server.cwd.get_or_insert_with(|| PathBuf::from("."));
+            index += 2;
+            continue;
+        }
+
+        normalized_args.push(server.args[index].clone());
+        index += 1;
+    }
+    server.args = normalized_args;
+    server
 }
 
 pub(super) fn discover_package_contents(
@@ -944,30 +1039,36 @@ pub fn normalize_dependency_alias(value: &str) -> Result<String> {
 }
 
 pub(super) fn load_claude_plugin_version(root: &Path) -> Result<Option<Version>> {
-    let metadata_path = root.join("claude-code.json");
-    if !metadata_path.exists() {
-        return Ok(None);
+    for metadata_path in [
+        root.join(".claude-plugin").join("plugin.json"),
+        root.join("claude-code.json"),
+    ] {
+        if !metadata_path.exists() {
+            continue;
+        }
+
+        let contents = fs::read_to_string(&metadata_path)
+            .with_context(|| format!("failed to read {}", metadata_path.display()))?;
+        let metadata: ClaudePluginMetadata = serde_json::from_str(&contents)
+            .with_context(|| format!("failed to parse JSON in {}", metadata_path.display()))?;
+        let Some(version) = metadata.version else {
+            continue;
+        };
+
+        let version = version.trim();
+        if version.is_empty() {
+            continue;
+        }
+
+        return Ok(Some(Version::parse(version).with_context(|| {
+            format!(
+                "failed to parse Claude plugin version `{version}` in {}",
+                metadata_path.display()
+            )
+        })?));
     }
 
-    let contents = fs::read_to_string(&metadata_path)
-        .with_context(|| format!("failed to read {}", metadata_path.display()))?;
-    let metadata: ClaudePluginMetadata = serde_json::from_str(&contents)
-        .with_context(|| format!("failed to parse JSON in {}", metadata_path.display()))?;
-    let Some(version) = metadata.version else {
-        return Ok(None);
-    };
-
-    let version = version.trim();
-    if version.is_empty() {
-        return Ok(None);
-    }
-
-    Ok(Some(Version::parse(version).with_context(|| {
-        format!(
-            "failed to parse Claude plugin version `{version}` in {}",
-            metadata_path.display()
-        )
-    })?))
+    Ok(None)
 }
 
 pub(super) fn canonicalize_existing_path(path: &Path) -> Result<PathBuf> {

@@ -50,6 +50,17 @@ fn write_claude_plugin_json(root: &Path, version: &str) {
     );
 }
 
+fn write_modern_claude_plugin_json(root: &Path, version: Option<&str>) {
+    let mut fields = vec![String::from(r#"  "name": "plugin""#)];
+    if let Some(version) = version {
+        fields.push(format!(r#"  "version": "{version}""#));
+    }
+    write_file(
+        &root.join(".claude-plugin/plugin.json"),
+        &format!("{{\n{}\n}}\n", fields.join(",\n")),
+    );
+}
+
 fn write_codex_marketplace(root: &Path, contents: &str) {
     write_file(&root.join(".agents/plugins/marketplace.json"), contents);
 }
@@ -615,6 +626,94 @@ fn reads_claude_plugin_version_from_json() {
         loaded.manifest.version,
         Some(Version::parse("2.34.0").unwrap())
     );
+}
+
+#[test]
+fn accepts_dependency_repo_with_only_modern_claude_plugin_metadata_and_flat_mcp_servers() {
+    let temp = TempDir::new().unwrap();
+    write_modern_claude_plugin_json(temp.path(), Some("2.34.0"));
+    write_file(
+        &temp.path().join(".mcp.json"),
+        r#"{
+  "asana": {
+    "type": "sse",
+    "url": "https://mcp.asana.com/sse"
+  }
+}
+"#,
+    );
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    assert!(loaded.discovered.is_empty());
+    assert_eq!(
+        loaded.manifest.version,
+        Some(Version::parse("2.34.0").unwrap())
+    );
+    let server = loaded.manifest.mcp_servers.get("asana").unwrap();
+    assert_eq!(server.transport_type.as_deref(), Some("sse"));
+    assert_eq!(server.url.as_deref(), Some("https://mcp.asana.com/sse"));
+    let package_files = loaded.package_files().unwrap();
+    assert!(
+        package_files.contains(
+            &temp
+                .path()
+                .join(".claude-plugin/plugin.json")
+                .canonicalize()
+                .unwrap()
+        )
+    );
+    assert!(package_files.contains(&temp.path().join(".mcp.json").canonicalize().unwrap()));
+}
+
+#[test]
+fn imports_modern_claude_plugin_wrapped_mcp_servers_and_normalizes_plugin_root_cwd() {
+    let temp = TempDir::new().unwrap();
+    write_modern_claude_plugin_json(temp.path(), Some("2.34.0"));
+    write_file(
+        &temp.path().join(".mcp.json"),
+        r#"{
+  "mcpServers": {
+    "github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": {
+        "Authorization": "Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}"
+      }
+    },
+    "discord": {
+      "command": "bun",
+      "args": ["run", "--cwd", "${CLAUDE_PLUGIN_ROOT}", "--shell=bun", "--silent", "start"]
+    }
+  }
+}
+"#,
+    );
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    let github = loaded.manifest.mcp_servers.get("github").unwrap();
+    assert_eq!(github.transport_type.as_deref(), Some("http"));
+    assert_eq!(
+        github.headers,
+        BTreeMap::from([(
+            String::from("Authorization"),
+            String::from("Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}")
+        )])
+    );
+
+    let discord = loaded.manifest.mcp_servers.get("discord").unwrap();
+    assert_eq!(discord.command.as_deref(), Some("bun"));
+    assert_eq!(
+        discord.args,
+        vec![
+            String::from("run"),
+            String::from("--shell=bun"),
+            String::from("--silent"),
+            String::from("start"),
+        ]
+    );
+    assert_eq!(discord.cwd.as_deref(), Some(Path::new(".")));
 }
 
 #[test]
@@ -1358,10 +1457,12 @@ fn serializes_mcp_servers() {
         mcp_servers: BTreeMap::from([(
             "firebase".into(),
             McpServerConfig {
+                transport_type: None,
                 command: Some("npx".into()),
                 url: None,
                 args: vec!["-y".into(), "firebase-tools".into()],
                 env: BTreeMap::from([(String::from("IS_FIREBASE_MCP"), String::from("true"))]),
+                headers: BTreeMap::new(),
                 cwd: Some(PathBuf::from(".")),
                 enabled: true,
             },
@@ -1385,10 +1486,15 @@ fn serializes_url_backed_disabled_mcp_servers() {
         mcp_servers: BTreeMap::from([(
             "figma".into(),
             McpServerConfig {
+                transport_type: Some("http".into()),
                 command: None,
                 url: Some("http://127.0.0.1:3845/mcp".into()),
                 args: Vec::new(),
                 env: BTreeMap::new(),
+                headers: BTreeMap::from([(
+                    String::from("Authorization"),
+                    String::from("Bearer token"),
+                )]),
                 cwd: None,
                 enabled: false,
             },
@@ -1399,7 +1505,10 @@ fn serializes_url_backed_disabled_mcp_servers() {
     let encoded = serialize_manifest(&manifest).unwrap();
 
     assert!(encoded.contains("[mcp_servers.figma]"));
+    assert!(encoded.contains("type = \"http\""));
     assert!(encoded.contains("url = \"http://127.0.0.1:3845/mcp\""));
+    assert!(encoded.contains("[mcp_servers.figma.headers]"));
+    assert!(encoded.contains("Authorization = \"Bearer token\""));
     assert!(encoded.contains("enabled = false"));
     assert!(!encoded.contains("command = "));
 }
@@ -1724,6 +1833,7 @@ IS_FIREBASE_MCP = "true"
 
     let loaded = load_root_from_dir(temp.path()).unwrap();
     let server = loaded.manifest.mcp_servers.get("firebase").unwrap();
+    assert!(server.transport_type.is_none());
     assert_eq!(server.command.as_deref(), Some("npx"));
     assert!(server.url.is_none());
     assert_eq!(server.args, vec!["-y", "firebase-tools"]);
@@ -1732,6 +1842,7 @@ IS_FIREBASE_MCP = "true"
         server.env,
         BTreeMap::from([(String::from("IS_FIREBASE_MCP"), String::from("true"))])
     );
+    assert!(server.headers.is_empty());
 }
 
 #[test]
@@ -1742,15 +1853,24 @@ fn parses_url_backed_mcp_servers() {
         &temp.path().join(MANIFEST_FILE),
         r#"
 [mcp_servers.figma]
+type = "http"
 url = "http://127.0.0.1:3845/mcp"
 enabled = false
+
+[mcp_servers.figma.headers]
+Authorization = "Bearer token"
 "#,
     );
 
     let loaded = load_root_from_dir(temp.path()).unwrap();
     let server = loaded.manifest.mcp_servers.get("figma").unwrap();
     assert!(server.command.is_none());
+    assert_eq!(server.transport_type.as_deref(), Some("http"));
     assert_eq!(server.url.as_deref(), Some("http://127.0.0.1:3845/mcp"));
+    assert_eq!(
+        server.headers,
+        BTreeMap::from([(String::from("Authorization"), String::from("Bearer token"))])
+    );
     assert!(!server.enabled);
 }
 

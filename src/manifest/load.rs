@@ -4,9 +4,9 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use super::discover::{
-    canonicalize_existing_path, discover_package_contents, import_codex_plugin_metadata,
-    load_claude_marketplace_wrapper, load_claude_plugin_version, load_codex_marketplace_wrapper,
-    load_manifest_str, quote, should_try_plugin_wrapper_fallback,
+    canonicalize_existing_path, discover_package_contents, import_claude_plugin_metadata,
+    import_codex_plugin_metadata, load_claude_marketplace_wrapper, load_claude_plugin_version,
+    load_codex_marketplace_wrapper, load_manifest_str, quote, should_try_plugin_wrapper_fallback,
 };
 use super::{DependencyKind, LoadedManifest, MANIFEST_FILE, Manifest, PackageRole};
 use crate::paths::display_path;
@@ -81,6 +81,7 @@ pub fn load_from_dir(root: &Path, role: PackageRole) -> Result<LoadedManifest> {
         }
     }
 
+    import_claude_plugin_metadata(&mut loaded)?;
     import_codex_plugin_metadata(&mut loaded)?;
 
     if loaded.manifest.version.is_none() {
@@ -166,6 +167,9 @@ pub fn serialize_manifest(manifest: &Manifest) -> Result<String> {
         }
         for (id, server) in &manifest.mcp_servers {
             output.push_str(&format!("[mcp_servers.{id}]\n"));
+            if let Some(transport_type) = &server.transport_type {
+                output.push_str(&format!("type = {}\n", quote(transport_type)));
+            }
             if let Some(command) = &server.command {
                 output.push_str(&format!("command = {}\n", quote(command)));
             }
@@ -192,6 +196,14 @@ pub fn serialize_manifest(manifest: &Manifest) -> Result<String> {
                 output.push_str(id);
                 output.push_str(".env]\n");
                 for (key, value) in &server.env {
+                    output.push_str(&format!("{key} = {}\n", quote(value)));
+                }
+            }
+            if !server.headers.is_empty() {
+                output.push_str("[mcp_servers.");
+                output.push_str(id);
+                output.push_str(".headers]\n");
+                for (key, value) in &server.headers {
                     output.push_str(&format!("{key} = {}\n", quote(value)));
                 }
             }

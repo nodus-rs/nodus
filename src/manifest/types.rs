@@ -96,6 +96,8 @@ pub struct Capability {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpServerConfig {
+    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    pub transport_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -104,6 +106,8 @@ pub struct McpServerConfig {
     pub args: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<PathBuf>,
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
@@ -338,6 +342,16 @@ pub(super) enum ClaudeMarketplaceMcpServers {
 pub(super) struct ClaudePluginMetadata {
     #[serde(default)]
     pub(super) version: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub(super) enum ClaudePluginMcpConfig {
+    Wrapped {
+        #[serde(rename = "mcpServers")]
+        mcp_servers: BTreeMap<String, McpServerConfig>,
+    },
+    Flat(BTreeMap<String, McpServerConfig>),
 }
 
 #[derive(Debug, Deserialize)]

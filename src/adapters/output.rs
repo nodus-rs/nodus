@@ -48,6 +48,8 @@ struct ProjectMcpConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct EmittedMcpServerConfig {
+    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    transport_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     command: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -56,6 +58,8 @@ struct EmittedMcpServerConfig {
     args: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     env: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    headers: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cwd: Option<String>,
 }
@@ -641,10 +645,12 @@ fn read_project_mcp_config(path: &Path) -> Result<ProjectMcpConfig> {
 
 fn emitted_mcp_server(server: &McpServerConfig) -> EmittedMcpServerConfig {
     EmittedMcpServerConfig {
+        transport_type: server.transport_type.clone(),
         command: server.command.clone(),
         url: server.url.clone(),
         args: server.args.clone(),
         env: server.env.clone(),
+        headers: server.headers.clone(),
         cwd: server.cwd.as_ref().map(|cwd| display_path(cwd)),
     }
 }

@@ -49,6 +49,13 @@ fn write_claude_plugin_json(path: &Path, version: &str) {
     );
 }
 
+fn write_modern_claude_plugin_json(path: &Path, version: &str) {
+    write_file(
+        &path.join(".claude-plugin/plugin.json"),
+        &format!("{{\n  \"name\": \"plugin\",\n  \"version\": \"{version}\"\n}}\n"),
+    );
+}
+
 fn write_codex_marketplace(path: &Path, contents: &str) {
     write_file(&path.join(".agents/plugins/marketplace.json"), contents);
 }
@@ -1488,6 +1495,80 @@ fn add_dependency_accepts_codex_marketplace_wrapper_and_syncs_plugin_contents() 
     assert_eq!(
         json["mcpServers"]["axiom__figma"]["url"].as_str(),
         Some("http://127.0.0.1:3845/mcp")
+    );
+}
+
+#[test]
+fn add_dependency_accepts_modern_claude_mcp_only_package_and_syncs_mcp_metadata() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+
+    let plugin = TempDir::new().unwrap();
+    write_modern_claude_plugin_json(plugin.path(), "2.34.0");
+    write_file(
+        &plugin.path().join(".mcp.json"),
+        r#"{
+  "github": {
+    "type": "http",
+    "url": "https://api.githubcopilot.com/mcp/",
+    "headers": {
+      "Authorization": "Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}"
+    }
+  },
+  "discord": {
+    "command": "bun",
+    "args": ["run", "--cwd", "${CLAUDE_PLUGIN_ROOT}", "--shell=bun", "--silent", "start"]
+  }
+}
+"#,
+    );
+    init_git_repo(plugin.path());
+    tag_repo(plugin.path(), "v0.4.0");
+
+    add_dependency_in_dir_with_adapters(
+        temp.path(),
+        cache.path(),
+        &plugin.path().to_string_lossy(),
+        Some("v0.4.0"),
+        &[Adapter::Codex],
+        &[],
+    )
+    .unwrap();
+
+    let alias = normalize_alias_from_url(&plugin.path().to_string_lossy()).unwrap();
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    let package = lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == alias)
+        .unwrap();
+    assert_eq!(package.version_tag.as_deref(), Some("2.34.0"));
+    assert_eq!(package.mcp_servers, vec!["discord", "github"]);
+    assert!(package.skills.is_empty());
+
+    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
+
+    let json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(temp.path().join(".mcp.json")).unwrap()).unwrap();
+    assert_eq!(
+        json["mcpServers"][format!("{alias}__github")]["type"].as_str(),
+        Some("http")
+    );
+    assert_eq!(
+        json["mcpServers"][format!("{alias}__github")]["headers"]["Authorization"].as_str(),
+        Some("Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}")
+    );
+    assert_eq!(
+        json["mcpServers"][format!("{alias}__discord")]["command"].as_str(),
+        Some("bun")
+    );
+    assert_eq!(
+        json["mcpServers"][format!("{alias}__discord")]["cwd"].as_str(),
+        Some(".")
+    );
+    assert_eq!(
+        json["mcpServers"][format!("{alias}__discord")]["args"],
+        serde_json::json!(["run", "--shell=bun", "--silent", "start"])
     );
 }
 

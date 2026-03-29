@@ -771,6 +771,13 @@ fn validate_mcp_server(server_id: &str, server: &McpServerConfig) -> Result<()> 
         bail!("manifest field `mcp_servers` contains an empty server id");
     }
     if server
+        .transport_type
+        .as_deref()
+        .is_some_and(|transport_type| transport_type.trim().is_empty())
+    {
+        bail!("manifest field `mcp_servers.{server_id}.type` must not be empty");
+    }
+    if server
         .command
         .as_deref()
         .is_some_and(|command| command.trim().is_empty())
@@ -814,6 +821,9 @@ fn validate_mcp_server(server_id: &str, server: &McpServerConfig) -> Result<()> 
             "manifest field `mcp_servers.{server_id}` must not combine `url` with `args`, `env`, or `cwd`"
         );
     }
+    if !server.headers.is_empty() && server.url.is_none() {
+        bail!("manifest field `mcp_servers.{server_id}.headers` requires `url` to be set");
+    }
     if let Some(cwd) = &server.cwd
         && cwd.as_os_str().is_empty()
     {
@@ -822,6 +832,11 @@ fn validate_mcp_server(server_id: &str, server: &McpServerConfig) -> Result<()> 
     for key in server.env.keys() {
         if key.trim().is_empty() {
             bail!("manifest field `mcp_servers.{server_id}.env` must not contain empty keys");
+        }
+    }
+    for key in server.headers.keys() {
+        if key.trim().is_empty() {
+            bail!("manifest field `mcp_servers.{server_id}.headers` must not contain empty keys");
         }
     }
 
@@ -839,6 +854,10 @@ fn validate_mcp_server(server_id: &str, server: &McpServerConfig) -> Result<()> 
             .any(|arg| arg.contains("${CLAUDE_PLUGIN_ROOT}"))
         || server
             .env
+            .values()
+            .any(|value| value.contains("${CLAUDE_PLUGIN_ROOT}"))
+        || server
+            .headers
             .values()
             .any(|value| value.contains("${CLAUDE_PLUGIN_ROOT}"))
         || server
