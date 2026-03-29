@@ -615,6 +615,45 @@ fn marketplace_sources_are_resolved_from_repo_root() {
 }
 
 #[test]
+fn skips_missing_claude_marketplace_local_plugin_sources_with_warning() {
+    let temp = TempDir::new().unwrap();
+    write_marketplace(
+        temp.path(),
+        r#"{
+  "plugins": [
+    {
+      "name": "Missing",
+      "source": "./plugins/missing"
+    },
+    {
+      "name": "Axiom",
+      "source": "./plugins/axiom"
+    }
+  ]
+}"#,
+    );
+    write_file(
+        &temp.path().join("plugins/axiom/skills/review/SKILL.md"),
+        "---\nname: Review\ndescription: Review code safely.\n---\n# Review\n",
+    );
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    assert_eq!(
+        loaded
+            .manifest
+            .dependencies
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec!["axiom"]
+    );
+    assert_eq!(loaded.warnings.len(), 1);
+    assert!(loaded.warnings[0].contains("skipping marketplace plugin `Missing`"));
+    assert!(loaded.warnings[0].contains("./plugins/missing"));
+}
+
+#[test]
 fn reads_claude_plugin_version_from_json() {
     let temp = TempDir::new().unwrap();
     write_valid_skill(temp.path());
@@ -833,7 +872,7 @@ fn rejects_marketplace_with_escaping_source_path() {
 }
 
 #[test]
-fn rejects_marketplace_with_missing_source_directory() {
+fn rejects_marketplace_when_all_local_plugin_sources_are_missing() {
     let temp = TempDir::new().unwrap();
     write_marketplace(
         temp.path(),
@@ -850,7 +889,8 @@ fn rejects_marketplace_with_missing_source_directory() {
     let error = load_dependency_from_dir(temp.path())
         .unwrap_err()
         .to_string();
-    assert!(error.contains("has invalid source `./plugins/missing`"));
+
+    assert!(error.contains("must contain at least one of `agents/`, `commands/`, `rules/`, or `skills/`, declare `mcp_servers`, or declare dependencies in nodus.toml"));
 }
 
 #[test]
@@ -876,12 +916,16 @@ fn rejects_marketplace_with_plugin_source_that_is_not_a_directory() {
 }
 
 #[test]
-fn rejects_marketplace_with_plugin_source_that_is_not_a_nodus_package() {
+fn skips_marketplace_with_docs_only_local_plugin_source() {
     let temp = TempDir::new().unwrap();
     write_marketplace(
         temp.path(),
         r#"{
   "plugins": [
+    {
+      "name": "Docs Only",
+      "source": "./plugins/docs"
+    },
     {
       "name": "Axiom",
       "source": "./plugins/axiom"
@@ -890,14 +934,72 @@ fn rejects_marketplace_with_plugin_source_that_is_not_a_nodus_package() {
 }"#,
     );
     write_file(
-        &temp.path().join("plugins/axiom/README.md"),
-        "# Not a package\n",
+        &temp.path().join("plugins/docs/README.md"),
+        "# Informational plugin\n",
+    );
+    write_file(
+        &temp.path().join("plugins/axiom/skills/review/SKILL.md"),
+        "---\nname: Review\ndescription: Review code safely.\n---\n# Review\n",
     );
 
-    let error = load_dependency_from_dir(temp.path())
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("does not match the Nodus package layout"));
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    assert_eq!(
+        loaded
+            .manifest
+            .dependencies
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec!["axiom"]
+    );
+    assert_eq!(loaded.warnings.len(), 1);
+    assert!(loaded.warnings[0].contains("skipping marketplace plugin `Docs Only`"));
+    assert!(loaded.warnings[0].contains("./plugins/docs"));
+}
+
+#[test]
+fn skips_marketplace_with_hook_only_claude_plugin_source() {
+    let temp = TempDir::new().unwrap();
+    write_marketplace(
+        temp.path(),
+        r#"{
+  "plugins": [
+    {
+      "name": "Hook Only",
+      "source": "./plugins/hook-only"
+    },
+    {
+      "name": "Axiom",
+      "source": "./plugins/axiom"
+    }
+  ]
+}"#,
+    );
+    write_modern_claude_plugin_json(&temp.path().join("plugins/hook-only"), Some("1.0.0"));
+    write_file(
+        &temp.path().join("plugins/hook-only/hooks/hooks.json"),
+        "{\n  \"hooks\": []\n}\n",
+    );
+    write_file(
+        &temp.path().join("plugins/axiom/skills/review/SKILL.md"),
+        "---\nname: Review\ndescription: Review code safely.\n---\n# Review\n",
+    );
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    assert_eq!(
+        loaded
+            .manifest
+            .dependencies
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec!["axiom"]
+    );
+    assert_eq!(loaded.warnings.len(), 1);
+    assert!(loaded.warnings[0].contains("skipping marketplace plugin `Hook Only`"));
+    assert!(loaded.warnings[0].contains("./plugins/hook-only"));
 }
 
 #[test]

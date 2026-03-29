@@ -1289,6 +1289,180 @@ fn add_dependency_writes_marketplace_version_alongside_default_branch() {
 }
 
 #[test]
+fn add_dependency_accepts_claude_marketplace_wrapper_with_missing_local_plugin_sources() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+
+    let wrapper = TempDir::new().unwrap();
+    write_marketplace(
+        wrapper.path(),
+        r#"{
+  "plugins": [
+    {
+      "name": "Missing",
+      "source": "./plugins/missing"
+    },
+    {
+      "name": "Axiom",
+      "source": "./plugins/axiom"
+    }
+  ]
+}"#,
+    );
+    write_skill(
+        &wrapper.path().join("plugins/axiom/skills/review"),
+        "Review",
+    );
+    init_git_repo(wrapper.path());
+    rename_current_branch(wrapper.path(), "main");
+
+    add_dependency_in_dir_with_adapters(
+        temp.path(),
+        cache.path(),
+        &wrapper.path().to_string_lossy(),
+        None,
+        &Adapter::ALL,
+        &[],
+    )
+    .unwrap();
+
+    let wrapper_alias = normalize_alias_from_url(&wrapper.path().to_string_lossy()).unwrap();
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    let wrapper_package = lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == wrapper_alias)
+        .unwrap();
+    assert_eq!(wrapper_package.dependencies, vec!["axiom"]);
+
+    let plugin_package = lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == "axiom")
+        .unwrap();
+    assert_eq!(plugin_package.skills, vec!["review"]);
+}
+
+#[test]
+fn add_dependency_accepts_claude_marketplace_wrapper_with_docs_only_local_plugin_sources() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+
+    let wrapper = TempDir::new().unwrap();
+    write_marketplace(
+        wrapper.path(),
+        r#"{
+  "plugins": [
+    {
+      "name": "Docs Only",
+      "source": "./plugins/docs"
+    },
+    {
+      "name": "Axiom",
+      "source": "./plugins/axiom"
+    }
+  ]
+}"#,
+    );
+    write_file(
+        &wrapper.path().join("plugins/docs/README.md"),
+        "# Informational plugin\n",
+    );
+    write_skill(
+        &wrapper.path().join("plugins/axiom/skills/review"),
+        "Review",
+    );
+    init_git_repo(wrapper.path());
+    rename_current_branch(wrapper.path(), "main");
+
+    add_dependency_in_dir_with_adapters(
+        temp.path(),
+        cache.path(),
+        &wrapper.path().to_string_lossy(),
+        None,
+        &Adapter::ALL,
+        &[],
+    )
+    .unwrap();
+
+    let wrapper_alias = normalize_alias_from_url(&wrapper.path().to_string_lossy()).unwrap();
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    let wrapper_package = lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == wrapper_alias)
+        .unwrap();
+    assert_eq!(wrapper_package.dependencies, vec!["axiom"]);
+
+    let plugin_package = lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == "axiom")
+        .unwrap();
+    assert_eq!(plugin_package.skills, vec!["review"]);
+}
+
+#[test]
+fn add_dependency_accepts_claude_marketplace_wrapper_with_hook_only_plugin_sources() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+
+    let wrapper = TempDir::new().unwrap();
+    write_marketplace(
+        wrapper.path(),
+        r#"{
+  "plugins": [
+    {
+      "name": "Hook Only",
+      "source": "./plugins/hook-only"
+    },
+    {
+      "name": "Axiom",
+      "source": "./plugins/axiom"
+    }
+  ]
+}"#,
+    );
+    write_modern_claude_plugin_json(&wrapper.path().join("plugins/hook-only"), "1.0.0");
+    write_file(
+        &wrapper.path().join("plugins/hook-only/hooks/hooks.json"),
+        "{\n  \"hooks\": []\n}\n",
+    );
+    write_skill(
+        &wrapper.path().join("plugins/axiom/skills/review"),
+        "Review",
+    );
+    init_git_repo(wrapper.path());
+    rename_current_branch(wrapper.path(), "main");
+
+    add_dependency_in_dir_with_adapters(
+        temp.path(),
+        cache.path(),
+        &wrapper.path().to_string_lossy(),
+        None,
+        &Adapter::ALL,
+        &[],
+    )
+    .unwrap();
+
+    let wrapper_alias = normalize_alias_from_url(&wrapper.path().to_string_lossy()).unwrap();
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    let wrapper_package = lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == wrapper_alias)
+        .unwrap();
+    assert_eq!(wrapper_package.dependencies, vec!["axiom"]);
+
+    let plugin_package = lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == "axiom")
+        .unwrap();
+    assert_eq!(plugin_package.skills, vec!["review"]);
+}
+
+#[test]
 fn add_dependency_accepts_claude_marketplace_remote_sources_and_syncs_contents() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();

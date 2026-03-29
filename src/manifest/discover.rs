@@ -32,6 +32,28 @@ pub(super) fn should_try_plugin_wrapper_fallback(loaded: &LoadedManifest) -> boo
         && loaded.manifest.mcp_servers.is_empty()
 }
 
+fn local_source_contains_nodus_manageable_content(root: &Path) -> bool {
+    if root.join(MANIFEST_FILE).exists() {
+        return true;
+    }
+
+    for directory in ["agents", "commands", "rules", "skills"] {
+        if root.join(directory).is_dir() {
+            return true;
+        }
+    }
+
+    [
+        root.join(".mcp.json"),
+        root.join(".claude-plugin").join("marketplace.json"),
+        root.join(".agents")
+            .join("plugins")
+            .join("marketplace.json"),
+    ]
+    .iter()
+    .any(|path| path.exists())
+}
+
 pub(super) fn load_claude_marketplace_wrapper(
     loaded: &LoadedManifest,
 ) -> Result<Option<LoadedManifest>> {
@@ -54,6 +76,7 @@ pub(super) fn load_claude_marketplace_wrapper(
     let mut manifest = loaded.manifest.clone();
     let mut single_plugin_version = None;
     let mut aliases = HashSet::new();
+    let mut warnings = loaded.warnings.clone();
     let plugin_count = marketplace.plugins.len();
     for plugin in marketplace.plugins {
         let name = plugin.name.trim();
@@ -97,6 +120,13 @@ pub(super) fn load_claude_marketplace_wrapper(
                 }
 
                 let source_path = PathBuf::from(source);
+                if !loaded.root.join(&source_path).exists() {
+                    warnings.push(format!(
+                        "skipping marketplace plugin `{name}` because local source `{source}` is missing from {}",
+                        loaded.root.display()
+                    ));
+                    continue;
+                }
                 let plugin_root = loaded
                     .resolve_existing_path(&source_path)
                     .with_context(|| format!("plugin `{name}` has invalid source `{source}`"))?;
@@ -121,6 +151,13 @@ pub(super) fn load_claude_marketplace_wrapper(
                     if plugin_count == 1 {
                         single_plugin_version = declared_version;
                     }
+                    continue;
+                }
+
+                if !local_source_contains_nodus_manageable_content(&plugin_root) {
+                    warnings.push(format!(
+                        "skipping marketplace plugin `{name}` because local source `{source}` does not expose Nodus-manageable package content"
+                    ));
                     continue;
                 }
 
@@ -175,7 +212,7 @@ pub(super) fn load_claude_marketplace_wrapper(
         manifest_path: loaded.manifest_path.clone(),
         manifest,
         discovered: PackageContents::default(),
-        warnings: loaded.warnings.clone(),
+        warnings,
         extra_package_files: vec![marketplace_path],
         allows_empty_dependency_wrapper: true,
         allows_unpinned_git_dependencies: true,
