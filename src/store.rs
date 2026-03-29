@@ -43,6 +43,12 @@ pub fn snapshot_packages<T: SnapshotSource>(
         .collect()
 }
 
+pub fn snapshot_path(cache_root: &Path, digest: &str) -> Result<PathBuf> {
+    Ok(cache_root
+        .join(STORE_ROOT)
+        .join(digest_directory_name(digest)?))
+}
+
 pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
     let parent = path
         .parent()

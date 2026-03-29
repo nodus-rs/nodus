@@ -14,6 +14,7 @@ use super::args::{Cli, Command};
 use super::output::should_auto_check_for_updates;
 use super::router::run_command_in_dir;
 use crate::adapters::Adapter;
+use crate::lockfile::Lockfile;
 use crate::report::{ColorMode, Reporter};
 use crate::resolver;
 
@@ -141,6 +142,26 @@ authentication = "ON_INSTALL"
 
     let url = repo.path().to_string_lossy().to_string();
     (repo, url)
+}
+
+fn project_cache_paths(project_root: &Path, cache_root: &Path) -> (PathBuf, PathBuf, Vec<PathBuf>) {
+    let lockfile = Lockfile::read(&project_root.join("nodus.lock")).unwrap();
+    let dependency = lockfile
+        .packages
+        .iter()
+        .find(|package| package.source.kind == "git")
+        .unwrap();
+    let url = dependency.source.url.as_deref().unwrap();
+    let rev = dependency.source.rev.as_deref().unwrap();
+    let mirror_path = crate::git::shared_repository_path(cache_root, url).unwrap();
+    let checkout_path = crate::git::shared_checkout_path(cache_root, url, rev).unwrap();
+    let snapshot_paths = lockfile
+        .packages
+        .iter()
+        .map(|package| crate::store::snapshot_path(cache_root, &package.digest).unwrap())
+        .collect();
+
+    (mirror_path, checkout_path, snapshot_paths)
 }
 
 fn run_command_output(command: Command, cwd: &Path, cache_root: &Path) -> String {
@@ -458,6 +479,7 @@ fn parses_dry_run_flags_for_mutating_commands() {
     let relay = Cli::try_parse_from(["nodus", "relay", "example/repo", "--dry-run"]).unwrap();
     let init = Cli::try_parse_from(["nodus", "init", "--dry-run"]).unwrap();
     let sync = Cli::try_parse_from(["nodus", "sync", "--dry-run"]).unwrap();
+    let clean = Cli::try_parse_from(["nodus", "clean", "--dry-run"]).unwrap();
 
     assert!(matches!(add.command, Command::Add { dry_run: true, .. }));
     assert!(matches!(
@@ -474,6 +496,10 @@ fn parses_dry_run_flags_for_mutating_commands() {
     ));
     assert!(matches!(init.command, Command::Init { dry_run: true }));
     assert!(matches!(sync.command, Command::Sync { dry_run: true, .. }));
+    assert!(matches!(
+        clean.command,
+        Command::Clean { dry_run: true, .. }
+    ));
 }
 
 #[test]
@@ -484,6 +510,27 @@ fn parses_sync_force_flag() {
         Command::Sync { force, .. } => assert!(force),
         other => panic!("expected sync command, got {other:?}"),
     }
+}
+
+#[test]
+fn parses_clean_subcommand_and_flags() {
+    let clean = Cli::try_parse_from(["nodus", "clean"]).unwrap();
+    let clean_all = Cli::try_parse_from(["nodus", "clean", "--all"]).unwrap();
+
+    assert!(matches!(
+        clean.command,
+        Command::Clean {
+            all: false,
+            dry_run: false
+        }
+    ));
+    assert!(matches!(
+        clean_all.command,
+        Command::Clean {
+            all: true,
+            dry_run: false
+        }
+    ));
 }
 
 #[test]
@@ -514,6 +561,7 @@ fn root_help_describes_commands() {
             "Check for or install a newer nodus CLI when the install method is supported"
         )
     );
+    assert!(help.contains("Clear shared repository, checkout, and snapshot cache data"));
     assert!(help.contains("Generate shell completion scripts"));
     assert!(
         help.contains("Use an AI review agent to assess whether a package graph looks safe to use")
@@ -551,18 +599,35 @@ fn add_help_describes_arguments() {
 #[test]
 fn mutating_subcommand_help_mentions_dry_run() {
     let mut root = <Cli as clap::CommandFactory>::command();
-    for name in ["add", "remove", "update", "relay", "init", "sync"] {
+    for name in ["add", "remove", "update", "relay", "init", "sync", "clean"] {
         let help = root
             .find_subcommand_mut(name)
             .unwrap()
             .render_long_help()
             .to_string();
         assert!(help.contains("--dry-run"), "{name} help missing dry-run");
-        assert!(
-            help.contains("may still populate the shared store"),
-            "{name} help missing shared-store explanation"
-        );
+        if name != "clean" {
+            assert!(
+                help.contains("may still populate the shared store"),
+                "{name} help missing shared-store explanation"
+            );
+        }
     }
+}
+
+#[test]
+fn clean_help_describes_scope() {
+    let mut root = <Cli as clap::CommandFactory>::command();
+    let help = root
+        .find_subcommand_mut("clean")
+        .unwrap()
+        .render_long_help()
+        .to_string();
+
+    assert!(help.contains("current repo's `nodus.lock`"));
+    assert!(help.contains("--all"));
+    assert!(help.contains("shared cache"));
+    assert!(help.contains("nodus clean --all"));
 }
 
 #[test]
@@ -1496,6 +1561,232 @@ fn outdated_command_emits_json_without_status_lines() {
     assert_eq!(json["dependencies"][0]["status"], "git_tag_current");
     assert!(!output.contains("Checking"));
     assert!(!output.contains("Finished"));
+}
+
+#[test]
+fn clean_command_removes_project_scoped_cache_entries_only() {
+    let temp = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    let (_repo, url) = create_git_dependency();
+
+    run_command_in_dir(
+        Command::Add {
+            url,
+            global: false,
+            dev: false,
+            tag: Some("v0.1.0".into()),
+            branch: None,
+            version: None,
+            revision: None,
+            adapter: vec![Adapter::Codex],
+            component: vec![],
+            sync_on_launch: false,
+            accept_all_dependencies: false,
+            dry_run: false,
+        },
+        temp.path(),
+        cache.path(),
+        &Reporter::silent(),
+    )
+    .unwrap();
+
+    let (mirror_path, checkout_path, snapshot_paths) =
+        project_cache_paths(temp.path(), cache.path());
+    let managed_skill = first_file_under(&temp.path().join(".codex"), "SKILL.md");
+
+    assert!(mirror_path.exists());
+    assert!(checkout_path.exists());
+    assert!(snapshot_paths.iter().all(|path| path.exists()));
+    assert!(temp.path().join("nodus.toml").exists());
+    assert!(temp.path().join("nodus.lock").exists());
+    assert!(managed_skill.exists());
+
+    let output = run_command_output(
+        Command::Clean {
+            all: false,
+            dry_run: false,
+        },
+        temp.path(),
+        cache.path(),
+    );
+
+    assert!(output.contains("Finished"));
+    assert!(!mirror_path.exists());
+    assert!(!checkout_path.exists());
+    assert!(snapshot_paths.iter().all(|path| !path.exists()));
+    assert!(temp.path().join("nodus.toml").exists());
+    assert!(temp.path().join("nodus.lock").exists());
+    assert!(managed_skill.exists());
+}
+
+#[test]
+fn clean_command_dry_run_previews_cache_removals_without_deleting() {
+    let temp = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    let (_repo, url) = create_git_dependency();
+
+    run_command_in_dir(
+        Command::Add {
+            url,
+            global: false,
+            dev: false,
+            tag: Some("v0.1.0".into()),
+            branch: None,
+            version: None,
+            revision: None,
+            adapter: vec![Adapter::Codex],
+            component: vec![],
+            sync_on_launch: false,
+            accept_all_dependencies: false,
+            dry_run: false,
+        },
+        temp.path(),
+        cache.path(),
+        &Reporter::silent(),
+    )
+    .unwrap();
+
+    let (mirror_path, checkout_path, snapshot_paths) =
+        project_cache_paths(temp.path(), cache.path());
+
+    let output = run_command_output(
+        Command::Clean {
+            all: false,
+            dry_run: true,
+        },
+        temp.path(),
+        cache.path(),
+    );
+
+    assert!(output.contains("would remove"));
+    assert!(output.contains("dry run: would remove"));
+    assert!(mirror_path.exists());
+    assert!(checkout_path.exists());
+    assert!(snapshot_paths.iter().all(|path| path.exists()));
+}
+
+#[test]
+fn sync_recreates_cache_after_clean_command() {
+    let temp = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    let (_repo, url) = create_git_dependency();
+
+    run_command_in_dir(
+        Command::Add {
+            url,
+            global: false,
+            dev: false,
+            tag: Some("v0.1.0".into()),
+            branch: None,
+            version: None,
+            revision: None,
+            adapter: vec![Adapter::Codex],
+            component: vec![],
+            sync_on_launch: false,
+            accept_all_dependencies: false,
+            dry_run: false,
+        },
+        temp.path(),
+        cache.path(),
+        &Reporter::silent(),
+    )
+    .unwrap();
+
+    let (mirror_path, checkout_path, snapshot_paths) =
+        project_cache_paths(temp.path(), cache.path());
+    run_command_in_dir(
+        Command::Clean {
+            all: false,
+            dry_run: false,
+        },
+        temp.path(),
+        cache.path(),
+        &Reporter::silent(),
+    )
+    .unwrap();
+
+    assert!(!mirror_path.exists());
+    assert!(!checkout_path.exists());
+    assert!(snapshot_paths.iter().all(|path| !path.exists()));
+
+    let output = run_command_output(
+        Command::Sync {
+            locked: false,
+            frozen: false,
+            allow_high_sensitivity: false,
+            force: false,
+            adapter: vec![],
+            sync_on_launch: false,
+            dry_run: false,
+        },
+        temp.path(),
+        cache.path(),
+    );
+
+    assert!(output.contains("Finished"));
+    assert!(mirror_path.exists());
+    assert!(checkout_path.exists());
+    assert!(snapshot_paths.iter().all(|path| path.exists()));
+}
+
+#[test]
+fn clean_command_requires_lockfile_for_project_scope() {
+    let temp = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+
+    let error = run_command_in_dir(
+        Command::Clean {
+            all: false,
+            dry_run: false,
+        },
+        temp.path(),
+        cache.path(),
+        &Reporter::silent(),
+    )
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("run `nodus sync` first or use `nodus clean --all`")
+    );
+}
+
+#[test]
+fn clean_all_preserves_non_cache_store_state() {
+    let temp = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    let repositories_root = cache.path().join("repositories").join("example.git");
+    let checkouts_root = cache
+        .path()
+        .join("checkouts")
+        .join("example")
+        .join("abc123");
+    let snapshot_root = cache.path().join("store/sha256").join("sha");
+    let global_manifest = cache.path().join("global/nodus.toml");
+    let update_state = cache.path().join("update-check.json");
+
+    write_file(&repositories_root.join("HEAD"), "ref: refs/heads/main\n");
+    write_file(&checkouts_root.join("README.md"), "checkout\n");
+    write_file(&snapshot_root.join("SKILL.md"), "snapshot\n");
+    write_file(&global_manifest, "name = \"global\"\n");
+    write_file(&update_state, "{}\n");
+
+    let output = run_command_output(
+        Command::Clean {
+            all: true,
+            dry_run: false,
+        },
+        temp.path(),
+        cache.path(),
+    );
+
+    assert!(output.contains("Finished"));
+    assert!(!cache.path().join("repositories").exists());
+    assert!(!cache.path().join("checkouts").exists());
+    assert!(!cache.path().join("store/sha256").exists());
+    assert!(global_manifest.exists());
+    assert!(update_state.exists());
 }
 
 #[test]

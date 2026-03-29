@@ -113,6 +113,19 @@ const SYNC_AFTER_LONG_HELP: &str = r#"Examples:
 
 Use `--locked` when the lockfile must stay unchanged. Use `--frozen` when installs must come exactly from the existing `nodus.lock`."#;
 
+const CLEAN_LONG_ABOUT: &str = r#"Clear shared package cache data without changing `nodus.toml`, `nodus.lock`, or generated runtime outputs.
+
+By default `nodus clean` removes only the cache entries referenced by the current repo's `nodus.lock`. Use `--all` when you want to clear the shared cache directories for every project under the selected store root.
+
+The cache is shared, so project-scoped cleanup can make another repo redownload the same package data on its next `nodus sync`."#;
+
+const CLEAN_AFTER_LONG_HELP: &str = r#"Examples:
+  nodus clean
+  nodus clean --dry-run
+  nodus clean --all
+
+After cleaning the cache, run `nodus sync` again when you want Nodus to recreate the missing mirrors, checkouts, and snapshots."#;
+
 const COMPLETION_LONG_ABOUT: &str = r#"Generate shell completion scripts for `nodus` so the shell can suggest commands and flags interactively."#;
 
 const DOCTOR_LONG_ABOUT: &str = r#"Validate that `nodus.toml`, `nodus.lock`, the shared store, and the managed adapter outputs are still in sync.
@@ -436,6 +449,23 @@ pub(super) enum Command {
         #[arg(
             long = "dry-run",
             help = "Preview project changes without writing to the project or linked repo; may still populate the shared store to compute the result"
+        )]
+        dry_run: bool,
+    },
+    #[command(
+        about = "Clear shared repository, checkout, and snapshot cache data",
+        long_about = CLEAN_LONG_ABOUT,
+        after_long_help = CLEAN_AFTER_LONG_HELP
+    )]
+    Clean {
+        #[arg(
+            long,
+            help = "Clear the shared cache directories for every project under the selected store root"
+        )]
+        all: bool,
+        #[arg(
+            long = "dry-run",
+            help = "Preview cache removals without deleting anything"
         )]
         dry_run: bool,
     },
