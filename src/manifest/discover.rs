@@ -1199,7 +1199,7 @@ fn parse_plugin_metadata_version(
         Err(_) => {
             warnings.push(format!(
                 "ignoring non-SemVer {plugin_kind} version `{version}` in {}",
-                metadata_path.display()
+                display_path(metadata_path)
             ));
             None
         }
@@ -1207,8 +1207,7 @@ fn parse_plugin_metadata_version(
 }
 
 pub(super) fn canonicalize_existing_path(path: &Path) -> Result<PathBuf> {
-    path.canonicalize()
-        .with_context(|| format!("failed to canonicalize {}", path.display()))
+    dunce::canonicalize(path).with_context(|| format!("failed to canonicalize {}", path.display()))
 }
 
 pub(super) fn default_manifest_contents() -> &'static str {
