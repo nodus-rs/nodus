@@ -137,17 +137,23 @@ pub(super) fn load_claude_marketplace_wrapper(
                     );
                 }
                 if plugin_root == loaded.root {
-                    let Some(mcp_servers) = plugin.mcp_servers else {
+                    if let Some(mcp_servers) = plugin.mcp_servers {
+                        import_marketplace_mcp_servers(
+                            &mut manifest,
+                            name,
+                            mcp_servers,
+                            &marketplace_path,
+                        )?;
+                    } else if !loaded
+                        .root
+                        .join(".claude-plugin")
+                        .join("plugin.json")
+                        .exists()
+                    {
                         bail!(
                             "plugin `{name}` source `{source}` must not point at the package root"
                         );
-                    };
-                    import_marketplace_mcp_servers(
-                        &mut manifest,
-                        name,
-                        mcp_servers,
-                        &marketplace_path,
-                    )?;
+                    }
                     if plugin_count == 1 {
                         single_plugin_version = declared_version;
                     }

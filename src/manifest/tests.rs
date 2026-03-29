@@ -603,6 +603,48 @@ fn imports_firebase_style_marketplace_url_mcp_servers() {
 }
 
 #[test]
+fn accepts_marketplace_plugin_that_points_at_root_claude_plugin_metadata() {
+    let temp = TempDir::new().unwrap();
+    write_marketplace(
+        temp.path(),
+        r#"{
+  "plugins": [
+    {
+      "name": "atlan",
+      "version": "1.0.0",
+      "source": "./"
+    }
+  ]
+}"#,
+    );
+    write_modern_claude_plugin_json(temp.path(), Some("1.0.0"));
+    write_file(
+        &temp.path().join(".mcp.json"),
+        r#"{
+  "mcpServers": {
+    "atlan": {
+      "type": "http",
+      "url": "https://mcp.atlan.com/mcp"
+    }
+  }
+}
+"#,
+    );
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    assert!(loaded.discovered.is_empty());
+    assert!(loaded.manifest.dependencies.is_empty());
+    assert_eq!(
+        loaded.manifest.version,
+        Some(Version::parse("1.0.0").unwrap())
+    );
+    let server = loaded.manifest.mcp_servers.get("atlan").unwrap();
+    assert_eq!(server.transport_type.as_deref(), Some("http"));
+    assert_eq!(server.url.as_deref(), Some("https://mcp.atlan.com/mcp"));
+}
+
+#[test]
 fn imports_all_marketplace_plugins_in_sorted_alias_order() {
     let temp = TempDir::new().unwrap();
     write_marketplace(

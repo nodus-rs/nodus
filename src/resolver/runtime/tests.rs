@@ -1301,6 +1301,72 @@ fn add_dependency_accepts_claude_marketplace_wrapper_and_syncs_plugin_contents()
 }
 
 #[test]
+fn add_dependency_accepts_marketplace_plugin_that_points_at_root_claude_plugin_metadata() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+
+    let wrapper = TempDir::new().unwrap();
+    write_marketplace(
+        wrapper.path(),
+        r#"{
+  "plugins": [
+    {
+      "name": "atlan",
+      "version": "1.0.0",
+      "source": "./"
+    }
+  ]
+}"#,
+    );
+    write_modern_claude_plugin_json(wrapper.path(), "1.0.0");
+    write_file(
+        &wrapper.path().join(".mcp.json"),
+        r#"{
+  "mcpServers": {
+    "atlan": {
+      "type": "http",
+      "url": "https://mcp.atlan.com/mcp"
+    }
+  }
+}
+"#,
+    );
+    init_git_repo(wrapper.path());
+    rename_current_branch(wrapper.path(), "main");
+
+    add_dependency_in_dir_with_adapters(
+        temp.path(),
+        cache.path(),
+        &wrapper.path().to_string_lossy(),
+        None,
+        &Adapter::ALL,
+        &[],
+    )
+    .unwrap();
+
+    let wrapper_alias = normalize_alias_from_url(&wrapper.path().to_string_lossy()).unwrap();
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    let wrapper_package = lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == wrapper_alias)
+        .unwrap();
+    assert!(wrapper_package.dependencies.is_empty());
+    assert_eq!(wrapper_package.mcp_servers, vec!["atlan"]);
+
+    let json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(temp.path().join(".mcp.json")).unwrap()).unwrap();
+    assert_eq!(
+        json["mcpServers"][format!("{wrapper_alias}__atlan")]["url"].as_str(),
+        Some("https://mcp.atlan.com/mcp")
+    );
+    assert_eq!(
+        json["mcpServers"][format!("{wrapper_alias}__atlan")]["type"].as_str(),
+        Some("http")
+    );
+}
+
+#[test]
 fn add_dependency_writes_marketplace_version_alongside_default_branch() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();
