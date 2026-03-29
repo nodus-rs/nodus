@@ -26,7 +26,12 @@ fn create_directory_symlink_impl(target: &Path, link: &Path) -> io::Result<()> {
 
 #[cfg(windows)]
 fn create_directory_symlink_impl(target: &Path, link: &Path) -> io::Result<()> {
-    std::os::windows::fs::symlink_dir(target, link)
+    let resolved_target = if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        link.parent().unwrap_or_else(|| Path::new(".")).join(target)
+    };
+    std::os::windows::fs::symlink_dir(&resolved_target, link)
 }
 
 fn create_directory_symlink(target: &Path, link: &Path) -> bool {
@@ -417,15 +422,9 @@ fn accepts_dependency_repo_with_claude_marketplace_wrapper() {
     );
 
     let package_files = loaded.package_files().unwrap();
-    assert!(
-        package_files.contains(
-            &temp
-                .path()
-                .join(".claude-plugin/marketplace.json")
-                .canonicalize()
-                .unwrap()
-        )
-    );
+    assert!(package_files.contains(
+        &canonicalize_path(&temp.path().join(".claude-plugin/marketplace.json")).unwrap()
+    ));
 }
 
 #[test]
@@ -811,13 +810,8 @@ fn accepts_dependency_repo_with_only_modern_claude_plugin_metadata_and_flat_mcp_
     assert_eq!(server.url.as_deref(), Some("https://mcp.asana.com/sse"));
     let package_files = loaded.package_files().unwrap();
     assert!(
-        package_files.contains(
-            &temp
-                .path()
-                .join(".claude-plugin/plugin.json")
-                .canonicalize()
-                .unwrap()
-        )
+        package_files
+            .contains(&canonicalize_path(&temp.path().join(".claude-plugin/plugin.json")).unwrap())
     );
     assert!(package_files.contains(&canonicalize_path(&temp.path().join(".mcp.json")).unwrap()));
 }
@@ -954,13 +948,8 @@ fn reads_codex_plugin_version_and_mcp_servers_from_json() {
     assert_eq!(server.url.as_deref(), Some("http://127.0.0.1:3845/mcp"));
     let package_files = loaded.package_files().unwrap();
     assert!(
-        package_files.contains(
-            &temp
-                .path()
-                .join(".codex-plugin/plugin.json")
-                .canonicalize()
-                .unwrap()
-        )
+        package_files
+            .contains(&canonicalize_path(&temp.path().join(".codex-plugin/plugin.json")).unwrap())
     );
     assert!(package_files.contains(&canonicalize_path(&temp.path().join(".mcp.json")).unwrap()));
 }
@@ -1288,15 +1277,9 @@ fn accepts_dependency_repo_with_codex_marketplace_wrapper() {
     );
 
     let package_files = loaded.package_files().unwrap();
-    assert!(
-        package_files.contains(
-            &temp
-                .path()
-                .join(".agents/plugins/marketplace.json")
-                .canonicalize()
-                .unwrap()
-        )
-    );
+    assert!(package_files.contains(
+        &canonicalize_path(&temp.path().join(".agents/plugins/marketplace.json")).unwrap()
+    ));
 }
 
 #[test]

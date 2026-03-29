@@ -35,7 +35,12 @@ fn create_directory_symlink_impl(target: &Path, link: &Path) -> io::Result<()> {
 
 #[cfg(windows)]
 fn create_directory_symlink_impl(target: &Path, link: &Path) -> io::Result<()> {
-    std::os::windows::fs::symlink_dir(target, link)
+    let resolved_target = if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        link.parent().unwrap_or_else(|| Path::new(".")).join(target)
+    };
+    std::os::windows::fs::symlink_dir(&resolved_target, link)
 }
 
 fn create_directory_symlink(target: &Path, link: &Path) -> bool {
@@ -2139,9 +2144,8 @@ fn add_dependency_accepts_modern_claude_mcp_only_package_and_syncs_mcp_metadata(
         json["mcpServers"][format!("{alias}__discord")]["cwd"]
             .as_str()
             .unwrap(),
-    )
-    .canonicalize()
-    .unwrap();
+    );
+    let emitted_cwd = canonicalize_path(emitted_cwd).unwrap();
     assert_eq!(emitted_cwd, canonicalize_path(&package.root).unwrap());
     assert_eq!(
         json["mcpServers"][format!("{alias}__discord")]["args"],
