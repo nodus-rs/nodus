@@ -256,6 +256,39 @@ authentication = "ON_INSTALL"
     write_skill(&path.join("plugins/axiom/skills/review"), "Review");
 }
 
+fn write_workspace_dependency_with_invalid_member(path: &Path) {
+    write_manifest(
+        path,
+        r#"
+[workspace]
+members = ["plugins/axiom", "plugins/firebase"]
+
+[workspace.package.axiom]
+path = "plugins/axiom"
+name = "Axiom"
+
+[workspace.package.axiom.codex]
+category = "Productivity"
+installation = "AVAILABLE"
+authentication = "ON_INSTALL"
+
+[workspace.package.firebase]
+path = "plugins/firebase"
+name = "Firebase"
+
+[workspace.package.firebase.codex]
+category = "Productivity"
+installation = "AVAILABLE"
+authentication = "ON_INSTALL"
+"#,
+    );
+    write_skill(&path.join("plugins/axiom/skills/review"), "Review");
+    write_file(
+        &path.join("plugins/firebase/README.md"),
+        "# Not a package\n",
+    );
+}
+
 fn tag_repo(path: &Path, tag: &str) {
     run_git(path, &["tag", tag]);
 }
@@ -946,6 +979,67 @@ fn add_dependency_accepts_all_workspace_members_when_requested() {
 }
 
 #[test]
+fn add_dependency_skips_invalid_workspace_members() {
+    let project = TempDir::new().unwrap();
+    let cache = cache_dir();
+    let repo = TempDir::new().unwrap();
+    write_workspace_dependency_with_invalid_member(repo.path());
+    init_git_repo(repo.path());
+    tag_repo(repo.path(), "v0.2.0");
+
+    let summary = add_dependency_in_dir_with_adapters(
+        project.path(),
+        cache.path(),
+        &repo.path().to_string_lossy(),
+        Some("v0.2.0"),
+        &Adapter::ALL,
+        &[],
+    )
+    .unwrap();
+
+    assert_eq!(
+        summary
+            .dependency_members
+            .iter()
+            .map(|member| (member.id.as_str(), member.enabled))
+            .collect::<Vec<_>>(),
+        vec![("axiom", true), ("firebase", false)]
+    );
+    assert!(summary.dependency_preview.contains("members = [\"axiom\"]"));
+
+    let loaded = load_root_from_dir(project.path()).unwrap();
+    let dependency = loaded
+        .manifest
+        .dependencies
+        .get(&normalize_alias_from_url(&repo.path().to_string_lossy()).unwrap())
+        .unwrap();
+    assert_eq!(
+        dependency.members.as_deref(),
+        Some(&["axiom".to_string()][..])
+    );
+
+    let resolution = resolve_project(project.path(), cache.path(), ResolveMode::Sync).unwrap();
+    assert!(
+        resolution
+            .packages
+            .iter()
+            .any(|package| package.alias == "axiom")
+    );
+    assert!(
+        !resolution
+            .packages
+            .iter()
+            .any(|package| package.alias == "firebase")
+    );
+    assert!(
+        resolution
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("ignoring workspace member `firebase`"))
+    );
+}
+
+#[test]
 fn add_dependency_leaves_multi_marketplace_plugins_disabled_by_default() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();
@@ -1148,6 +1242,32 @@ fn sync_generates_workspace_marketplace_files() {
             .managed_files
             .contains(&String::from(".agents/plugins/marketplace.json"))
     );
+}
+
+#[test]
+fn sync_skips_invalid_workspace_members_in_marketplace_files() {
+    let repo = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_workspace_dependency_with_invalid_member(repo.path());
+
+    sync_in_dir_with_adapters(repo.path(), cache.path(), false, false, &Adapter::ALL).unwrap();
+
+    let claude: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(repo.path().join(".claude-plugin/marketplace.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(claude["plugins"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        claude["plugins"][0]["source"].as_str(),
+        Some("plugins/axiom")
+    );
+
+    let codex: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(repo.path().join(".agents/plugins/marketplace.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(codex["plugins"].as_array().unwrap().len(), 1);
+    assert_eq!(codex["plugins"][0]["name"].as_str(), Some("Axiom"));
 }
 
 #[test]

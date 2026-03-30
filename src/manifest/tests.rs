@@ -252,6 +252,49 @@ name = "Axiom"
 }
 
 #[test]
+fn workspace_root_ignores_invalid_member_and_warns() {
+    let temp = TempDir::new().unwrap();
+    write_workspace_member(&temp.path().join("plugins/axiom"), "Axiom");
+    write_file(
+        &temp.path().join("plugins/firebase/README.md"),
+        "# Not a package\n",
+    );
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[workspace]
+members = ["plugins/axiom", "plugins/firebase"]
+
+[workspace.package.axiom]
+path = "plugins/axiom"
+name = "Axiom"
+
+[workspace.package.firebase]
+path = "plugins/firebase"
+name = "Firebase"
+"#,
+    );
+
+    let loaded = load_root_from_dir(temp.path()).unwrap();
+
+    assert_eq!(
+        loaded
+            .resolved_workspace_members()
+            .unwrap()
+            .into_iter()
+            .map(|member| member.id)
+            .collect::<Vec<_>>(),
+        vec![String::from("axiom")]
+    );
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("ignoring workspace member `firebase`"))
+    );
+}
+
+#[test]
 fn does_not_warn_for_supported_launch_hook_config() {
     let temp = TempDir::new().unwrap();
     write_valid_skill(temp.path());
@@ -1035,7 +1078,7 @@ fn rejects_marketplace_without_plugins() {
 }
 
 #[test]
-fn rejects_marketplace_with_duplicate_plugin_aliases() {
+fn ignores_marketplace_plugins_with_duplicate_aliases() {
     let temp = TempDir::new().unwrap();
     write_marketplace(
         temp.path(),
@@ -1061,14 +1104,19 @@ fn rejects_marketplace_with_duplicate_plugin_aliases() {
         "---\nname: Two\ndescription: Two skill.\n---\n# Two\n",
     );
 
-    let error = load_dependency_from_dir(temp.path())
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("duplicate plugin alias `axiom`"));
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+    assert_eq!(loaded.manifest.dependencies.len(), 1);
+    assert!(loaded.manifest.dependencies.contains_key("axiom"));
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("duplicate plugin alias `axiom`"))
+    );
 }
 
 #[test]
-fn rejects_marketplace_with_escaping_source_path() {
+fn ignores_marketplace_with_escaping_source_path() {
     let temp = TempDir::new().unwrap();
     let outside = TempDir::new().unwrap();
     write_file(
@@ -1093,14 +1141,18 @@ fn rejects_marketplace_with_escaping_source_path() {
         ),
     );
 
-    let error = load_dependency_from_dir(temp.path())
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("plugin `Axiom` has invalid source"));
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+    assert!(loaded.manifest.dependencies.is_empty());
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("plugin `Axiom` has invalid source"))
+    );
 }
 
 #[test]
-fn rejects_marketplace_when_all_local_plugin_sources_are_missing() {
+fn ignores_marketplace_with_missing_source_directory() {
     let temp = TempDir::new().unwrap();
     write_marketplace(
         temp.path(),
@@ -1114,15 +1166,18 @@ fn rejects_marketplace_when_all_local_plugin_sources_are_missing() {
 }"#,
     );
 
-    let error = load_dependency_from_dir(temp.path())
-        .unwrap_err()
-        .to_string();
-
-    assert!(error.contains("must contain at least one of `agents/`, `commands/`, `rules/`, or `skills/`, declare `mcp_servers`, or declare dependencies in nodus.toml"));
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+    assert!(loaded.manifest.dependencies.is_empty());
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("local source `./plugins/missing` is missing"))
+    );
 }
 
 #[test]
-fn rejects_marketplace_with_plugin_source_that_is_not_a_directory() {
+fn ignores_marketplace_plugin_source_that_is_not_a_directory() {
     let temp = TempDir::new().unwrap();
     write_marketplace(
         temp.path(),
@@ -1137,10 +1192,43 @@ fn rejects_marketplace_with_plugin_source_that_is_not_a_directory() {
     );
     write_file(&temp.path().join("plugins/axiom"), "not a directory\n");
 
-    let error = load_dependency_from_dir(temp.path())
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("must point to a directory"));
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+    assert!(loaded.manifest.dependencies.is_empty());
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("must point to a directory"))
+    );
+}
+
+#[test]
+fn ignores_marketplace_plugin_source_that_is_not_a_nodus_package() {
+    let temp = TempDir::new().unwrap();
+    write_marketplace(
+        temp.path(),
+        r#"{
+  "plugins": [
+    {
+      "name": "Axiom",
+      "source": "./plugins/axiom"
+    }
+  ]
+}"#,
+    );
+    write_file(
+        &temp.path().join("plugins/axiom/README.md"),
+        "# Not a package\n",
+    );
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+    assert!(loaded.manifest.dependencies.is_empty());
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("does not expose Nodus-manageable package content"))
+    );
 }
 
 #[test]
@@ -1231,7 +1319,7 @@ fn skips_marketplace_with_hook_only_claude_plugin_source() {
 }
 
 #[test]
-fn rejects_marketplace_with_mcp_server_path_indirection() {
+fn ignores_marketplace_with_mcp_server_path_indirection() {
     let temp = TempDir::new().unwrap();
     write_marketplace(
         temp.path(),
@@ -1246,10 +1334,14 @@ fn rejects_marketplace_with_mcp_server_path_indirection() {
 }"#,
     );
 
-    let error = load_dependency_from_dir(temp.path())
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("unsupported `mcpServers` path"));
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+    assert!(loaded.manifest.dependencies.is_empty());
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("unsupported `mcpServers` path"))
+    );
 }
 
 #[test]
@@ -1326,7 +1418,7 @@ fn accepts_dependency_repo_with_codex_marketplace_wrapper() {
 }
 
 #[test]
-fn rejects_codex_marketplace_with_plugin_source_that_points_at_package_root() {
+fn ignores_codex_marketplace_plugin_source_that_points_at_package_root() {
     let temp = TempDir::new().unwrap();
     write_codex_marketplace(
         temp.path(),
@@ -1349,10 +1441,14 @@ fn rejects_codex_marketplace_with_plugin_source_that_points_at_package_root() {
     );
     write_codex_plugin_json(temp.path(), "2.34.0", None);
 
-    let error = load_dependency_from_dir(temp.path())
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("must not point at the package root"));
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+    assert!(loaded.manifest.dependencies.is_empty());
+    assert!(
+        loaded
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("must not point at the package root"))
+    );
 }
 
 #[test]

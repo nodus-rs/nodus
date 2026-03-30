@@ -9,7 +9,7 @@ use toml::Table;
 use super::types::{
     ClaudeMarketplace, ClaudeMarketplaceMcpServers, ClaudeMarketplaceRemoteSource,
     ClaudeMarketplaceSource, ClaudePluginMcpConfig, ClaudePluginMetadata, CodexMarketplace,
-    CodexPluginMcpConfig, CodexPluginMetadata, SkillFrontmatter,
+    CodexMarketplacePlugin, CodexPluginMcpConfig, CodexPluginMetadata, SkillFrontmatter,
 };
 use super::*;
 use crate::git::github_slug_from_url;
@@ -80,140 +80,19 @@ pub(super) fn load_claude_marketplace_wrapper(
     let mut warnings = loaded.warnings.clone();
     let plugin_count = marketplace.plugins.len();
     for plugin in marketplace.plugins {
-        let name = plugin.name.trim();
-        if name.is_empty() {
-            bail!(
-                "{} plugin names must not be empty",
-                marketplace_path.display()
-            );
-        }
-
-        let declared_version = plugin
-            .version
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| {
-                Version::parse(value).with_context(|| {
-                    format!(
-                        "failed to parse plugin `{name}` version `{value}` in {}",
-                        marketplace_path.display()
-                    )
-                })
-            })
-            .transpose()?;
-
-        let alias = normalize_dependency_alias(name)?;
-        if !aliases.insert(alias.clone()) {
-            bail!(
-                "{} contains duplicate plugin alias `{alias}` after normalization",
-                marketplace_path.display()
-            );
-        }
-        match plugin.source {
-            ClaudeMarketplaceSource::LocalPath(source) => {
-                let source = source.trim();
-                if source.is_empty() {
-                    bail!(
-                        "{} plugin `{name}` must declare a non-empty `source`",
-                        marketplace_path.display()
-                    );
-                }
-
-                let source_path = PathBuf::from(source);
-                if !loaded.root.join(&source_path).exists() {
-                    warnings.push(format!(
-                        "skipping marketplace plugin `{name}` because local source `{source}` is missing from {}",
-                        loaded.root.display()
-                    ));
-                    continue;
-                }
-                let joined_source = loaded.root.join(&source_path);
-                let plugin_root = match loaded.resolve_existing_directory(&source_path) {
-                    Ok(plugin_root) => plugin_root,
-                    Err(error) => {
-                        if fs::metadata(&joined_source)
-                            .map(|metadata| metadata.is_file())
-                            .unwrap_or(false)
-                        {
-                            bail!("plugin `{name}` source `{source}` must point to a directory");
-                        }
-                        return Err(error).with_context(|| {
-                            format!("plugin `{name}` has invalid source `{source}`")
-                        });
-                    }
-                };
-                if plugin_root == loaded.root {
-                    if let Some(mcp_servers) = plugin.mcp_servers {
-                        import_marketplace_mcp_servers(
-                            &mut manifest,
-                            name,
-                            mcp_servers,
-                            &marketplace_path,
-                            &loaded.root,
-                        )?;
-                    } else if !loaded
-                        .root
-                        .join(".claude-plugin")
-                        .join("plugin.json")
-                        .exists()
-                    {
-                        bail!(
-                            "plugin `{name}` source `{source}` must not point at the package root"
-                        );
-                    }
-                    if plugin_count == 1 {
-                        single_plugin_version = declared_version;
-                    }
-                    continue;
-                }
-
-                if !local_source_contains_nodus_manageable_content(&plugin_root) {
-                    warnings.push(format!(
-                        "skipping marketplace plugin `{name}` because local source `{source}` does not expose Nodus-manageable package content"
-                    ));
-                    continue;
-                }
-
-                let plugin_manifest = load_dependency_from_dir(&plugin_root).with_context(|| {
-                    format!(
-                        "plugin `{name}` source `{source}` does not match the Nodus package layout"
-                    )
-                })?;
-
-                manifest.dependencies.insert(
-                    alias,
-                    DependencySpec {
-                        github: None,
-                        url: None,
-                        path: Some(source_path),
-                        subpath: None,
-                        tag: None,
-                        branch: None,
-                        revision: None,
-                        version: None,
-                        components: None,
-                        members: None,
-                        managed: None,
-                        enabled: true,
-                    },
-                );
-
+        match load_claude_marketplace_plugin(
+            loaded,
+            &mut manifest,
+            &marketplace_path,
+            &mut aliases,
+            plugin,
+        ) {
+            Ok(plugin_version) => {
                 if plugin_count == 1 {
-                    single_plugin_version =
-                        declared_version.or_else(|| plugin_manifest.effective_version());
+                    single_plugin_version = plugin_version.or(single_plugin_version);
                 }
             }
-            ClaudeMarketplaceSource::Remote(source) => {
-                manifest.dependencies.insert(
-                    alias,
-                    dependency_from_claude_marketplace_source(name, source, &marketplace_path)?,
-                );
-
-                if plugin_count == 1 {
-                    single_plugin_version = declared_version;
-                }
-            }
+            Err(error) => warnings.push(error.to_string()),
         }
     }
 
@@ -260,86 +139,22 @@ pub(super) fn load_codex_marketplace_wrapper(
     let mut manifest = loaded.manifest.clone();
     let mut single_plugin_version = None;
     let mut aliases = HashSet::new();
+    let mut warnings = loaded.warnings.clone();
     let plugin_count = marketplace.plugins.len();
     for plugin in marketplace.plugins {
-        let name = plugin.name.trim();
-        if name.is_empty() {
-            bail!(
-                "{} plugin names must not be empty",
-                marketplace_path.display()
-            );
-        }
-
-        let source_kind = plugin.source.source.trim();
-        if source_kind != "local" {
-            bail!(
-                "{} plugin `{name}` uses unsupported source kind `{source_kind}`",
-                marketplace_path.display()
-            );
-        }
-
-        let source = plugin.source.path.trim();
-        if source.is_empty() {
-            bail!(
-                "{} plugin `{name}` must declare a non-empty `source.path`",
-                marketplace_path.display()
-            );
-        }
-
-        let alias = normalize_dependency_alias(name)?;
-        if !aliases.insert(alias.clone()) {
-            bail!(
-                "{} contains duplicate plugin alias `{alias}` after normalization",
-                marketplace_path.display()
-            );
-        }
-
-        let source_path = PathBuf::from(source);
-        let joined_source = loaded.root.join(&source_path);
-        let plugin_root = match loaded.resolve_existing_directory(&source_path) {
-            Ok(plugin_root) => plugin_root,
-            Err(error) => {
-                if fs::metadata(&joined_source)
-                    .map(|metadata| metadata.is_file())
-                    .unwrap_or(false)
-                {
-                    bail!("plugin `{name}` source path `{source}` must point to a directory");
+        match load_codex_marketplace_plugin(
+            loaded,
+            &mut manifest,
+            &marketplace_path,
+            &mut aliases,
+            plugin,
+        ) {
+            Ok(plugin_version) => {
+                if plugin_count == 1 {
+                    single_plugin_version = plugin_version.or(single_plugin_version);
                 }
-                return Err(error).with_context(|| {
-                    format!("plugin `{name}` has invalid source path `{source}`")
-                });
             }
-        };
-        if plugin_root == loaded.root {
-            bail!("plugin `{name}` source path `{source}` must not point at the package root");
-        }
-
-        let plugin_manifest = load_dependency_from_dir(&plugin_root).with_context(|| {
-            format!(
-                "plugin `{name}` source path `{source}` does not match the Nodus package layout"
-            )
-        })?;
-
-        manifest.dependencies.insert(
-            alias,
-            DependencySpec {
-                github: None,
-                url: None,
-                path: Some(source_path),
-                subpath: None,
-                tag: None,
-                branch: None,
-                revision: None,
-                version: None,
-                components: None,
-                members: None,
-                managed: None,
-                enabled: true,
-            },
-        );
-
-        if plugin_count == 1 {
-            single_plugin_version = plugin_manifest.effective_version();
+            Err(error) => warnings.push(error.to_string()),
         }
     }
 
@@ -352,7 +167,7 @@ pub(super) fn load_codex_marketplace_wrapper(
         manifest_path: loaded.manifest_path.clone(),
         manifest,
         discovered: PackageContents::default(),
-        warnings: loaded.warnings.clone(),
+        warnings,
         extra_package_files: vec![marketplace_path],
         allows_empty_dependency_wrapper: true,
         allows_unpinned_git_dependencies: false,
@@ -450,6 +265,236 @@ fn dependency_from_claude_marketplace_source(
         managed: None,
         enabled: true,
     })
+}
+
+fn load_claude_marketplace_plugin(
+    loaded: &LoadedManifest,
+    manifest: &mut Manifest,
+    marketplace_path: &Path,
+    aliases: &mut HashSet<String>,
+    plugin: super::types::ClaudeMarketplacePlugin,
+) -> Result<Option<Version>> {
+    let name = plugin.name.trim();
+    if name.is_empty() {
+        bail!(
+            "ignoring Claude marketplace plugin with empty name: {} plugin names must not be empty",
+            marketplace_path.display()
+        );
+    }
+
+    let declared_version = plugin
+        .version
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            Version::parse(value).with_context(|| {
+                format!(
+                    "failed to parse plugin `{name}` version `{value}` in {}",
+                    marketplace_path.display()
+                )
+            })
+        })
+        .transpose()?;
+
+    let alias = normalize_dependency_alias(name)?;
+    if !aliases.insert(alias.clone()) {
+        bail!(
+            "ignoring Claude marketplace plugin `{name}`: {} contains duplicate plugin alias `{alias}` after normalization",
+            marketplace_path.display()
+        );
+    }
+
+    match plugin.source {
+        ClaudeMarketplaceSource::LocalPath(source) => {
+            let source = source.trim();
+            if source.is_empty() {
+                bail!(
+                    "ignoring Claude marketplace plugin `{name}`: {} plugin `{name}` must declare a non-empty `source`",
+                    marketplace_path.display()
+                );
+            }
+
+            let source_path = PathBuf::from(source);
+            let joined_source = loaded.root.join(&source_path);
+            if !joined_source.exists() {
+                bail!(
+                    "skipping marketplace plugin `{name}` because local source `{source}` is missing from {}",
+                    loaded.root.display()
+                );
+            }
+            let plugin_root = match loaded.resolve_existing_directory(&source_path) {
+                Ok(plugin_root) => plugin_root,
+                Err(error) => {
+                    if fs::metadata(&joined_source)
+                        .map(|metadata| metadata.is_file())
+                        .unwrap_or(false)
+                    {
+                        bail!(
+                            "ignoring Claude marketplace plugin `{name}`: plugin `{name}` source `{source}` must point to a directory"
+                        );
+                    }
+                    return Err(error).with_context(|| {
+                        format!(
+                            "ignoring Claude marketplace plugin `{name}`: plugin `{name}` has invalid source `{source}`"
+                        )
+                    });
+                }
+            };
+            if plugin_root == loaded.root {
+                if let Some(mcp_servers) = plugin.mcp_servers {
+                    import_marketplace_mcp_servers(
+                        manifest,
+                        name,
+                        mcp_servers,
+                        marketplace_path,
+                        &loaded.root,
+                    )?;
+                } else if !loaded
+                    .root
+                    .join(".claude-plugin")
+                    .join("plugin.json")
+                    .exists()
+                {
+                    bail!(
+                        "ignoring Claude marketplace plugin `{name}`: plugin `{name}` source `{source}` must not point at the package root"
+                    );
+                }
+                return Ok(declared_version);
+            }
+
+            if !local_source_contains_nodus_manageable_content(&plugin_root) {
+                bail!(
+                    "skipping marketplace plugin `{name}` because local source `{source}` does not expose Nodus-manageable package content"
+                );
+            }
+
+            let plugin_manifest = load_dependency_from_dir(&plugin_root).with_context(|| {
+                format!(
+                    "ignoring Claude marketplace plugin `{name}`: plugin `{name}` source `{source}` does not match the Nodus package layout"
+                )
+            })?;
+
+            manifest.dependencies.insert(
+                alias,
+                DependencySpec {
+                    github: None,
+                    url: None,
+                    path: Some(source_path),
+                    subpath: None,
+                    tag: None,
+                    branch: None,
+                    revision: None,
+                    version: None,
+                    components: None,
+                    members: None,
+                    managed: None,
+                    enabled: true,
+                },
+            );
+
+            Ok(declared_version.or_else(|| plugin_manifest.effective_version()))
+        }
+        ClaudeMarketplaceSource::Remote(source) => {
+            manifest.dependencies.insert(
+                alias,
+                dependency_from_claude_marketplace_source(name, source, marketplace_path)?,
+            );
+            Ok(declared_version)
+        }
+    }
+}
+
+fn load_codex_marketplace_plugin(
+    loaded: &LoadedManifest,
+    manifest: &mut Manifest,
+    marketplace_path: &Path,
+    aliases: &mut HashSet<String>,
+    plugin: CodexMarketplacePlugin,
+) -> Result<Option<Version>> {
+    let name = plugin.name.trim();
+    if name.is_empty() {
+        bail!(
+            "ignoring Codex marketplace plugin with empty name: {} plugin names must not be empty",
+            marketplace_path.display()
+        );
+    }
+
+    let source_kind = plugin.source.source.trim();
+    if source_kind != "local" {
+        bail!(
+            "{} plugin `{name}` uses unsupported source kind `{source_kind}`",
+            marketplace_path.display()
+        );
+    }
+
+    let source = plugin.source.path.trim();
+    if source.is_empty() {
+        bail!(
+            "ignoring Codex marketplace plugin `{name}`: {} plugin `{name}` must declare a non-empty `source.path`",
+            marketplace_path.display()
+        );
+    }
+
+    let alias = normalize_dependency_alias(name)?;
+    if !aliases.insert(alias.clone()) {
+        bail!(
+            "ignoring Codex marketplace plugin `{name}`: {} contains duplicate plugin alias `{alias}` after normalization",
+            marketplace_path.display()
+        );
+    }
+
+    let source_path = PathBuf::from(source);
+    let joined_source = loaded.root.join(&source_path);
+    let plugin_root = match loaded.resolve_existing_directory(&source_path) {
+        Ok(plugin_root) => plugin_root,
+        Err(error) => {
+            if fs::metadata(&joined_source)
+                .map(|metadata| metadata.is_file())
+                .unwrap_or(false)
+            {
+                bail!(
+                    "ignoring Codex marketplace plugin `{name}`: plugin `{name}` source path `{source}` must point to a directory"
+                );
+            }
+            return Err(error).with_context(|| {
+                format!(
+                    "ignoring Codex marketplace plugin `{name}`: plugin `{name}` has invalid source path `{source}`"
+                )
+            });
+        }
+    };
+    if plugin_root == loaded.root {
+        bail!(
+            "ignoring Codex marketplace plugin `{name}`: plugin `{name}` source path `{source}` must not point at the package root"
+        );
+    }
+
+    let plugin_manifest = load_dependency_from_dir(&plugin_root).with_context(|| {
+        format!(
+            "ignoring Codex marketplace plugin `{name}`: plugin `{name}` source path `{source}` does not match the Nodus package layout"
+        )
+    })?;
+
+    manifest.dependencies.insert(
+        alias,
+        DependencySpec {
+            github: None,
+            url: None,
+            path: Some(source_path),
+            subpath: None,
+            tag: None,
+            branch: None,
+            revision: None,
+            version: None,
+            components: None,
+            members: None,
+            managed: None,
+            enabled: true,
+        },
+    );
+
+    Ok(plugin_manifest.effective_version())
 }
 
 fn import_marketplace_mcp_servers(

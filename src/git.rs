@@ -76,12 +76,15 @@ impl GitCheckout {
 
 fn selectable_dependency_members(
     dependency_manifest: &crate::manifest::LoadedManifest,
-) -> Result<Vec<String>> {
-    let workspace_members = dependency_manifest.resolved_workspace_members()?;
+) -> Result<Vec<DependencyMemberStatus>> {
+    let workspace_members = dependency_manifest.workspace_member_statuses()?;
     if !workspace_members.is_empty() {
         return Ok(workspace_members
             .into_iter()
-            .map(|member| member.id)
+            .map(|member| DependencyMemberStatus {
+                id: member.id,
+                enabled: member.enabled,
+            })
             .collect());
     }
 
@@ -90,7 +93,10 @@ fn selectable_dependency_members(
             .manifest
             .active_dependency_entries_for_role(PackageRole::Dependency)
             .into_iter()
-            .map(|entry| entry.alias.to_string())
+            .map(|entry| DependencyMemberStatus {
+                id: entry.alias.to_string(),
+                enabled: true,
+            })
             .collect::<Vec<_>>();
         if !wrapper_dependencies.is_empty() {
             return Ok(wrapper_dependencies);
@@ -101,20 +107,21 @@ fn selectable_dependency_members(
 }
 
 fn resolve_dependency_member_statuses(
-    member_ids: Vec<String>,
+    members: Vec<DependencyMemberStatus>,
     accept_all_dependencies: bool,
 ) -> Vec<DependencyMemberStatus> {
-    let enable_all = match member_ids.len() {
+    let selectable_count = members.iter().filter(|member| member.enabled).count();
+    let enable_all = match selectable_count {
         0 => false,
         1 => true,
         _ => accept_all_dependencies,
     };
 
-    member_ids
+    members
         .into_iter()
-        .map(|id| DependencyMemberStatus {
-            id,
-            enabled: enable_all,
+        .map(|member| DependencyMemberStatus {
+            enabled: member.enabled && enable_all,
+            ..member
         })
         .collect()
 }

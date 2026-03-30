@@ -144,6 +144,55 @@ authentication = "ON_INSTALL"
     (repo, url)
 }
 
+fn create_workspace_dependency_with_invalid_member() -> (TempDir, String) {
+    let repo = TempDir::new().unwrap();
+    write_file(
+        &repo.path().join("nodus.toml"),
+        r#"
+[workspace]
+members = ["plugins/axiom", "plugins/firebase"]
+
+[workspace.package.axiom]
+path = "plugins/axiom"
+name = "Axiom"
+
+[workspace.package.axiom.codex]
+category = "Productivity"
+installation = "AVAILABLE"
+authentication = "ON_INSTALL"
+
+[workspace.package.firebase]
+path = "plugins/firebase"
+name = "Firebase"
+
+[workspace.package.firebase.codex]
+category = "Productivity"
+installation = "AVAILABLE"
+authentication = "ON_INSTALL"
+"#,
+    );
+    write_skill(&repo.path().join("plugins/axiom/skills/review"), "Review");
+    write_file(
+        &repo.path().join("plugins/firebase/README.md"),
+        "# Not a package\n",
+    );
+    init_git_repo(repo.path());
+
+    let output = ProcessCommand::new("git")
+        .args(["tag", "v0.2.0"])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let url = repo.path().to_string_lossy().to_string();
+    (repo, url)
+}
+
 fn project_cache_paths(project_root: &Path, cache_root: &Path) -> (PathBuf, PathBuf, Vec<PathBuf>) {
     let lockfile = Lockfile::read(&project_root.join("nodus.lock")).unwrap();
     let dependency = lockfile
@@ -1399,6 +1448,38 @@ fn add_dry_run_previews_dependency_members_and_config() {
     assert!(output.contains("axiom (disabled)"));
     assert!(output.contains("firebase (disabled)"));
     assert!(output.contains("multiple child packages were detected"));
+}
+
+#[test]
+fn add_dry_run_warns_and_disables_invalid_workspace_members() {
+    let temp = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    let (_repo, url) = create_workspace_dependency_with_invalid_member();
+
+    let output = run_command_output(
+        Command::Add {
+            url,
+            global: false,
+            dev: false,
+            tag: None,
+            branch: None,
+            version: None,
+            revision: None,
+            adapter: vec![Adapter::Claude],
+            component: vec![],
+            sync_on_launch: false,
+            accept_all_dependencies: false,
+            dry_run: true,
+        },
+        temp.path(),
+        cache.path(),
+    );
+
+    assert!(output.contains("dependency child selection:"));
+    assert!(output.contains("members = [\"axiom\"]"));
+    assert!(output.contains("axiom (enabled)"));
+    assert!(output.contains("firebase (disabled)"));
+    assert!(output.contains("warning: ignoring workspace member `firebase`"));
 }
 
 #[test]

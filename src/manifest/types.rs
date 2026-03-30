@@ -257,6 +257,16 @@ pub struct ResolvedWorkspaceMember {
     pub codex: Option<WorkspaceMemberCodexSpec>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceMemberStatus {
+    pub id: String,
+    pub path: PathBuf,
+    pub name: Option<String>,
+    pub codex: Option<WorkspaceMemberCodexSpec>,
+    pub enabled: bool,
+    pub warning: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct InitSummary {
     pub created_paths: Vec<PathBuf>,

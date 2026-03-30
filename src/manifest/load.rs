@@ -89,6 +89,14 @@ pub fn load_from_dir(root: &Path, role: PackageRole) -> Result<LoadedManifest> {
     }
 
     loaded.validate(role)?;
+    loaded.warnings.extend(
+        loaded
+            .workspace_member_statuses()?
+            .into_iter()
+            .filter_map(|member| member.warning),
+    );
+    loaded.warnings.sort();
+    loaded.warnings.dedup();
     Ok(loaded)
 }
 

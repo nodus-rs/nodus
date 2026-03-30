@@ -19,5 +19,5 @@ pub use types::{
     DependencySourceKind, DependencySpec, FileEntry, InitSummary, LaunchHookConfig, LoadedManifest,
     MANIFEST_FILE, ManagedExportSpec, ManagedPathSpec, ManagedPlacement, Manifest, McpServerConfig,
     PackageContents, PackageRole, ResolvedWorkspaceMember, SkillEntry, WorkspaceConfig,
-    WorkspaceMemberCodexSpec, WorkspaceMemberSpec,
+    WorkspaceMemberCodexSpec, WorkspaceMemberSpec, WorkspaceMemberStatus,
 };

@@ -972,7 +972,11 @@ fn planned_workspace_marketplace_files(
         return Ok(Vec::new());
     }
 
-    let members = root.resolved_workspace_members()?;
+    let members = root
+        .workspace_member_statuses()?
+        .into_iter()
+        .filter(|member| member.enabled)
+        .collect::<Vec<_>>();
     if members.is_empty() {
         return Ok(Vec::new());
     }
