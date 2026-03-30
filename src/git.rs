@@ -1002,6 +1002,7 @@ fn ensure_checkout_submodules(checkout_path: &Path, allow_network: bool) -> Resu
             "update",
             "--init",
             "--recursive",
+            "--force",
         ],
     );
     match update {
@@ -1138,6 +1139,23 @@ mod tests {
         }
         let mut file = fs::File::create(path).unwrap();
         file.write_all(contents.as_bytes()).unwrap();
+    }
+
+    fn stage_git_symlink(path: &Path, link: &Path, target: &str) {
+        let target_blob_path = path.join(".git-symlink-target");
+        write_file(&target_blob_path, target);
+        let blob = git_output(path, ["hash-object", "-w", "--", ".git-symlink-target"]).unwrap();
+        fs::remove_file(target_blob_path).unwrap();
+        git_run(
+            path,
+            [
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("120000,{blob},{}", display_path(link)),
+            ],
+        )
+        .unwrap();
     }
 
     fn init_git_repo(path: &Path) {
@@ -1580,5 +1598,58 @@ mod tests {
             "true"
         );
         assert!(recovered.path.join("skills/review").is_dir());
+    }
+
+    #[test]
+    fn recovers_missing_submodule_skill_targets() {
+        let cache_root = TempDir::new().unwrap();
+
+        let shared = TempDir::new().unwrap();
+        write_file(
+            &shared.path().join("skills/review/SKILL.md"),
+            "---\nname: Review\ndescription: Review code safely.\n---\n# Review\n",
+        );
+        init_git_repo(shared.path());
+        rename_current_branch(shared.path(), "main");
+
+        let repo = TempDir::new().unwrap();
+        init_git_repo(repo.path());
+        git_run(
+            repo.path(),
+            [
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                &shared.path().to_string_lossy(),
+                "vendor/shared",
+            ],
+        )
+        .unwrap();
+        git_run(repo.path(), ["add", "."]).unwrap();
+        stage_git_symlink(
+            repo.path(),
+            Path::new("skills/review"),
+            "../vendor/shared/skills/review",
+        );
+        git_run(repo.path(), ["commit", "-m", "add shared skill"]).unwrap();
+        rename_current_branch(repo.path(), "main");
+
+        let url = repo.path().to_string_lossy().to_string();
+        let reporter = Reporter::silent();
+        let checkout =
+            ensure_git_dependency(cache_root.path(), &url, None, true, &reporter).unwrap();
+
+        assert!(load_dependency_from_dir(&checkout.path).is_ok());
+
+        fs::remove_dir_all(checkout.path.join("vendor/shared/skills/review")).unwrap();
+        assert!(load_dependency_from_dir(&checkout.path).is_err());
+
+        let recovered =
+            ensure_git_dependency(cache_root.path(), &url, None, true, &reporter).unwrap();
+
+        assert_eq!(recovered.path, checkout.path);
+        assert!(recovered.path.join("vendor/shared/skills/review").is_dir());
+        assert!(load_dependency_from_dir(&recovered.path).is_ok());
     }
 }
