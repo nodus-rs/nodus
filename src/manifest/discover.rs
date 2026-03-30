@@ -39,7 +39,7 @@ fn local_source_contains_nodus_manageable_content(root: &Path) -> bool {
     }
 
     for directory in ["agents", "commands", "rules", "skills"] {
-        if root.join(directory).is_dir() {
+        if path_points_to_directory(&root.join(directory)) {
             return true;
         }
     }
@@ -128,15 +128,21 @@ pub(super) fn load_claude_marketplace_wrapper(
                     ));
                     continue;
                 }
-                let plugin_root = loaded
-                    .resolve_existing_path(&source_path)
-                    .with_context(|| format!("plugin `{name}` has invalid source `{source}`"))?;
-                if !plugin_root.is_dir() {
-                    bail!(
-                        "plugin `{name}` source `{source}` must point to a directory, found {}",
-                        plugin_root.display()
-                    );
-                }
+                let joined_source = loaded.root.join(&source_path);
+                let plugin_root = match loaded.resolve_existing_directory(&source_path) {
+                    Ok(plugin_root) => plugin_root,
+                    Err(error) => {
+                        if fs::metadata(&joined_source)
+                            .map(|metadata| metadata.is_file())
+                            .unwrap_or(false)
+                        {
+                            bail!("plugin `{name}` source `{source}` must point to a directory");
+                        }
+                        return Err(error).with_context(|| {
+                            format!("plugin `{name}` has invalid source `{source}`")
+                        });
+                    }
+                };
                 if plugin_root == loaded.root {
                     if let Some(mcp_servers) = plugin.mcp_servers {
                         import_marketplace_mcp_servers(
@@ -289,15 +295,21 @@ pub(super) fn load_codex_marketplace_wrapper(
         }
 
         let source_path = PathBuf::from(source);
-        let plugin_root = loaded
-            .resolve_existing_path(&source_path)
-            .with_context(|| format!("plugin `{name}` has invalid source path `{source}`"))?;
-        if !plugin_root.is_dir() {
-            bail!(
-                "plugin `{name}` source path `{source}` must point to a directory, found {}",
-                plugin_root.display()
-            );
-        }
+        let joined_source = loaded.root.join(&source_path);
+        let plugin_root = match loaded.resolve_existing_directory(&source_path) {
+            Ok(plugin_root) => plugin_root,
+            Err(error) => {
+                if fs::metadata(&joined_source)
+                    .map(|metadata| metadata.is_file())
+                    .unwrap_or(false)
+                {
+                    bail!("plugin `{name}` source path `{source}` must point to a directory");
+                }
+                return Err(error).with_context(|| {
+                    format!("plugin `{name}` has invalid source path `{source}`")
+                });
+            }
+        };
         if plugin_root == loaded.root {
             bail!("plugin `{name}` source path `{source}` must not point at the package root");
         }
@@ -733,8 +745,8 @@ pub(super) fn discover_package_contents(
 fn discovery_roots(root: &Path, manifest: &Manifest) -> Result<Vec<PathBuf>> {
     let mut roots = vec![PathBuf::new()];
     for content_root in manifest.normalized_content_roots()? {
-        let resolved =
-            canonicalize_existing_path(&root.join(&content_root)).with_context(|| {
+        let resolved = canonicalize_existing_directory_path(&root.join(&content_root))
+            .with_context(|| {
                 format!(
                     "manifest field `content_roots` contains invalid path `{}`",
                     content_root.display()
@@ -743,12 +755,6 @@ fn discovery_roots(root: &Path, manifest: &Manifest) -> Result<Vec<PathBuf>> {
         if !resolved.starts_with(root) {
             bail!(
                 "manifest field `content_roots` path `{}` escapes the package root",
-                content_root.display()
-            );
-        }
-        if !resolved.is_dir() {
-            bail!(
-                "manifest field `content_roots` path `{}` must point to a directory",
                 content_root.display()
             );
         }
@@ -792,7 +798,15 @@ fn discover_skills(root: &Path, discovery_root: &Path) -> Result<Vec<SkillEntry>
     if !skills_root.exists() {
         return Ok(Vec::new());
     }
-    if !skills_root.is_dir() {
+    let resolved_skills_root = canonicalize_existing_directory_path(&skills_root)
+        .map_err(|_| anyhow!("`{}` must be a directory", skills_relative_root.display()))?;
+    if !resolved_skills_root.starts_with(root) {
+        bail!(
+            "`{}` escapes the package root",
+            skills_relative_root.display()
+        );
+    }
+    if !resolved_skills_root.is_dir() {
         bail!("`{}` must be a directory", skills_relative_root.display());
     }
 
@@ -801,6 +815,7 @@ fn discover_skills(root: &Path, discovery_root: &Path) -> Result<Vec<SkillEntry>
         root,
         &skills_relative_root,
         &skills_relative_root,
+        &resolved_skills_root,
         &mut skills,
     )?;
 
@@ -812,12 +827,12 @@ fn discover_skills_in_dir(
     root: &Path,
     skills_relative_root: &Path,
     current_relative_dir: &Path,
+    current_dir: &Path,
     skills: &mut Vec<SkillEntry>,
 ) -> Result<bool> {
-    let current_dir = root.join(current_relative_dir);
     let mut found_skill = false;
 
-    for entry in fs::read_dir(&current_dir)
+    for entry in fs::read_dir(current_dir)
         .with_context(|| format!("failed to read {}", current_dir.display()))?
     {
         let entry = entry?;
@@ -825,18 +840,16 @@ fn discover_skills_in_dir(
         if should_ignore_discovery_entry(&path) {
             continue;
         }
-        if !path_is_dir(&path) {
-            bail!(
-                "`{}` entries must be directories",
-                skills_relative_root.display()
-            );
-        }
-
         let name = entry.file_name().to_string_lossy().to_string();
         let relative = current_relative_dir.join(&name);
-        let skill_file = path.join("SKILL.md");
+        let skill_dir = canonicalize_existing_directory_path(&path).map_err(|_| {
+            anyhow!(
+                "`{}` entries must be directories",
+                skills_relative_root.display()
+            )
+        })?;
+        let skill_file = skill_dir.join("SKILL.md");
         if skill_file.is_file() {
-            let skill_dir = canonicalize_existing_path(&path)?;
             let relative_under_skills = relative
                 .strip_prefix(skills_relative_root)
                 .with_context(|| format!("failed to make {} relative", relative.display()))?;
@@ -851,7 +864,14 @@ fn discover_skills_in_dir(
             continue;
         }
 
-        found_skill |= discover_skills_in_dir(root, skills_relative_root, &relative, skills)?;
+        if !skill_dir.starts_with(root) {
+            bail!(
+                "`{}` entries must stay within the package root",
+                skills_relative_root.display()
+            );
+        }
+        found_skill |=
+            discover_skills_in_dir(root, skills_relative_root, &relative, &skill_dir, skills)?;
     }
 
     Ok(found_skill)
@@ -869,15 +889,22 @@ fn discover_files(
     if !dir_root.exists() {
         return Ok(Vec::new());
     }
-    if !dir_root.is_dir() {
+    let resolved_dir_root = canonicalize_existing_directory_path(&dir_root)
+        .map_err(|_| anyhow!("`{}` must be a directory", dir_relative_root.display()))?;
+    if !resolved_dir_root.starts_with(root) {
+        bail!("`{}` escapes the package root", dir_relative_root.display());
+    }
+    if !resolved_dir_root.is_dir() {
         bail!("`{}` must be a directory", dir_relative_root.display());
     }
 
     let mut items = Vec::new();
     let walker = if recursive {
-        walkdir::WalkDir::new(&dir_root).min_depth(1)
+        walkdir::WalkDir::new(&resolved_dir_root).min_depth(1)
     } else {
-        walkdir::WalkDir::new(&dir_root).min_depth(1).max_depth(1)
+        walkdir::WalkDir::new(&resolved_dir_root)
+            .min_depth(1)
+            .max_depth(1)
     };
 
     for entry in walker {
@@ -904,12 +931,12 @@ fn discover_files(
         }
 
         let relative = path
-            .strip_prefix(&dir_root)
+            .strip_prefix(&resolved_dir_root)
             .with_context(|| format!("failed to make {} relative", path.display()))?;
         let id = derive_file_entry_id(relative)?;
 
         let relative = dir_relative_root.join(relative);
-        let canonical = canonicalize_existing_path(&root.join(&relative))?;
+        let canonical = canonicalize_existing_path(path)?;
         if !canonical.starts_with(root) {
             bail!("`{directory}` item `{id}` escapes the package root");
         }
@@ -1208,6 +1235,76 @@ fn parse_plugin_metadata_version(
 
 pub(super) fn canonicalize_existing_path(path: &Path) -> Result<PathBuf> {
     canonicalize_path(path).with_context(|| format!("failed to canonicalize {}", path.display()))
+}
+
+pub(super) fn canonicalize_existing_directory_path(path: &Path) -> Result<PathBuf> {
+    if path_is_dir(path) {
+        return canonicalize_existing_path(path);
+    }
+
+    if let Some(canonical) = try_resolve_directory_placeholder(path)? {
+        return Ok(canonical);
+    }
+
+    let canonical = canonicalize_existing_path(path)?;
+    if canonical.is_dir() {
+        Ok(canonical)
+    } else {
+        bail!("{} is not a directory", display_path(path));
+    }
+}
+
+fn try_resolve_directory_placeholder(path: &Path) -> Result<Option<PathBuf>> {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to access {}", path.display()));
+        }
+    };
+    if !metadata.is_file() {
+        return Ok(None);
+    }
+
+    let raw_target =
+        fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let Ok(raw_target) = String::from_utf8(raw_target) else {
+        return Ok(None);
+    };
+    let raw_target = raw_target.trim_end_matches(['\r', '\n']);
+    if raw_target.is_empty() {
+        return Ok(None);
+    }
+
+    let target = PathBuf::from(raw_target);
+    let target = if target.is_absolute() {
+        target
+    } else {
+        path.parent()
+            .map(|parent| parent.join(&target))
+            .unwrap_or(target)
+    };
+
+    match canonicalize_path(&target) {
+        Ok(canonical) if canonical.is_dir() => Ok(Some(canonical)),
+        Ok(_) => Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "failed to resolve directory placeholder {} -> {}",
+                display_path(path),
+                display_path(&target)
+            )
+        }),
+    }
+}
+
+fn path_points_to_directory(path: &Path) -> bool {
+    path_is_dir(path)
+        || try_resolve_directory_placeholder(path)
+            .ok()
+            .flatten()
+            .is_some()
 }
 
 pub(super) fn default_manifest_contents() -> &'static str {

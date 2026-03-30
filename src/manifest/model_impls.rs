@@ -6,9 +6,9 @@ use anyhow::{Context, Result, bail};
 use semver::{Version, VersionReq};
 
 use super::discover::{
-    canonicalize_existing_path, collect_files, default_package_name,
-    normalize_manifest_relative_path, quote, validate_dependency_managed_specs,
-    validate_managed_export_specs,
+    canonicalize_existing_directory_path, canonicalize_existing_path, collect_files,
+    default_package_name, normalize_manifest_relative_path, quote,
+    validate_dependency_managed_specs, validate_managed_export_specs,
 };
 use super::*;
 use crate::adapters::Adapter;
@@ -28,18 +28,13 @@ impl LoadedManifest {
         }
         let normalized_content_roots = self.manifest.normalized_content_roots()?;
         for content_root in &normalized_content_roots {
-            let resolved = self.resolve_existing_path(content_root).with_context(|| {
-                format!(
-                    "manifest field `content_roots` contains invalid path `{}`",
-                    display_path(content_root)
-                )
-            })?;
-            if !resolved.is_dir() {
-                bail!(
-                    "manifest field `content_roots` path `{}` must point to a directory",
-                    display_path(content_root)
-                );
-            }
+            self.resolve_existing_directory(content_root)
+                .with_context(|| {
+                    format!(
+                        "manifest field `content_roots` contains invalid path `{}`",
+                        display_path(content_root)
+                    )
+                })?;
         }
         if let Some(adapters) = &self.manifest.adapters {
             if adapters.enabled.is_empty() {
@@ -224,6 +219,29 @@ impl LoadedManifest {
             bail!(
                 "path `{}` escapes the package root {}",
                 value.display(),
+                self.root.display()
+            );
+        }
+
+        Ok(canonical)
+    }
+
+    pub(super) fn resolve_existing_directory(&self, value: &Path) -> Result<PathBuf> {
+        if value.is_absolute() {
+            bail!(
+                "manifest path `{}` must be relative to {}",
+                value.display(),
+                self.root.display()
+            );
+        }
+
+        let joined = self.root.join(value);
+        let canonical = canonicalize_existing_directory_path(&joined)
+            .with_context(|| format!("failed to resolve directory `{}`", display_path(value)))?;
+        if !canonical.starts_with(&self.root) {
+            bail!(
+                "path `{}` escapes the package root {}",
+                display_path(value),
                 self.root.display()
             );
         }
@@ -470,13 +488,9 @@ fn validate_dependency_entry(package: &LoadedManifest, entry: DependencyEntry<'_
             if dependency.subpath.is_some() {
                 bail!("{label} `{alias}` must not declare `subpath` for path sources");
             }
-            let dependency_root = package.resolve_existing_path(path)?;
-            if !dependency_root.is_dir() {
-                bail!(
-                    "{label} `{alias}` path must point to a directory, found {}",
-                    dependency_root.display()
-                );
-            }
+            let _dependency_root = package
+                .resolve_existing_directory(path)
+                .with_context(|| format!("{label} `{alias}` path must point to a directory"))?;
         }
     }
 
@@ -684,13 +698,14 @@ fn validate_workspace(package: &LoadedManifest) -> Result<()> {
         if !seen_paths.insert(normalized_path.clone()) {
             bail!("manifest field `workspace.members` must not contain duplicate paths");
         }
-        let resolved = package.resolve_existing_path(&normalized_path)?;
-        if !resolved.is_dir() {
-            bail!(
-                "manifest field `workspace.members` path `{}` must point to a directory",
-                display_path(member_path)
-            );
-        }
+        let _resolved = package
+            .resolve_existing_directory(&normalized_path)
+            .with_context(|| {
+                format!(
+                    "manifest field `workspace.members` path `{}` must point to a directory",
+                    display_path(member_path)
+                )
+            })?;
     }
 
     let mut package_paths = HashSet::new();
@@ -716,10 +731,11 @@ fn validate_workspace(package: &LoadedManifest) -> Result<()> {
                 "manifest field `workspace.package.{id}.path` must also appear in `workspace.members`"
             );
         }
-        let resolved = package.resolve_existing_path(&normalized_path)?;
-        if !resolved.is_dir() {
-            bail!("manifest field `workspace.package.{id}.path` must point to a directory");
-        }
+        let _resolved = package
+            .resolve_existing_directory(&normalized_path)
+            .with_context(|| {
+                format!("manifest field `workspace.package.{id}.path` must point to a directory")
+            })?;
         if let Some(codex) = &member.codex {
             if codex.category.trim().is_empty() {
                 bail!("manifest field `workspace.package.{id}.codex.category` must not be empty");
@@ -893,7 +909,7 @@ impl PackageContents {
         let mut files = Vec::new();
         for skill in &self.skills {
             let logical_root = package.root.join(&skill.path);
-            let resolved_root = package.resolve_existing_path(&skill.path)?;
+            let resolved_root = package.resolve_existing_directory(&skill.path)?;
             for file in collect_files(&resolved_root)? {
                 let relative = strip_path_prefix(&file, &resolved_root).with_context(|| {
                     format!(

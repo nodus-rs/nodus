@@ -64,6 +64,10 @@ fn write_skill(root: &Path, name: &str) {
     );
 }
 
+fn write_directory_placeholder(path: &Path, target: &str) {
+    write_file(path, target);
+}
+
 fn write_workspace_member(root: &Path, skill_name: &str) {
     write_file(
         &root.join("skills/review/SKILL.md"),
@@ -441,6 +445,38 @@ fn discovers_symlinked_skill_directories_inside_package_root() {
     ) {
         return;
     }
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+    let package_files = loaded.package_files().unwrap();
+
+    assert_eq!(
+        loaded
+            .discovered
+            .skills
+            .iter()
+            .map(|skill| skill.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["review"]
+    );
+    assert!(
+        package_files
+            .iter()
+            .any(|path| path.ends_with(Path::new("skills/review/SKILL.md"))),
+        "{package_files:?}"
+    );
+}
+
+#[test]
+fn discovers_placeholder_skill_directories_inside_package_root() {
+    let temp = TempDir::new().unwrap();
+    write_file(
+        &temp.path().join("vendor/shared/skills/review/SKILL.md"),
+        "---\nname: Review\ndescription: Review code safely.\n---\n# Review\n",
+    );
+    write_directory_placeholder(
+        &temp.path().join("skills/review"),
+        "../vendor/shared/skills/review",
+    );
 
     let loaded = load_dependency_from_dir(temp.path()).unwrap();
     let package_files = loaded.package_files().unwrap();
