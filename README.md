@@ -105,6 +105,10 @@ That flow:
 - resolves and locks the exact revision in `nodus.lock`
 - writes the managed runtime files for the selected or detected adapter
 
+If the package is a wrapper that exposes multiple child packages, `nodus add` now records the
+wrapper itself and leaves child packages disabled until you either edit `members` in
+`nodus.toml` or opt in up front with `--accept-all-dependencies`.
+
 If you want a user-level install instead of repo-scoped state, use `--global` explicitly:
 
 ```bash
@@ -131,6 +135,7 @@ Commands most users need:
 - `nodus sync` to rebuild managed outputs from the versions already recorded
 - `nodus update` to move dependencies to newer allowed revisions
 - `nodus remove <alias>` to remove a dependency and prune what it owned
+- `nodus clean` to clear shared repository, checkout, and snapshot cache data without changing project manifests or managed outputs
 - `nodus doctor` to check that the repo, lockfile, shared store, and managed outputs still agree
 
 ## Learn More

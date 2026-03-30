@@ -105,6 +105,10 @@ nodus doctor
 - 解析并锁定精确版本到 `nodus.lock`
 - 为选定或检测到的 adapter 写入受管理运行时文件
 
+如果这个包本身是一个会暴露多个子包的 wrapper，`nodus add` 现在默认只记录 wrapper
+本身，不会自动启用全部子包。你可以后续手动编辑 `nodus.toml` 里的 `members`，或者在
+安装时显式传 `--accept-all-dependencies` 一次性启用全部子包。
+
 如果你想装到用户级环境，而不是当前仓库，也可以显式使用 `--global`：
 
 ```bash
@@ -131,6 +135,7 @@ nodus doctor --help
 - `nodus sync`：按当前已记录版本重建受管理输出
 - `nodus update`：把依赖升级到更新但仍允许的版本
 - `nodus remove <alias>`：移除依赖并清理它拥有的输出
+- `nodus clean`：清理共享的 repository、checkout 和 snapshot 缓存，但不修改项目 manifest 或受管理输出
 - `nodus doctor`：检查仓库、lockfile、共享存储和受管理输出是否一致
 
 ## 继续了解
