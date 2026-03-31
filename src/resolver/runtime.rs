@@ -982,6 +982,8 @@ fn planned_workspace_marketplace_files(
     }
 
     let mut files = Vec::new();
+    let claude_marketplace_name = workspace_marketplace_name(root);
+    let claude_marketplace_owner_name = workspace_marketplace_owner_name(root);
     let claude_plugins = members
         .iter()
         .map(|member| {
@@ -1013,7 +1015,13 @@ fn planned_workspace_marketplace_files(
         .collect::<Result<Vec<_>>>()?;
     files.push(ManagedFile {
         path: runtime_root.join(".claude-plugin/marketplace.json"),
-        contents: serde_json::to_vec_pretty(&serde_json::json!({ "plugins": claude_plugins }))?,
+        contents: serde_json::to_vec_pretty(&serde_json::json!({
+            "name": claude_marketplace_name,
+            "owner": {
+                "name": claude_marketplace_owner_name,
+            },
+            "plugins": claude_plugins,
+        }))?,
     });
 
     if members.iter().all(|member| member.codex.is_some()) {
@@ -1044,6 +1052,55 @@ fn planned_workspace_marketplace_files(
     }
 
     Ok(files)
+}
+
+fn workspace_marketplace_name(root: &LoadedManifest) -> String {
+    let source_name = root
+        .manifest
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| workspace_marketplace_root_basename(&root.root));
+    normalize_workspace_marketplace_name(&source_name)
+}
+
+fn workspace_marketplace_owner_name(root: &LoadedManifest) -> String {
+    root.manifest
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| workspace_marketplace_root_basename(&root.root))
+}
+
+fn workspace_marketplace_root_basename(root: &Path) -> String {
+    root.file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| String::from("agentpack"))
+}
+
+fn normalize_workspace_marketplace_name(value: &str) -> String {
+    let mut normalized = String::new();
+
+    for character in value.chars() {
+        if character.is_ascii_alphanumeric() {
+            normalized.push(character.to_ascii_lowercase());
+        } else if !normalized.ends_with('-') {
+            normalized.push('-');
+        }
+    }
+
+    let normalized = normalized.trim_matches('-').to_string();
+    if normalized.is_empty() {
+        String::from("agentpack")
+    } else {
+        normalized
+    }
 }
 
 fn workspace_marketplace_managed_files(resolution: &Resolution) -> Result<Vec<String>> {
