@@ -128,7 +128,13 @@ pub fn detect_repo_adapters(project_root: &Path) -> Adapters {
     if project_root.join(".claude").exists() {
         detected = detected.union(Adapters::CLAUDE);
     }
-    if project_root.join(".codex").exists() {
+    if project_root.join(".codex").exists()
+        || project_root
+            .join(".agents")
+            .join("plugins")
+            .join("marketplace.json")
+            .is_file()
+    {
         detected = detected.union(Adapters::CODEX);
     }
     if project_root.join(".github").join("skills").exists()
@@ -367,6 +373,33 @@ mod tests {
         assert_eq!(selection.adapters, vec![Adapter::Codex]);
         assert_eq!(selection.source, AdapterSelectionSource::Detected);
         assert!(selection.should_persist);
+    }
+
+    #[test]
+    fn detects_codex_marketplace_root_without_codex_dir() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join(".agents/plugins")).unwrap();
+        fs::write(
+            temp.path().join(".agents/plugins/marketplace.json"),
+            "{\n  \"plugins\": []\n}\n",
+        )
+        .unwrap();
+
+        let detected = detect_repo_adapters(temp.path());
+
+        assert!(detected.contains(Adapter::Agents));
+        assert!(detected.contains(Adapter::Codex));
+    }
+
+    #[test]
+    fn does_not_treat_agents_skills_root_as_codex_signal() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join(".agents/skills")).unwrap();
+
+        let detected = detect_repo_adapters(temp.path());
+
+        assert!(detected.contains(Adapter::Agents));
+        assert!(!detected.contains(Adapter::Codex));
     }
 
     #[test]
