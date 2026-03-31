@@ -1107,6 +1107,7 @@ pub(super) fn collect_ignored_field_warnings(table: &Table) -> Vec<String> {
         "version",
         "content_roots",
         "publish_root",
+        "managed_exports",
         "capabilities",
         "mcp_servers",
         "adapters",

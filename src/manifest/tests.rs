@@ -2458,6 +2458,23 @@ placement = "project"
 }
 
 #[test]
+fn managed_exports_do_not_emit_unsupported_field_warnings() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[[managed_exports]]
+source = "learnings"
+target = "learnings"
+"#,
+    );
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+    assert!(loaded.warnings.is_empty());
+}
+
+#[test]
 fn rejects_duplicate_aliases_across_dependency_sections() {
     let temp = TempDir::new().unwrap();
     write_valid_skill(temp.path());
