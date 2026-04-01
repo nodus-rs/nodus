@@ -3,7 +3,7 @@ use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use rayon::prelude::*;
 
 use super::{
@@ -551,6 +551,10 @@ pub(super) fn load_owned_paths(
     }
 
     Ok(HashSet::new())
+}
+
+pub(super) fn managed_path_is_owned(path: &Path, owned_paths: &HashSet<PathBuf>) -> bool {
+    path_is_owned(path, owned_paths)
 }
 
 pub(super) fn recover_runtime_owned_paths(
