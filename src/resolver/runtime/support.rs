@@ -568,6 +568,28 @@ pub(super) fn recover_runtime_owned_paths(
         .collect()
 }
 
+pub(super) fn recover_runtime_owned_dirs_from_disk(
+    project_root: &Path,
+    desired_paths: &HashSet<PathBuf>,
+    planned_files: &[ManagedFile],
+) -> HashSet<PathBuf> {
+    desired_paths
+        .iter()
+        .filter(|path| is_runtime_managed_path(project_root, path))
+        .filter(|path| path.is_dir())
+        .filter(|path| {
+            planned_files.iter().any(|file| {
+                file.path.starts_with(path)
+                    && file.path.is_file()
+                    && fs::read(&file.path)
+                        .map(|contents| contents == file.contents)
+                        .unwrap_or(false)
+            })
+        })
+        .cloned()
+        .collect()
+}
+
 fn is_runtime_managed_path(project_root: &Path, path: &Path) -> bool {
     let Some(relative) = strip_path_prefix(path, project_root) else {
         return false;

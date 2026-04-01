@@ -5645,23 +5645,50 @@ shared = { path = "vendor/shared" }
 }
 
 #[test]
-fn recover_runtime_owned_paths_includes_copilot_assets_only() {
-    let project_root = Path::new("/tmp/project");
+fn recover_runtime_owned_dirs_from_disk_requires_existing_matching_directory_state() {
+    let temp = TempDir::new().unwrap();
+    let project_root = temp.path();
+    let skill_dir = project_root.join(".claude/skills/review_abc123");
+    let github_skill_dir = project_root.join(".github/skills/review_abc123");
+    let github_agent_file = project_root.join(".github/agents/security_abc123.agent.md");
+    let prompt_file = project_root.join(".github/prompts/review.md");
     let desired_paths = [
-        project_root.join(".claude/skills/review_abc123"),
-        project_root.join(".github/skills/review_abc123"),
-        project_root.join(".github/agents/security_abc123.agent.md"),
-        project_root.join(".github/prompts/review.md"),
+        skill_dir.clone(),
+        github_skill_dir.clone(),
+        github_agent_file.clone(),
+        prompt_file.clone(),
     ]
     .into_iter()
     .collect::<HashSet<_>>();
+    write_file(&skill_dir.join("SKILL.md"), "# Review\n");
+    write_file(&github_skill_dir.join("SKILL.md"), "# Review\n");
+    write_file(&github_agent_file, "# Security\n");
 
-    let recovered = recover_runtime_owned_paths(project_root, &desired_paths);
+    let planned_files = vec![
+        ManagedFile {
+            path: skill_dir.join("SKILL.md"),
+            contents: b"# Review\n".to_vec(),
+        },
+        ManagedFile {
+            path: github_skill_dir.join("SKILL.md"),
+            contents: b"# Review\n".to_vec(),
+        },
+        ManagedFile {
+            path: github_agent_file.clone(),
+            contents: b"# Security\n".to_vec(),
+        },
+    ];
 
-    assert!(recovered.contains(&project_root.join(".claude/skills/review_abc123")));
-    assert!(recovered.contains(&project_root.join(".github/skills/review_abc123")));
-    assert!(recovered.contains(&project_root.join(".github/agents/security_abc123.agent.md")));
-    assert!(!recovered.contains(&project_root.join(".github/prompts/review.md")));
+    let recovered = super::support::recover_runtime_owned_dirs_from_disk(
+        project_root,
+        &desired_paths,
+        &planned_files,
+    );
+
+    assert!(recovered.contains(&skill_dir));
+    assert!(recovered.contains(&github_skill_dir));
+    assert!(!recovered.contains(&github_agent_file));
+    assert!(!recovered.contains(&prompt_file));
 }
 
 #[test]
@@ -6147,19 +6174,25 @@ fn doctor_missing_lockfile_with_unmanaged_collision_still_blocks_repair() {
     let cache = cache_dir();
     write_manifest(
         temp.path(),
-        r#"
-[dependencies]
-shared = { path = "vendor/shared" }
-"#,
+        "[dependencies.firebase]\npath = \"vendor/firebase\"\n",
     );
-    write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+    write_file(
+        &temp.path().join("vendor/firebase/nodus.toml"),
+        "[mcp_servers.firebase]\ncommand = \"npx\"\n",
+    );
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
 
     fs::remove_file(temp.path().join(LOCKFILE_NAME)).unwrap();
-    fs::remove_dir_all(temp.path().join(".codex/skills")).unwrap();
     write_file(
-        &temp.path().join(".codex/skills"),
-        "user-owned blocking file\n",
+        &temp.path().join(".mcp.json"),
+        r#"{
+  "mcpServers": {
+    "local": {
+      "command": "node"
+    }
+  }
+}
+"#,
     );
 
     let error = doctor_in_dir_with_mode(
@@ -6172,12 +6205,12 @@ shared = { path = "vendor/shared" }
     .to_string();
 
     assert!(error.contains("refusing to overwrite unmanaged file"));
-    assert!(error.contains(".codex/skills"));
+    assert!(error.contains(".mcp.json"));
     assert!(!temp.path().join(LOCKFILE_NAME).exists());
 }
 
 #[test]
-fn doctor_repairs_owned_invalid_mcp_json_even_without_lockfile() {
+fn doctor_blocks_invalid_mcp_json_without_lockfile_when_ownership_is_ambiguous() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();
     write_manifest(
@@ -6193,27 +6226,17 @@ fn doctor_repairs_owned_invalid_mcp_json_even_without_lockfile() {
     fs::remove_file(temp.path().join(LOCKFILE_NAME)).unwrap();
     write_file(&temp.path().join(".mcp.json"), "{");
 
-    let summary = doctor_in_dir_with_mode(
+    let error = doctor_in_dir_with_mode(
         temp.path(),
         cache.path(),
         DoctorMode::Repair,
         &Reporter::silent(),
     )
-    .unwrap();
+    .unwrap_err()
+    .to_string();
 
-    assert_eq!(summary.status, DoctorStatus::Fixed);
-    assert!(temp.path().join(LOCKFILE_NAME).exists());
-    assert!(summary.applied_actions.iter().any(|action| {
-        action
-            .message
-            .contains("rewrote managed outputs and regenerated nodus.lock")
-    }));
-    let mcp_config: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(temp.path().join(".mcp.json")).unwrap()).unwrap();
-    assert_eq!(
-        mcp_config["mcpServers"]["firebase__firebase"]["command"].as_str(),
-        Some("npx")
-    );
+    assert!(error.contains("failed to parse MCP config"));
+    assert!(!temp.path().join(LOCKFILE_NAME).exists());
 }
 
 #[test]

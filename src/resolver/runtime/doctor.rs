@@ -8,7 +8,7 @@ use serde::Serialize;
 use super::resolve::{resolve_project, validate_git_package};
 use super::support::{
     build_sync_execution_plan, execute_sync_plan, find_managed_collision, find_unmanaged_collision,
-    load_owned_paths, managed_path_is_owned, recover_runtime_owned_paths,
+    load_owned_paths, managed_path_is_owned, recover_runtime_owned_dirs_from_disk,
     unmanaged_collision_guidance, validate_state_consistency,
 };
 use super::{lockfile_out_of_date_message, Resolution, ResolveMode, SyncMode};
@@ -154,9 +154,6 @@ fn inspect_doctor_state(
     };
     let desired_paths = resolution.managed_paths(cwd, selected_adapters)?;
     let mut owned_paths = load_owned_paths(cwd, existing_lockfile.as_ref())?;
-    if existing_lockfile.is_none() {
-        owned_paths.extend(recover_runtime_owned_paths(cwd, &desired_paths));
-    }
     let mut invalid_owned_outputs = Vec::new();
     let output_plan = match build_output_plan(
         cwd,
@@ -180,6 +177,13 @@ fn inspect_doctor_state(
             )?
         }
     };
+    if existing_lockfile.is_none() {
+        owned_paths.extend(recover_runtime_owned_dirs_from_disk(
+            cwd,
+            &desired_paths,
+            &output_plan.files,
+        ));
+    }
     let mut warnings = resolution
         .warnings
         .iter()
@@ -272,6 +276,19 @@ fn inspect_lockfile_state(
             kind: DoctorFindingKind::RiskyFix,
             message,
         });
+    }
+    if existing_lockfile.is_none() {
+        if let Some(mcp_path) =
+            unmanaged_missing_lockfile_mcp_collision(cwd, owned_paths, planned_files)
+        {
+            findings.push(DoctorFinding {
+                kind: DoctorFindingKind::RiskyFix,
+                message: format!(
+                    "refusing to overwrite unmanaged file {}",
+                    display_path(&mcp_path)
+                ),
+            });
+        }
     }
 
     let mut has_missing_managed_files = false;
@@ -429,6 +446,20 @@ fn doctor_status(
     } else {
         DoctorStatus::Blocked
     }
+}
+
+fn unmanaged_missing_lockfile_mcp_collision(
+    runtime_root: &Path,
+    owned_paths: &HashSet<PathBuf>,
+    planned_files: &[ManagedFile],
+) -> Option<PathBuf> {
+    let mcp_path = runtime_root.join(".mcp.json");
+    planned_files
+        .iter()
+        .find(|file| file.path == mcp_path)
+        .map(|file| &file.path)
+        .filter(|path| path.exists() && !managed_path_is_owned(path, owned_paths))
+        .cloned()
 }
 
 fn invalid_owned_output_path(
