@@ -787,9 +787,10 @@ fn doctor_help_describes_default_check_force_modes() {
         .to_string();
 
     assert!(help.contains("If Nodus feels broken, start here"));
-    assert!(help.contains("current read-only doctor check"));
     assert!(help.contains("reserved mode flags"));
-    assert!(help.contains("parse today but do not change doctor behavior yet"));
+    assert!(help.contains("Reserved read-only doctor mode for future guided checks"));
+    assert!(help.contains("Reserved doctor mode for future repair flows"));
+    assert!(help.contains("does not change behavior yet"));
     assert!(help.contains("--check"));
     assert!(help.contains("--force"));
 }
@@ -807,6 +808,7 @@ fn remove_help_describes_scope_and_next_step() {
     assert!(help.contains("Use this when you want to delete a package from the repo"));
     assert!(help.contains("Run `nodus doctor` next"));
     assert!(help.contains("Common options"));
+    assert!(help.contains("nodus remove <package> --global"));
 }
 
 #[test]
@@ -1661,6 +1663,40 @@ fn doctor_command_emits_checking_and_finished_lines() {
     let output = run_command_output(
         Command::Doctor {
             check: false,
+            force: false,
+            json: false,
+        },
+        temp.path(),
+        cache.path(),
+    );
+
+    assert!(output.contains("Checking"));
+    assert!(output.contains("Finished"));
+    assert!(output.contains("project state is consistent"));
+}
+
+#[test]
+fn doctor_command_uses_current_behavior_for_reserved_modes() {
+    let temp = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    fs::create_dir_all(temp.path().join(".codex")).unwrap();
+
+    let reporter = Reporter::silent();
+    resolver::sync_in_dir_with_adapters(
+        temp.path(),
+        cache.path(),
+        false,
+        false,
+        false,
+        &[],
+        false,
+        &reporter,
+    )
+    .unwrap();
+
+    let output = run_command_output(
+        Command::Doctor {
+            check: true,
             force: false,
             json: false,
         },

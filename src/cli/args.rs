@@ -366,13 +366,13 @@ pub(super) enum Command {
         #[arg(
             long,
             conflicts_with = "force",
-            help = "Check for problems without changing anything"
+            help = "Reserved read-only doctor mode for future guided checks; parses today but does not change behavior yet"
         )]
         check: bool,
         #[arg(
             long,
             conflicts_with = "check",
-            help = "Apply risky repairs without asking first"
+            help = "Reserved doctor mode for future repair flows; parses today but does not change behavior yet"
         )]
         force: bool,
         #[arg(
