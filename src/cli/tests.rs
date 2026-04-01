@@ -1694,7 +1694,16 @@ fn doctor_command_uses_current_behavior_for_reserved_modes() {
     )
     .unwrap();
 
-    let output = run_command_output(
+    let default_output = run_command_output(
+        Command::Doctor {
+            check: false,
+            force: false,
+            json: false,
+        },
+        temp.path(),
+        cache.path(),
+    );
+    let check_output = run_command_output(
         Command::Doctor {
             check: true,
             force: false,
@@ -1703,10 +1712,21 @@ fn doctor_command_uses_current_behavior_for_reserved_modes() {
         temp.path(),
         cache.path(),
     );
+    let force_output = run_command_output(
+        Command::Doctor {
+            check: false,
+            force: true,
+            json: false,
+        },
+        temp.path(),
+        cache.path(),
+    );
 
-    assert!(output.contains("Checking"));
-    assert!(output.contains("Finished"));
-    assert!(output.contains("project state is consistent"));
+    assert_eq!(check_output, default_output);
+    assert_eq!(force_output, default_output);
+    assert!(default_output.contains("Checking"));
+    assert!(default_output.contains("Finished"));
+    assert!(default_output.contains("project state is consistent"));
 }
 
 #[test]
