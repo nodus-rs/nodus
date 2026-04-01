@@ -5721,6 +5721,36 @@ fn recover_runtime_owned_paths_from_disk_rejects_partial_directory_matches() {
 }
 
 #[test]
+fn recover_runtime_owned_paths_from_disk_rejects_extra_empty_subdirectories() {
+    let temp = TempDir::new().unwrap();
+    let project_root = temp.path();
+    let learnings_dir = project_root.join(".nodus/packages/shared/learnings");
+    let desired_paths = [learnings_dir.clone()].into_iter().collect::<HashSet<_>>();
+    write_file(&learnings_dir.join("review.md"), "Use the learning pack.\n");
+    write_file(&learnings_dir.join("tips.md"), "Use the tips pack.\n");
+    fs::create_dir_all(learnings_dir.join("extra")).unwrap();
+
+    let planned_files = vec![
+        ManagedFile {
+            path: learnings_dir.join("review.md"),
+            contents: b"Use the learning pack.\n".to_vec(),
+        },
+        ManagedFile {
+            path: learnings_dir.join("tips.md"),
+            contents: b"Use the tips pack.\n".to_vec(),
+        },
+    ];
+
+    let recovered = super::support::recover_runtime_owned_paths_from_disk(
+        project_root,
+        &desired_paths,
+        &planned_files,
+    );
+
+    assert!(!recovered.contains(&learnings_dir));
+}
+
+#[test]
 fn recover_runtime_owned_paths_from_disk_accepts_exact_package_export_directories() {
     let temp = TempDir::new().unwrap();
     let project_root = temp.path();
@@ -6341,6 +6371,57 @@ target = "learnings"
         fs::read_to_string(temp.path().join(".nodus/packages/shared/learnings/tips.md")).unwrap(),
         "user-authored override\n"
     );
+}
+
+#[test]
+fn doctor_missing_lockfile_with_extra_empty_subdir_in_managed_directory_blocks_repair() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[dependencies.shared]
+path = "vendor/shared"
+"#,
+    );
+    write_manifest(
+        &temp.path().join("vendor/shared"),
+        r#"
+[[managed_exports]]
+source = "learnings"
+target = "learnings"
+"#,
+    );
+    write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+    write_file(
+        &temp.path().join("vendor/shared/learnings/review.md"),
+        "Use the learning pack.\n",
+    );
+    write_file(
+        &temp.path().join("vendor/shared/learnings/tips.md"),
+        "Use the tips pack.\n",
+    );
+
+    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
+    fs::remove_file(temp.path().join(LOCKFILE_NAME)).unwrap();
+    fs::remove_dir_all(temp.path().join(".codex")).unwrap();
+    fs::create_dir_all(temp.path().join(".nodus/packages/shared/learnings/extra")).unwrap();
+
+    let error = doctor_in_dir_with_mode(
+        temp.path(),
+        cache.path(),
+        DoctorMode::Repair,
+        &Reporter::silent(),
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("refusing to overwrite unmanaged file"));
+    assert!(!temp.path().join(LOCKFILE_NAME).exists());
+    assert!(temp
+        .path()
+        .join(".nodus/packages/shared/learnings/extra")
+        .exists());
 }
 
 #[test]

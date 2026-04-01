@@ -586,12 +586,29 @@ fn path_exactly_matches_planned_files(path: &Path, planned_files: &[ManagedFile]
         return planned_files
             .iter()
             .find(|file| file.path == path)
-            .is_some_and(file_exactly_matches_planned_contents);
+            .is_some_and(|file| {
+                file_exactly_matches_planned_contents(file)
+                    && parent_directory_exactly_matches_when_multi_file(file, planned_files)
+            });
     }
     if path.is_dir() {
         return directory_exactly_matches_planned_files(path, planned_files);
     }
     false
+}
+
+fn parent_directory_exactly_matches_when_multi_file(
+    file: &ManagedFile,
+    planned_files: &[ManagedFile],
+) -> bool {
+    let Some(parent) = file.path.parent() else {
+        return true;
+    };
+    let sibling_count = planned_files
+        .iter()
+        .filter(|candidate| candidate.path.parent() == Some(parent))
+        .count();
+    sibling_count <= 1 || directory_exactly_matches_planned_files(parent, planned_files)
 }
 
 fn file_exactly_matches_planned_contents(file: &ManagedFile) -> bool {
@@ -622,14 +639,24 @@ fn directory_exactly_matches_planned_files(path: &Path, planned_files: &[Managed
         .iter()
         .map(|file| file.path.clone())
         .collect::<HashSet<_>>();
-    let Ok(existing_files) = collect_files_under_dir(path) else {
+    let expected_dirs = planned_in_dir
+        .iter()
+        .filter_map(|file| file.path.parent())
+        .filter(|parent| *parent != path)
+        .map(Path::to_path_buf)
+        .collect::<HashSet<_>>();
+    let expected_entries = expected_files
+        .into_iter()
+        .chain(expected_dirs)
+        .collect::<HashSet<_>>();
+    let Ok(existing_entries) = collect_entries_under_dir(path) else {
         return false;
     };
-    existing_files == expected_files
+    existing_entries == expected_entries
 }
 
-fn collect_files_under_dir(path: &Path) -> Result<HashSet<PathBuf>> {
-    let mut files = HashSet::new();
+fn collect_entries_under_dir(path: &Path) -> Result<HashSet<PathBuf>> {
+    let mut entries = HashSet::new();
     let mut pending = vec![path.to_path_buf()];
 
     while let Some(current) = pending.pop() {
@@ -644,16 +671,17 @@ fn collect_files_under_dir(path: &Path) -> Result<HashSet<PathBuf>> {
                 .metadata()
                 .with_context(|| format!("failed to read metadata for {}", entry_path.display()))?;
             if metadata.is_dir() {
+                entries.insert(entry_path.clone());
                 pending.push(entry_path);
             } else if metadata.is_file() {
-                files.insert(entry_path);
+                entries.insert(entry_path);
             } else {
                 return Ok(HashSet::new());
             }
         }
     }
 
-    Ok(files)
+    Ok(entries)
 }
 
 fn is_runtime_managed_path(project_root: &Path, path: &Path) -> bool {
