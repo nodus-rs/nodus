@@ -7,18 +7,16 @@ use anyhow::{Context, Result, bail};
 use rayon::prelude::*;
 
 use super::{
-    DoctorSummary, ManagedCollision, ManagedCollisionChoice, ManagedCollisionResolver,
-    ManagedCollisionSource, PlannedFileWrite, Resolution, ResolvedManagedPathOrigin,
-    SyncExecutionPlan, SyncMode, SyncSummary, TtyManagedCollisionResolver, UnmanagedCollision,
+    ManagedCollision, ManagedCollisionChoice, ManagedCollisionResolver, ManagedCollisionSource,
+    PlannedFileWrite, Resolution, ResolvedManagedPathOrigin, SyncExecutionPlan, SyncMode,
+    SyncSummary, TtyManagedCollisionResolver, UnmanagedCollision,
 };
-use crate::adapters::{Adapters, ManagedFile, build_output_plan};
+use crate::adapters::ManagedFile;
 use crate::execution::{ExecutionMode, PreviewChange};
-use crate::lockfile::{LOCKFILE_NAME, Lockfile};
-use crate::manifest::{LoadedManifest, load_root_from_dir};
+use crate::lockfile::Lockfile;
+use crate::manifest::LoadedManifest;
 use crate::paths::{display_path, strip_path_prefix};
 use crate::report::Reporter;
-use crate::resolver::runtime::resolve_project;
-use crate::selection::resolve_adapter_selection;
 use crate::store::write_atomic;
 
 #[allow(clippy::too_many_arguments)]
@@ -242,100 +240,6 @@ pub(super) fn enforce_capabilities(
         bail!(
             "high-sensitivity capabilities require --allow-high-sensitivity: {}",
             high_sensitivity.join(", ")
-        );
-    }
-
-    Ok(())
-}
-
-#[allow(dead_code)]
-pub(super) fn doctor_in_dir(
-    cwd: &Path,
-    cache_root: &Path,
-    reporter: &Reporter,
-) -> Result<DoctorSummary> {
-    let root = load_root_from_dir(cwd)?;
-    let selection = resolve_adapter_selection(cwd, &root.manifest, &[], false)?;
-    let selected_adapters = Adapters::from_slice(&selection.adapters);
-    reporter.status(
-        "Checking",
-        "manifest, lockfile, shared store, and managed outputs",
-    )?;
-    let resolution = resolve_project(
-        cwd,
-        cache_root,
-        super::ResolveMode::Doctor,
-        reporter,
-        None,
-        None,
-    )?;
-    let lockfile_path = cwd.join(LOCKFILE_NAME);
-    if !lockfile_path.exists() {
-        bail!("missing {}", LOCKFILE_NAME);
-    }
-
-    let existing_lockfile = Lockfile::read(&lockfile_path)?;
-    let package_roots = resolution
-        .packages
-        .iter()
-        .map(|package| (package.clone(), package.root.clone()))
-        .collect::<Vec<_>>();
-    let output_plan = build_output_plan(
-        cwd,
-        &package_roots,
-        selected_adapters,
-        Some(&existing_lockfile),
-        true,
-    )?;
-    let planned_files = &output_plan.files;
-    let desired_paths = resolution.managed_paths(cwd, selected_adapters)?;
-    let expected_lockfile = resolution.to_lockfile(selected_adapters, cwd)?;
-    if existing_lockfile != expected_lockfile {
-        bail!("{}", super::lockfile_out_of_date_message());
-    }
-    let owned_paths = load_owned_paths(cwd, Some(&existing_lockfile))?;
-
-    validate_collisions(planned_files, &owned_paths, cwd)?;
-    validate_state_consistency(&owned_paths, &desired_paths, planned_files)?;
-
-    resolution
-        .packages
-        .par_iter()
-        .map(|package| super::validate_git_package(package, cache_root))
-        .collect::<Vec<_>>()
-        .into_iter()
-        .collect::<Result<Vec<_>>>()?;
-
-    let warnings = resolution
-        .warnings
-        .iter()
-        .chain(output_plan.warnings.iter())
-        .cloned()
-        .collect::<Vec<_>>();
-
-    for warning in &warnings {
-        reporter.warning(warning)?;
-    }
-
-    Ok(DoctorSummary {
-        package_count: resolution.packages.len(),
-        warnings,
-        status: super::DoctorStatus::Healthy,
-        findings: Vec::new(),
-        applied_actions: Vec::new(),
-    })
-}
-
-#[allow(dead_code)]
-pub(super) fn validate_collisions(
-    planned_files: &[ManagedFile],
-    owned_paths: &HashSet<PathBuf>,
-    project_root: &Path,
-) -> Result<()> {
-    if let Some(collision) = find_unmanaged_collision(planned_files, owned_paths, project_root) {
-        bail!(
-            "refusing to overwrite unmanaged file {}",
-            display_path(&collision.path)
         );
     }
 

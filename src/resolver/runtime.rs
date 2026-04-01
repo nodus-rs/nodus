@@ -10,7 +10,7 @@ pub use self::doctor::{
     DoctorActionRecord, DoctorFinding, DoctorFindingKind, DoctorMode, DoctorStatus,
     DoctorSummary, doctor_in_dir_with_mode,
 };
-use self::resolve::{resolve_project, validate_git_package};
+use self::resolve::resolve_project;
 use self::support::{
     build_sync_execution_plan, enforce_capabilities, execute_sync_plan, find_managed_collision,
     find_unmanaged_collision, load_owned_paths, recover_runtime_owned_paths,

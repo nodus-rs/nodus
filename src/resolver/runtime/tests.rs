@@ -6239,11 +6239,10 @@ shared = { path = "vendor/shared" }
         .find(|package| package.alias == "shared")
         .unwrap();
     let managed_skill_id = namespaced_skill_id(dependency, "review");
-    fs::remove_file(
-        temp.path()
-            .join(format!(".claude/skills/{managed_skill_id}/SKILL.md")),
-    )
-    .unwrap();
+    let managed_skill_path = temp
+        .path()
+        .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"));
+    fs::remove_file(&managed_skill_path).unwrap();
 
     let summary = doctor_in_dir_with_mode(
         temp.path(),
@@ -6258,6 +6257,26 @@ shared = { path = "vendor/shared" }
         finding.kind == DoctorFindingKind::SafeAutoFix
             && finding.message.contains("managed file is missing from disk")
     }));
+    assert!(!managed_skill_path.exists());
+}
+
+#[test]
+fn doctor_force_mode_reports_not_implemented_yet() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_skill(&temp.path().join("skills/review"), "Review");
+    sync_all(temp.path(), cache.path());
+
+    let error = doctor_in_dir_with_mode(
+        temp.path(),
+        cache.path(),
+        DoctorMode::Force,
+        &Reporter::silent(),
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("doctor force mode is not implemented yet"));
 }
 
 #[test]

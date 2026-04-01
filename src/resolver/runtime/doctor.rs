@@ -16,7 +16,7 @@ use crate::manifest::load_root_from_dir;
 use crate::report::Reporter;
 use crate::selection::resolve_adapter_selection;
 
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DoctorMode {
     Repair,
@@ -232,6 +232,7 @@ fn execute_doctor_plan(
     }
 
     match mode {
+        DoctorMode::Force => bail!("doctor force mode is not implemented yet"),
         DoctorMode::Check => Ok(DoctorSummary {
             package_count: plan.package_count,
             warnings: plan.warnings,
@@ -239,7 +240,7 @@ fn execute_doctor_plan(
             findings: plan.findings,
             applied_actions: plan.applied_actions,
         }),
-        DoctorMode::Repair | DoctorMode::Force => {
+        DoctorMode::Repair => {
             if let Some(finding) = plan.findings.first() {
                 bail!("{}", finding.message);
             }
