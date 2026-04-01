@@ -6468,6 +6468,36 @@ target = "learnings"
 }
 
 #[test]
+fn doctor_missing_lockfile_with_workspace_marketplace_collision_blocks_repair() {
+    let repo = create_workspace_dependency();
+    let cache = cache_dir();
+
+    sync_in_dir_with_adapters(repo.path(), cache.path(), false, false, &Adapter::ALL).unwrap();
+    fs::remove_file(repo.path().join(LOCKFILE_NAME)).unwrap();
+    write_file(
+        &repo.path().join(".claude-plugin/marketplace.json"),
+        "user-authored marketplace\n",
+    );
+
+    let error = doctor_in_dir_with_mode(
+        repo.path(),
+        cache.path(),
+        DoctorMode::Repair,
+        &Reporter::silent(),
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("refusing to overwrite unmanaged file"));
+    assert!(error.contains(".claude-plugin/marketplace.json"));
+    assert!(!repo.path().join(LOCKFILE_NAME).exists());
+    assert_eq!(
+        fs::read_to_string(repo.path().join(".claude-plugin/marketplace.json")).unwrap(),
+        "user-authored marketplace\n"
+    );
+}
+
+#[test]
 fn doctor_missing_lockfile_with_extra_empty_subdir_in_managed_directory_blocks_repair() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();

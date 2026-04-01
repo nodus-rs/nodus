@@ -14,7 +14,7 @@ use super::{
 use crate::adapters::ManagedFile;
 use crate::execution::{ExecutionMode, PreviewChange};
 use crate::lockfile::Lockfile;
-use crate::manifest::LoadedManifest;
+use crate::manifest::{load_dependency_from_dir, LoadedManifest};
 use crate::paths::{display_path, strip_path_prefix};
 use crate::report::Reporter;
 use crate::store::write_atomic;
@@ -557,6 +557,98 @@ pub(super) fn managed_path_is_owned(path: &Path, owned_paths: &HashSet<PathBuf>)
     path_is_owned(path, owned_paths)
 }
 
+pub(super) fn planned_workspace_marketplace_files(
+    root: &LoadedManifest,
+    runtime_root: &Path,
+) -> Result<Vec<ManagedFile>> {
+    if root.manifest.workspace.is_none() {
+        return Ok(Vec::new());
+    }
+
+    let members = root
+        .workspace_member_statuses()?
+        .into_iter()
+        .filter(|member| member.enabled)
+        .collect::<Vec<_>>();
+    if members.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut files = Vec::new();
+    let claude_marketplace_name = workspace_marketplace_name(root);
+    let claude_marketplace_owner_name = workspace_marketplace_owner_name(root);
+    let claude_plugins = members
+        .iter()
+        .map(|member| {
+            let member_root = root.resolve_path(&member.path)?;
+            let manifest = load_dependency_from_dir(&member_root)?;
+            let mut value = serde_json::Map::from_iter([
+                (
+                    "name".to_string(),
+                    serde_json::Value::String(
+                        member
+                            .name
+                            .clone()
+                            .unwrap_or_else(|| manifest.effective_name()),
+                    ),
+                ),
+                (
+                    "source".to_string(),
+                    serde_json::Value::String(display_path(&member.path)),
+                ),
+            ]);
+            if let Some(version) = manifest
+                .effective_version()
+                .map(|version| version.to_string())
+            {
+                value.insert("version".to_string(), serde_json::Value::String(version));
+            }
+            Ok(serde_json::Value::Object(value))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    files.push(ManagedFile {
+        path: runtime_root.join(".claude-plugin/marketplace.json"),
+        contents: serde_json::to_vec_pretty(&serde_json::json!({
+            "name": claude_marketplace_name,
+            "owner": {
+                "name": claude_marketplace_owner_name,
+            },
+            "plugins": claude_plugins,
+        }))?,
+    });
+
+    let codex_plugins = members
+        .iter()
+        .filter_map(|member| {
+            member.codex.as_ref().map(|codex| {
+                serde_json::json!({
+                    "name": member.name.clone().unwrap_or_else(|| member.id.clone()),
+                    "source": {
+                        "source": "local",
+                        "path": codex_workspace_plugin_path(&member.path),
+                    },
+                    "policy": {
+                        "installation": codex.installation,
+                        "authentication": codex.authentication,
+                    },
+                    "category": codex.category,
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    if !codex_plugins.is_empty() {
+        files.push(ManagedFile {
+            path: runtime_root.join(".agents/plugins/marketplace.json"),
+            contents: serde_json::to_vec_pretty(&serde_json::json!({
+                "name": claude_marketplace_name,
+                "plugins": codex_plugins,
+            }))?,
+        });
+    }
+
+    Ok(files)
+}
+
 pub(super) fn recover_runtime_owned_paths(
     project_root: &Path,
     desired_paths: &HashSet<PathBuf>,
@@ -757,6 +849,64 @@ fn is_runtime_managed_path(project_root: &Path, path: &Path) -> bool {
             (Some(second), Some(_third)) if second == "packages"
         ),
         _ => false,
+    }
+}
+
+fn codex_workspace_plugin_path(member_path: &Path) -> String {
+    let path = display_path(member_path);
+    if path.starts_with("./") {
+        path
+    } else {
+        format!("./{path}")
+    }
+}
+
+fn workspace_marketplace_name(root: &LoadedManifest) -> String {
+    let source_name = root
+        .manifest
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| workspace_marketplace_root_basename(&root.root));
+    normalize_workspace_marketplace_name(&source_name)
+}
+
+fn workspace_marketplace_owner_name(root: &LoadedManifest) -> String {
+    root.manifest
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| workspace_marketplace_root_basename(&root.root))
+}
+
+fn workspace_marketplace_root_basename(root: &Path) -> String {
+    root.file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| String::from("agentpack"))
+}
+
+fn normalize_workspace_marketplace_name(value: &str) -> String {
+    let mut normalized = String::new();
+
+    for character in value.chars() {
+        if character.is_ascii_alphanumeric() {
+            normalized.push(character.to_ascii_lowercase());
+        } else if !normalized.ends_with('-') {
+            normalized.push('-');
+        }
+    }
+
+    let normalized = normalized.trim_matches('-').to_string();
+    if normalized.is_empty() {
+        String::from("agentpack")
+    } else {
+        normalized
     }
 }
 

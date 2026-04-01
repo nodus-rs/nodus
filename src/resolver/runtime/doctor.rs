@@ -8,8 +8,9 @@ use serde::Serialize;
 use super::resolve::{resolve_project, validate_git_package};
 use super::support::{
     build_sync_execution_plan, execute_sync_plan, find_managed_collision, find_unmanaged_collision,
-    load_owned_paths, managed_path_is_owned, recover_runtime_owned_paths_from_disk,
-    unmanaged_collision_guidance, validate_state_consistency,
+    load_owned_paths, managed_path_is_owned, planned_workspace_marketplace_files,
+    recover_runtime_owned_paths_from_disk, unmanaged_collision_guidance,
+    validate_state_consistency,
 };
 use super::{lockfile_out_of_date_message, Resolution, ResolveMode, SyncMode};
 use crate::adapters::{build_output_plan, Adapters, ManagedFile};
@@ -154,6 +155,7 @@ fn inspect_doctor_state(
     };
     let desired_paths = resolution.managed_paths(cwd, selected_adapters)?;
     let mut owned_paths = load_owned_paths(cwd, existing_lockfile.as_ref())?;
+    let workspace_marketplace_files = planned_workspace_marketplace_files(&root, cwd)?;
     let mut invalid_owned_outputs = Vec::new();
     let output_plan = match build_output_plan(
         cwd,
@@ -177,11 +179,20 @@ fn inspect_doctor_state(
             )?
         }
     };
+    let mut planned_files = output_plan.files;
+    let mut desired_paths = desired_paths;
+    desired_paths.extend(
+        workspace_marketplace_files
+            .iter()
+            .map(|file| file.path.clone()),
+    );
+    planned_files.extend(workspace_marketplace_files);
+    let managed_file_count = planned_files.len();
     if existing_lockfile.is_none() {
         owned_paths.extend(recover_runtime_owned_paths_from_disk(
             cwd,
             &desired_paths,
-            &output_plan.files,
+            &planned_files,
         ));
     }
     let mut warnings = resolution
@@ -201,7 +212,7 @@ fn inspect_doctor_state(
         &lockfile_path,
         existing_lockfile.as_ref(),
         &owned_paths,
-        &output_plan.files,
+        &planned_files,
         &desired_paths,
         &mut findings,
     )?;
@@ -217,11 +228,11 @@ fn inspect_doctor_state(
         runtime_root: cwd.to_path_buf(),
         owned_paths,
         desired_paths,
-        planned_files: output_plan.files,
+        planned_files,
         sync_summary: super::SyncSummary {
             package_count: resolution.packages.len(),
             adapters: selection.adapters,
-            managed_file_count: output_plan.managed_files.len(),
+            managed_file_count,
         },
         has_existing_lockfile: existing_lockfile.is_some(),
         has_missing_managed_files,
