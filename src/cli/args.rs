@@ -5,82 +5,25 @@ use clap_complete::Shell;
 
 use crate::adapters::Adapter;
 use crate::cli::help::{
-    ADD_AFTER_LONG_HELP, ADD_LONG_ABOUT, DOCTOR_AFTER_LONG_HELP, DOCTOR_LONG_ABOUT,
-    ROOT_AFTER_LONG_HELP, ROOT_LONG_ABOUT, SYNC_AFTER_LONG_HELP, SYNC_LONG_ABOUT,
-    UPDATE_AFTER_LONG_HELP, UPDATE_LONG_ABOUT,
+    ADD_ABOUT, ADD_AFTER_LONG_HELP, ADD_LONG_ABOUT, CLEAN_ABOUT, CLEAN_AFTER_LONG_HELP,
+    CLEAN_LONG_ABOUT, COMPLETION_ABOUT, COMPLETION_LONG_ABOUT, DOCTOR_ABOUT,
+    DOCTOR_AFTER_LONG_HELP, DOCTOR_LONG_ABOUT, INFO_ABOUT, INFO_AFTER_LONG_HELP,
+    INFO_LONG_ABOUT, INIT_ABOUT, INIT_AFTER_LONG_HELP, INIT_LONG_ABOUT, LIST_ABOUT,
+    LIST_AFTER_LONG_HELP, LIST_LONG_ABOUT, OUTDATED_ABOUT, OUTDATED_AFTER_LONG_HELP,
+    OUTDATED_LONG_ABOUT, RELAY_ABOUT, RELAY_AFTER_LONG_HELP, RELAY_LONG_ABOUT, REMOVE_ABOUT,
+    REMOVE_AFTER_LONG_HELP, REMOVE_LONG_ABOUT, ROOT_ABOUT, ROOT_AFTER_LONG_HELP, ROOT_LONG_ABOUT,
+    REVIEW_ABOUT, REVIEW_AFTER_LONG_HELP, REVIEW_LONG_ABOUT, SYNC_ABOUT, SYNC_AFTER_LONG_HELP,
+    SYNC_LONG_ABOUT, UPDATE_ABOUT, UPDATE_AFTER_LONG_HELP, UPDATE_LONG_ABOUT, UPGRADE_ABOUT,
+    UPGRADE_AFTER_LONG_HELP, UPGRADE_LONG_ABOUT,
 };
 use crate::manifest::DependencyComponent;
 use crate::review::ReviewProvider;
-const REMOVE_LONG_ABOUT: &str = r#"Remove a configured dependency, update `nodus.toml`, and prune the runtime files that dependency no longer owns."#;
-
-const REMOVE_AFTER_LONG_HELP: &str = r#"Examples:
-  nodus remove nodus
-  nodus remove nodus --global
-  nodus remove nodus --dry-run"#;
-
-const INFO_LONG_ABOUT: &str = r#"Inspect a package without changing the current repo.
-
-Use this when you want to see discovered skills, agents, rules, commands, managed exports, or the resolved ref before you install or update a package."#;
-
-const INFO_AFTER_LONG_HELP: &str = r#"Examples:
-  nodus info nodus-rs/nodus
-  nodus info ./vendor/playbook
-  nodus info nodus --json"#;
-
-const REVIEW_LONG_ABOUT: &str = r#"Ask an AI review agent to assess whether a package graph looks safe to use before you install or update it."#;
-
-const REVIEW_AFTER_LONG_HELP: &str = r#"Examples:
-  nodus review
-  nodus review owner/repo --tag v1.2.3
-  nodus review owner/repo --provider anthropic"#;
-
-const OUTDATED_LONG_ABOUT: &str = r#"Check whether configured dependencies have newer tags available, or whether tracked branches moved forward, without changing the repo."#;
-
-const OUTDATED_AFTER_LONG_HELP: &str = r#"Examples:
-  nodus outdated
-  nodus outdated --json"#;
-
-const UPGRADE_LONG_ABOUT: &str = r#"Check whether the installed `nodus` CLI can be upgraded, or install the newer version when the current install method supports that workflow."#;
-
-const UPGRADE_AFTER_LONG_HELP: &str = r#"Examples:
-  nodus upgrade --check
-  nodus upgrade"#;
-
-const RELAY_LONG_ABOUT: &str = r#"Relay edits from managed runtime files in a consumer repo back into a maintainer checkout.
-
-This is mainly for package maintainers. Most users do not need `relay` in normal package consumption workflows."#;
-
-const RELAY_AFTER_LONG_HELP: &str = r#"Examples:
-  nodus relay nodus --repo-path ../nodus
-  nodus relay nodus --watch
-  nodus relay nodus --repo-path ../nodus --create-missing"#;
-
-const INIT_LONG_ABOUT: &str = r#"Create a minimal `nodus.toml` and example package content when you are starting a new Nodus package repo."#;
-
-const INIT_AFTER_LONG_HELP: &str = r#"Examples:
-  nodus init
-  nodus init --dry-run"#;
-
-const CLEAN_LONG_ABOUT: &str = r#"Clear shared package cache data without changing `nodus.toml`, `nodus.lock`, or generated runtime outputs.
-
-By default `nodus clean` removes only the cache entries referenced by the current repo's `nodus.lock`. Use `--all` when you want to clear the shared cache directories for every project under the selected store root.
-
-The cache is shared, so project-scoped cleanup can make another repo redownload the same package data on its next `nodus sync`."#;
-
-const CLEAN_AFTER_LONG_HELP: &str = r#"Examples:
-  nodus clean
-  nodus clean --dry-run
-  nodus clean --all
-
-After cleaning the cache, run `nodus sync` again when you want Nodus to recreate the missing mirrors, checkouts, and snapshots."#;
-
-const COMPLETION_LONG_ABOUT: &str = r#"Generate shell completion scripts for `nodus` so the shell can suggest commands and flags interactively."#;
 
 #[derive(Debug, Parser)]
 #[command(
     author,
     version,
-    about = "Install and maintain repo-scoped agent packages",
+    about = ROOT_ABOUT,
     long_about = ROOT_LONG_ABOUT,
     after_long_help = ROOT_AFTER_LONG_HELP
 )]
@@ -100,7 +43,7 @@ pub(super) struct Cli {
 #[derive(Debug, Subcommand)]
 pub(super) enum Command {
     #[command(
-        about = "Add a dependency and run sync",
+        about = ADD_ABOUT,
         long_about = ADD_LONG_ABOUT,
         after_long_help = ADD_AFTER_LONG_HELP
     )]
@@ -173,7 +116,7 @@ pub(super) enum Command {
         dry_run: bool,
     },
     #[command(
-        about = "Remove a dependency and prune its managed outputs",
+        about = REMOVE_ABOUT,
         long_about = REMOVE_LONG_ABOUT,
         after_long_help = REMOVE_AFTER_LONG_HELP
     )]
@@ -192,9 +135,9 @@ pub(super) enum Command {
         dry_run: bool,
     },
     #[command(
-        about = "List configured dependencies and any locked metadata",
-        long_about = "List the dependencies recorded in `nodus.toml` together with any resolved metadata from `nodus.lock`.",
-        after_long_help = "Examples:\n  nodus list\n  nodus list --json"
+        about = LIST_ABOUT,
+        long_about = LIST_LONG_ABOUT,
+        after_long_help = LIST_AFTER_LONG_HELP
     )]
     List {
         #[arg(
@@ -204,7 +147,7 @@ pub(super) enum Command {
         json: bool,
     },
     #[command(
-        about = "Display resolved package metadata",
+        about = INFO_ABOUT,
         long_about = INFO_LONG_ABOUT,
         after_long_help = INFO_AFTER_LONG_HELP
     )]
@@ -224,7 +167,7 @@ pub(super) enum Command {
         json: bool,
     },
     #[command(
-        about = "Use an AI review agent to assess whether a package graph looks safe to use",
+        about = REVIEW_ABOUT,
         long_about = REVIEW_LONG_ABOUT,
         after_long_help = REVIEW_AFTER_LONG_HELP
     )]
@@ -252,7 +195,7 @@ pub(super) enum Command {
         model: Option<String>,
     },
     #[command(
-        about = "Check configured dependencies for newer tags or branch head changes",
+        about = OUTDATED_ABOUT,
         long_about = OUTDATED_LONG_ABOUT,
         after_long_help = OUTDATED_AFTER_LONG_HELP
     )]
@@ -264,7 +207,7 @@ pub(super) enum Command {
         json: bool,
     },
     #[command(
-        about = "Update configured dependencies and resync managed outputs",
+        about = UPDATE_ABOUT,
         long_about = UPDATE_LONG_ABOUT,
         after_long_help = UPDATE_AFTER_LONG_HELP
     )]
@@ -282,7 +225,7 @@ pub(super) enum Command {
     },
     #[command(
         alias = "self-update",
-        about = "Check for or install a newer nodus CLI when the install method is supported",
+        about = UPGRADE_ABOUT,
         long_about = UPGRADE_LONG_ABOUT,
         after_long_help = UPGRADE_AFTER_LONG_HELP
     )]
@@ -294,7 +237,7 @@ pub(super) enum Command {
         check: bool,
     },
     #[command(
-        about = "Relay linked managed edits back into a maintainer checkout",
+        about = RELAY_ABOUT,
         long_about = RELAY_LONG_ABOUT,
         after_long_help = RELAY_AFTER_LONG_HELP
     )]
@@ -336,7 +279,7 @@ pub(super) enum Command {
         create_missing: bool,
     },
     #[command(
-        about = "Create a minimal nodus.toml and example skill",
+        about = INIT_ABOUT,
         long_about = INIT_LONG_ABOUT,
         after_long_help = INIT_AFTER_LONG_HELP
     )]
@@ -348,7 +291,7 @@ pub(super) enum Command {
         dry_run: bool,
     },
     #[command(
-        about = "Resolve dependencies and write managed runtime outputs",
+        about = SYNC_ABOUT,
         long_about = SYNC_LONG_ABOUT,
         after_long_help = SYNC_AFTER_LONG_HELP
     )]
@@ -393,7 +336,7 @@ pub(super) enum Command {
         dry_run: bool,
     },
     #[command(
-        about = "Clear shared repository, checkout, and snapshot cache data",
+        about = CLEAN_ABOUT,
         long_about = CLEAN_LONG_ABOUT,
         after_long_help = CLEAN_AFTER_LONG_HELP
     )]
@@ -409,13 +352,13 @@ pub(super) enum Command {
         )]
         dry_run: bool,
     },
-    #[command(about = "Generate shell completion scripts", long_about = COMPLETION_LONG_ABOUT)]
+    #[command(about = COMPLETION_ABOUT, long_about = COMPLETION_LONG_ABOUT)]
     Completion {
         #[arg(value_enum, help = "Shell to generate completions for")]
         shell: Shell,
     },
     #[command(
-        about = "Validate lockfile, shared store, and managed output consistency",
+        about = DOCTOR_ABOUT,
         long_about = DOCTOR_LONG_ABOUT,
         after_long_help = DOCTOR_AFTER_LONG_HELP
     )]

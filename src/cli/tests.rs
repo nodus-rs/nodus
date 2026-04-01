@@ -596,6 +596,17 @@ fn root_help_leads_with_guided_workflows() {
         .render_long_help()
         .to_string();
 
+    assert!(help.contains("Add a dependency and run sync"));
+    assert!(help.contains("List configured dependencies and any locked metadata"));
+    assert!(help.contains("Display resolved package metadata"));
+    assert!(help.contains("Check configured dependencies for newer tags or branch head changes"));
+    assert!(help.contains("Update configured dependencies and resync managed outputs"));
+    assert!(help.contains("Check for or install a newer nodus CLI when the install method is supported"));
+    assert!(help.contains("Clear shared repository, checkout, and snapshot cache data"));
+    assert!(help.contains("Generate shell completion scripts"));
+    assert!(help.contains("Use an AI review agent to assess whether a package graph looks safe to use"));
+    assert!(help.contains("Validate lockfile, shared store, and managed output consistency"));
+    assert!(help.contains("Project-scoped installs are the default"));
     assert!(help.contains("Most common tasks"));
     assert!(help.contains("Typical workflows"));
     assert!(help.contains("add -> doctor"));
@@ -611,10 +622,22 @@ fn add_help_leads_with_safe_example_and_next_step() {
         .render_long_help()
         .to_string();
 
+    assert!(help.contains("Git URL, local path, or GitHub shortcut like owner/repo"));
+    assert!(help.contains("Record the dependency under `[dev-dependencies]`"));
+    assert!(help.contains("Pin a specific Git tag instead of resolving the latest tag"));
+    assert!(help.contains("Track a specific Git branch instead of resolving the latest tag"));
+    assert!(help.contains("Pin a specific Git commit revision"));
+    assert!(help.contains("Select one or more adapters to persist for this install target"));
+    assert!(help.contains("Select which dependency components to install from the package"));
+    assert!(help.contains("Persist project startup hooks"));
+    assert!(help.contains("Enable every child package exposed by a workspace or marketplace wrapper instead of leaving multi-package wrappers disabled by default"));
+    assert!(help.contains("By default Nodus installs the whole package"));
     assert!(help.contains("Most common use"));
+    assert!(help.contains("<PACKAGE>"));
     assert!(help.contains("nodus add nodus-rs/nodus --adapter codex"));
     assert!(help.contains("What this changes"));
     assert!(help.contains("Run `nodus doctor` next"));
+    assert!(help.contains("After a project-scoped install, run `nodus doctor` to confirm the repo is consistent."));
 }
 
 #[test]
