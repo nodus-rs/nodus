@@ -6472,7 +6472,7 @@ fn doctor_missing_lockfile_with_workspace_marketplace_collision_blocks_repair() 
     let repo = create_workspace_dependency();
     let cache = cache_dir();
 
-    sync_in_dir_with_adapters(repo.path(), cache.path(), false, false, &Adapter::ALL).unwrap();
+    sync_in_dir_with_adapters(repo.path(), cache.path(), false, false, &[Adapter::Claude]).unwrap();
     fs::remove_file(repo.path().join(LOCKFILE_NAME)).unwrap();
     write_file(
         &repo.path().join(".claude-plugin/marketplace.json"),
@@ -6494,6 +6494,32 @@ fn doctor_missing_lockfile_with_workspace_marketplace_collision_blocks_repair() 
     assert_eq!(
         fs::read_to_string(repo.path().join(".claude-plugin/marketplace.json")).unwrap(),
         "user-authored marketplace\n"
+    );
+}
+
+#[test]
+fn doctor_recovers_exact_match_workspace_marketplace_after_lockfile_loss() {
+    let repo = create_workspace_dependency();
+    let cache = cache_dir();
+
+    sync_in_dir_with_adapters(repo.path(), cache.path(), false, false, &[Adapter::Claude]).unwrap();
+    let expected_marketplace =
+        fs::read_to_string(repo.path().join(".claude-plugin/marketplace.json")).unwrap();
+    fs::remove_file(repo.path().join(LOCKFILE_NAME)).unwrap();
+
+    let summary = doctor_in_dir_with_mode(
+        repo.path(),
+        cache.path(),
+        DoctorMode::Repair,
+        &Reporter::silent(),
+    )
+    .unwrap();
+
+    assert_eq!(summary.status, DoctorStatus::Fixed);
+    assert!(repo.path().join(LOCKFILE_NAME).exists());
+    assert_eq!(
+        fs::read_to_string(repo.path().join(".claude-plugin/marketplace.json")).unwrap(),
+        expected_marketplace
     );
 }
 

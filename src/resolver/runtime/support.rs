@@ -836,7 +836,24 @@ fn is_runtime_managed_path(project_root: &Path, path: &Path) -> bool {
         return false;
     };
     match first.as_os_str().to_string_lossy().as_ref() {
-        ".agents" | ".claude" | ".codex" | ".cursor" | ".opencode" => true,
+        ".agents" => {
+            let second = components
+                .next()
+                .map(|component| component.as_os_str().to_string_lossy());
+            let third = components
+                .next()
+                .map(|component| component.as_os_str().to_string_lossy());
+            second.is_none()
+                || matches!(
+                    (second.as_deref(), third.as_deref()),
+                    (Some("plugins"), Some("marketplace.json"))
+                )
+        }
+        ".claude" | ".codex" | ".cursor" | ".opencode" => true,
+        ".claude-plugin" => matches!(
+            components.next().map(|component| component.as_os_str().to_string_lossy()),
+            Some(second) if second == "marketplace.json"
+        ),
         ".github" => matches!(
             components.next().map(|component| component.as_os_str().to_string_lossy()),
             Some(second) if second == "skills" || second == "agents"
