@@ -3,7 +3,7 @@ use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use rayon::prelude::*;
 
 use super::{
@@ -14,7 +14,7 @@ use super::{
 use crate::adapters::ManagedFile;
 use crate::execution::{ExecutionMode, PreviewChange};
 use crate::lockfile::Lockfile;
-use crate::manifest::{load_dependency_from_dir, LoadedManifest};
+use crate::manifest::{LoadedManifest, load_dependency_from_dir};
 use crate::paths::{display_path, strip_path_prefix};
 use crate::report::Reporter;
 use crate::store::write_atomic;
@@ -461,6 +461,37 @@ pub(super) fn write_managed_files(planned_files: &[ManagedFile]) -> Result<()> {
         .collect::<Vec<_>>()
         .into_iter()
         .collect()
+}
+
+pub(super) fn remove_path_and_empty_parents(path: &Path, project_root: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_dir() {
+                fs::remove_dir_all(path).with_context(|| {
+                    format!(
+                        "failed to remove conflicting managed directory {}",
+                        path.display()
+                    )
+                })?;
+            } else {
+                fs::remove_file(path).with_context(|| {
+                    format!(
+                        "failed to remove conflicting managed file {}",
+                        path.display()
+                    )
+                })?;
+            }
+            prune_empty_parent_dirs(path, project_root)?;
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "failed to inspect conflicting managed path {}",
+                path.display()
+            )
+        }),
+    }
 }
 
 fn prepare_managed_paths_for_write(

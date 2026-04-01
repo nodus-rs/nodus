@@ -1,6 +1,7 @@
 use crate::cli::handlers::CommandContext;
 use crate::cli::output::write_json;
 use crate::report::Reporter;
+use crate::resolver::DoctorMode;
 use crate::review::ReviewProvider;
 
 pub(crate) struct ReviewCommand {
@@ -121,18 +122,49 @@ pub(crate) fn handle_doctor(
     command: DoctorCommand,
 ) -> anyhow::Result<()> {
     let DoctorCommand { check, force, json } = command;
-    let _ = (check, force);
+    let mode = if force {
+        DoctorMode::Force
+    } else if check {
+        DoctorMode::Check
+    } else {
+        DoctorMode::Repair
+    };
     if json {
-        let summary =
-            crate::resolver::doctor_in_dir(context.cwd, context.cache_root, &Reporter::silent())?;
+        let summary = crate::resolver::doctor_in_dir_with_mode(
+            context.cwd,
+            context.cache_root,
+            mode,
+            &Reporter::silent(),
+        )?;
         write_json(context.reporter, &summary)
     } else {
-        let summary =
-            crate::resolver::doctor_in_dir(context.cwd, context.cache_root, context.reporter)?;
-        context.reporter.finish(format!(
-            "project state is consistent across {} packages",
-            summary.package_count,
-        ))?;
+        let summary = crate::resolver::doctor_in_dir_with_mode(
+            context.cwd,
+            context.cache_root,
+            mode,
+            context.reporter,
+        )?;
+        let outcome = match summary.status {
+            crate::resolver::DoctorStatus::Healthy => {
+                format!(
+                    "project state is consistent across {} packages",
+                    summary.package_count
+                )
+            }
+            crate::resolver::DoctorStatus::Fixed => {
+                format!(
+                    "repaired project state across {} packages",
+                    summary.package_count
+                )
+            }
+            crate::resolver::DoctorStatus::Blocked => {
+                format!(
+                    "project state is blocked across {} packages",
+                    summary.package_count
+                )
+            }
+        };
+        context.reporter.finish(outcome)?;
         Ok(())
     }
 }

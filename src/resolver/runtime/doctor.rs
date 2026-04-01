@@ -1,7 +1,8 @@
 use std::collections::HashSet;
+use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use rayon::prelude::*;
 use serde::Serialize;
 
@@ -9,14 +10,14 @@ use super::resolve::{resolve_project, validate_git_package};
 use super::support::{
     build_sync_execution_plan, execute_sync_plan, find_managed_collision, find_unmanaged_collision,
     load_owned_paths, managed_path_is_owned, planned_workspace_marketplace_files,
-    recover_runtime_owned_paths_from_disk, unmanaged_collision_guidance,
-    validate_state_consistency,
+    recover_runtime_owned_paths_from_disk, remove_path_and_empty_parents,
+    unmanaged_collision_guidance, validate_state_consistency,
 };
-use super::{lockfile_out_of_date_message, Resolution, ResolveMode, SyncMode};
-use crate::adapters::{build_output_plan, Adapters, ManagedFile};
+use super::{Resolution, ResolveMode, SyncMode, lockfile_out_of_date_message};
+use crate::adapters::{Adapters, ManagedFile, build_output_plan};
 use crate::execution::ExecutionMode;
-use crate::lockfile::{Lockfile, LOCKFILE_NAME};
-use crate::manifest::{load_root_from_dir, LoadedManifest};
+use crate::lockfile::{LOCKFILE_NAME, Lockfile};
+use crate::manifest::{LoadedManifest, load_root_from_dir};
 use crate::paths::display_path;
 use crate::report::Reporter;
 use crate::selection::resolve_adapter_selection;
@@ -92,6 +93,7 @@ struct DoctorInspection {
     has_existing_lockfile: bool,
     has_missing_managed_files: bool,
     invalid_owned_outputs: Vec<PathBuf>,
+    risky_actions: Vec<DoctorAction>,
 }
 
 #[derive(Debug, Clone)]
@@ -99,14 +101,30 @@ struct DoctorPlan {
     package_count: usize,
     warnings: Vec<String>,
     findings: Vec<DoctorFinding>,
-    actions: Vec<DoctorAction>,
-    applied_actions: Vec<DoctorActionRecord>,
+    safe_actions: Vec<DoctorAction>,
+    risky_actions: Vec<DoctorAction>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DoctorAction {
     RebuildManagedOutputs,
-    RewriteManagedFile { path: PathBuf },
+    RemoveConflictingManagedPath { path: PathBuf, reason: String },
+}
+
+trait DoctorPrompt {
+    fn confirm(&mut self, action: &DoctorAction) -> Result<bool>;
+}
+
+struct TtyDoctorPrompt;
+
+impl DoctorPrompt for TtyDoctorPrompt {
+    fn confirm(&mut self, action: &DoctorAction) -> Result<bool> {
+        let stdin = io::stdin();
+        let mut input = stdin.lock();
+        let stderr = io::stderr();
+        let mut output = stderr.lock();
+        prompt_for_doctor_action(action, &mut input, &mut output)
+    }
 }
 
 pub fn doctor_in_dir_with_mode(
@@ -205,6 +223,7 @@ fn inspect_doctor_state(
     warnings.dedup();
 
     let mut findings = Vec::new();
+    let mut risky_actions = Vec::new();
     let has_missing_managed_files = inspect_lockfile_state(
         cwd,
         &resolution,
@@ -215,6 +234,7 @@ fn inspect_doctor_state(
         &planned_files,
         &desired_paths,
         &mut findings,
+        &mut risky_actions,
     )?;
 
     let mut inspection = DoctorInspection {
@@ -237,6 +257,7 @@ fn inspect_doctor_state(
         has_existing_lockfile: existing_lockfile.is_some(),
         has_missing_managed_files,
         invalid_owned_outputs,
+        risky_actions,
     };
     let mut drift_findings = Vec::new();
     classify_output_drift(&inspection, &mut drift_findings);
@@ -254,6 +275,7 @@ fn inspect_lockfile_state(
     planned_files: &[crate::adapters::ManagedFile],
     desired_paths: &std::collections::HashSet<std::path::PathBuf>,
     findings: &mut Vec<DoctorFinding>,
+    risky_actions: &mut Vec<DoctorAction>,
 ) -> Result<bool> {
     if let Some(existing_lockfile) = existing_lockfile {
         let expected_lockfile = resolution.to_lockfile(selected_adapters, cwd)?;
@@ -285,19 +307,28 @@ fn inspect_lockfile_state(
             };
         findings.push(DoctorFinding {
             kind: DoctorFindingKind::RiskyFix,
-            message,
+            message: message.clone(),
+        });
+        risky_actions.push(DoctorAction::RemoveConflictingManagedPath {
+            path: collision.path,
+            reason: message,
         });
     }
     if existing_lockfile.is_none() {
         if let Some(mcp_path) =
             unmanaged_missing_lockfile_mcp_collision(cwd, owned_paths, planned_files)
         {
+            let message = format!(
+                "refusing to overwrite unmanaged file {}",
+                display_path(&mcp_path)
+            );
             findings.push(DoctorFinding {
                 kind: DoctorFindingKind::RiskyFix,
-                message: format!(
-                    "refusing to overwrite unmanaged file {}",
-                    display_path(&mcp_path)
-                ),
+                message: message.clone(),
+            });
+            risky_actions.push(DoctorAction::RemoveConflictingManagedPath {
+                path: mcp_path,
+                reason: message,
             });
         }
     }
@@ -334,26 +365,25 @@ fn classify_output_drift(inspection: &DoctorInspection, findings: &mut Vec<Docto
 }
 
 fn build_doctor_plan(inspection: &DoctorInspection) -> Result<DoctorPlan> {
-    let mut actions = Vec::new();
-    let can_auto_repair = inspection.findings.iter().all(|finding| {
+    let mut safe_actions = Vec::new();
+    let can_repair = inspection.findings.iter().all(|finding| {
         matches!(
             finding.kind,
-            DoctorFindingKind::Informational | DoctorFindingKind::SafeAutoFix
+            DoctorFindingKind::Informational
+                | DoctorFindingKind::SafeAutoFix
+                | DoctorFindingKind::RiskyFix
         )
     });
-    if can_auto_repair && !inspection.findings.is_empty() {
-        actions.push(DoctorAction::RebuildManagedOutputs);
-        for path in &inspection.invalid_owned_outputs {
-            actions.push(DoctorAction::RewriteManagedFile { path: path.clone() });
-        }
+    if can_repair && !inspection.findings.is_empty() {
+        safe_actions.push(DoctorAction::RebuildManagedOutputs);
     }
 
     Ok(DoctorPlan {
         package_count: inspection.package_count,
         warnings: inspection.warnings.clone(),
         findings: inspection.findings.clone(),
-        actions,
-        applied_actions: Vec::new(),
+        safe_actions,
+        risky_actions: inspection.risky_actions.clone(),
     })
 }
 
@@ -367,43 +397,50 @@ fn execute_doctor_plan(
         reporter.warning(warning)?;
     }
 
+    if let Some(finding) = plan
+        .findings
+        .iter()
+        .find(|finding| matches!(finding.kind, DoctorFindingKind::Manual))
+    {
+        bail!("{}", finding.message);
+    }
+
     match mode {
-        DoctorMode::Force => bail!("doctor force mode is not implemented yet"),
-        DoctorMode::Check => Ok(DoctorSummary {
-            package_count: plan.package_count,
-            warnings: plan.warnings,
-            status: doctor_status(&plan.findings, &plan.applied_actions),
-            findings: plan.findings,
-            applied_actions: plan.applied_actions,
-        }),
+        DoctorMode::Check => Ok(plan.into_summary(Vec::new())),
         DoctorMode::Repair => {
-            if !plan.actions.is_empty() {
-                let applied_actions = execute_safe_repairs(inspection, reporter)?;
-                return Ok(DoctorSummary {
-                    package_count: plan.package_count,
-                    warnings: plan.warnings,
-                    status: doctor_status(&plan.findings, &applied_actions),
-                    findings: plan.findings,
-                    applied_actions,
-                });
+            let mut prompt = TtyDoctorPrompt;
+            let mut applied_actions = Vec::new();
+            let risky_actions = plan.risky_actions().cloned().collect::<Vec<_>>();
+            for action in &risky_actions {
+                if !prompt.confirm(action)? {
+                    return Ok(plan.into_blocked_summary());
+                }
+                applied_actions.push(apply_risky_action(
+                    action,
+                    &inspection.runtime_root,
+                    reporter,
+                )?);
             }
-
-            if let Some(finding) = plan
-                .findings
-                .iter()
-                .find(|finding| !matches!(finding.kind, DoctorFindingKind::SafeAutoFix))
-                .or_else(|| plan.findings.first())
-            {
-                bail!("{}", finding.message);
+            if plan.needs_safe_repair() {
+                applied_actions.extend(execute_safe_repairs(inspection, reporter)?);
+                return Ok(plan.into_summary(applied_actions));
             }
-
-            Ok(DoctorSummary {
-                package_count: plan.package_count,
-                warnings: plan.warnings,
-                status: doctor_status(&plan.findings, &plan.applied_actions),
-                findings: plan.findings,
-                applied_actions: plan.applied_actions,
-            })
+            Ok(plan.into_summary(applied_actions))
+        }
+        DoctorMode::Force => {
+            let mut applied_actions = Vec::new();
+            let risky_actions = plan.risky_actions().cloned().collect::<Vec<_>>();
+            for action in &risky_actions {
+                applied_actions.push(apply_risky_action(
+                    action,
+                    &inspection.runtime_root,
+                    reporter,
+                )?);
+            }
+            if plan.needs_safe_repair() {
+                applied_actions.extend(execute_safe_repairs(inspection, reporter)?);
+            }
+            Ok(plan.into_summary(applied_actions))
         }
     }
 }
@@ -499,6 +536,78 @@ impl DoctorFinding {
         Self {
             kind: DoctorFindingKind::SafeAutoFix,
             message: message.into(),
+        }
+    }
+}
+
+impl DoctorPlan {
+    fn into_blocked_summary(self) -> DoctorSummary {
+        self.into_summary(Vec::new())
+    }
+
+    fn into_summary(self, applied_actions: Vec<DoctorActionRecord>) -> DoctorSummary {
+        let status = doctor_status(&self.findings, &applied_actions);
+        DoctorSummary {
+            package_count: self.package_count,
+            warnings: self.warnings,
+            status,
+            findings: self.findings,
+            applied_actions,
+        }
+    }
+
+    fn needs_safe_repair(&self) -> bool {
+        self.safe_actions
+            .iter()
+            .any(|action| matches!(action, DoctorAction::RebuildManagedOutputs))
+    }
+
+    fn risky_actions(&self) -> impl Iterator<Item = &DoctorAction> {
+        self.risky_actions.iter()
+    }
+}
+
+fn prompt_for_doctor_action(
+    action: &DoctorAction,
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+) -> Result<bool> {
+    match action {
+        DoctorAction::RemoveConflictingManagedPath { path, reason } => {
+            writeln!(output, "Nodus needs to remove {}.", display_path(path))?;
+            writeln!(output, "{reason}")?;
+            write!(output, "Continue? [y/N] ")?;
+            output.flush()?;
+
+            let mut line = String::new();
+            if input.read_line(&mut line)? == 0 {
+                return Ok(false);
+            }
+            Ok(matches!(
+                line.trim().to_ascii_lowercase().as_str(),
+                "y" | "yes"
+            ))
+        }
+        DoctorAction::RebuildManagedOutputs => Ok(true),
+    }
+}
+
+fn apply_risky_action(
+    action: &DoctorAction,
+    runtime_root: &Path,
+    reporter: &Reporter,
+) -> Result<DoctorActionRecord> {
+    match action {
+        DoctorAction::RemoveConflictingManagedPath { path, .. } => {
+            reporter.status("Removing", path.display())?;
+            remove_path_and_empty_parents(path, runtime_root)?;
+            Ok(DoctorActionRecord::new(format!(
+                "removed conflicting managed subtree {}",
+                display_path(path)
+            )))
+        }
+        DoctorAction::RebuildManagedOutputs => {
+            unreachable!("safe doctor action routed incorrectly")
         }
     }
 }
