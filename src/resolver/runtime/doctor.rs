@@ -328,21 +328,21 @@ impl LockfileInspection<'_> {
             });
         }
         if self.existing_lockfile.is_none() {
-            if let Some(mcp_path) = unmanaged_missing_lockfile_mcp_collision(
+            for merge_path in unmanaged_missing_lockfile_merge_collisions(
                 self.cwd,
                 self.owned_paths,
                 self.planned_files,
             ) {
                 let message = format!(
                     "refusing to overwrite unmanaged file {}",
-                    display_path(&mcp_path)
+                    display_path(&merge_path)
                 );
                 findings.push(DoctorFinding {
                     kind: DoctorFindingKind::RiskyFix,
                     message: message.clone(),
                 });
                 risky_actions.push(DoctorAction::RemoveConflictingManagedPath {
-                    path: mcp_path,
+                    path: merge_path,
                     reason: message,
                 });
             }
@@ -517,18 +517,27 @@ fn doctor_status(
     }
 }
 
-fn unmanaged_missing_lockfile_mcp_collision(
+fn unmanaged_missing_lockfile_merge_collisions(
     runtime_root: &Path,
     owned_paths: &HashSet<PathBuf>,
     planned_files: &[ManagedFile],
-) -> Option<PathBuf> {
-    let mcp_path = runtime_root.join(".mcp.json");
-    planned_files
+) -> Vec<PathBuf> {
+    let managed_merge_paths = [
+        runtime_root.join(".mcp.json"),
+        runtime_root.join("opencode.json"),
+        runtime_root.join(".codex/config.toml"),
+    ]
+    .into_iter()
+    .collect::<HashSet<_>>();
+    let mut collisions = planned_files
         .iter()
-        .find(|file| file.path == mcp_path)
         .map(|file| &file.path)
+        .filter(|path| managed_merge_paths.contains(*path))
         .filter(|path| path.exists() && !managed_path_is_owned(path, owned_paths))
         .cloned()
+        .collect::<Vec<_>>();
+    collisions.sort();
+    collisions
 }
 
 fn invalid_owned_output_path(
@@ -536,14 +545,25 @@ fn invalid_owned_output_path(
     runtime_root: &Path,
     owned_paths: &HashSet<PathBuf>,
 ) -> Option<PathBuf> {
-    let mcp_path = runtime_root.join(".mcp.json");
-    if error.to_string().contains("failed to parse MCP config")
-        && managed_path_is_owned(&mcp_path, owned_paths)
-    {
-        Some(mcp_path)
-    } else {
-        None
-    }
+    [
+        (runtime_root.join(".mcp.json"), "failed to parse MCP config"),
+        (
+            runtime_root.join("opencode.json"),
+            "failed to parse OpenCode config",
+        ),
+        (
+            runtime_root.join(".codex/config.toml"),
+            "failed to parse Codex config",
+        ),
+    ]
+    .into_iter()
+    .find_map(|(path, prefix)| {
+        if error.to_string().contains(prefix) && managed_path_is_owned(&path, owned_paths) {
+            Some(path)
+        } else {
+            None
+        }
+    })
 }
 
 impl DoctorInspection {

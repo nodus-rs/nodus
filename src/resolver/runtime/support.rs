@@ -280,6 +280,8 @@ pub(super) fn find_unmanaged_collision(
 
 fn allows_managed_merge(project_root: &Path, path: &Path) -> bool {
     path == project_root.join(".mcp.json")
+        || path == project_root.join("opencode.json")
+        || path == project_root.join(".codex/config.toml")
 }
 
 pub(super) fn find_managed_collision(
@@ -859,7 +861,7 @@ fn is_runtime_managed_path(project_root: &Path, path: &Path) -> bool {
     let Some(relative) = strip_path_prefix(path, project_root) else {
         return false;
     };
-    if relative == Path::new(".mcp.json") {
+    if relative == Path::new(".mcp.json") || relative == Path::new("opencode.json") {
         return true;
     }
     let mut components = relative.components();

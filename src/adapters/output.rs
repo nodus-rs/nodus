@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map as JsonMap, Value as JsonValue};
+use toml::Value as TomlValue;
 
 use super::{Adapter, Adapters, ArtifactKind, ManagedArtifactNames, ManagedFile};
 use crate::lockfile::{Lockfile, managed_mcp_server_name};
@@ -43,7 +44,23 @@ struct ProjectMcpConfig {
     #[serde(rename = "mcpServers", default)]
     mcp_servers: BTreeMap<String, EmittedMcpServerConfig>,
     #[serde(flatten)]
-    extra: BTreeMap<String, Value>,
+    extra: BTreeMap<String, JsonValue>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct ProjectOpenCodeConfig {
+    #[serde(rename = "mcp", default)]
+    mcp_servers: BTreeMap<String, JsonValue>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, JsonValue>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct ProjectCodexConfig {
+    #[serde(default)]
+    mcp_servers: BTreeMap<String, TomlValue>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, TomlValue>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -451,6 +468,31 @@ pub(crate) fn build_output_plan(
             .insert(display_relative(project_root, &file.path));
         merge_file(&mut plan.files, file)?;
     }
+    if selected_adapters.contains(Adapter::Codex)
+        && let Some(file) = codex_mcp_config_file(
+            project_root,
+            packages,
+            existing_lockfile,
+            merge_existing_mcp,
+        )?
+    {
+        plan.managed_files
+            .insert(display_relative(project_root, &file.path));
+        merge_file(&mut plan.files, file)?;
+    }
+    if selected_adapters.contains(Adapter::OpenCode)
+        && let Some(file) = opencode_mcp_config_file(
+            project_root,
+            packages,
+            existing_lockfile,
+            merge_existing_mcp,
+            &mut plan.warnings,
+        )?
+    {
+        plan.managed_files
+            .insert(display_relative(project_root, &file.path));
+        merge_file(&mut plan.files, file)?;
+    }
 
     if packages
         .iter()
@@ -641,6 +683,318 @@ fn read_project_mcp_config(path: &Path) -> Result<ProjectMcpConfig> {
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     serde_json::from_str(&contents)
         .with_context(|| format!("failed to parse MCP config {}", path.display()))
+}
+
+fn codex_mcp_config_file(
+    project_root: &Path,
+    packages: &[(ResolvedPackage, PathBuf)],
+    existing_lockfile: Option<&Lockfile>,
+    merge_existing_mcp: bool,
+) -> Result<Option<ManagedFile>> {
+    let path = project_root.join(".codex/config.toml");
+    let previously_managed = existing_lockfile
+        .map(Lockfile::managed_mcp_server_names)
+        .unwrap_or_default();
+    let mut desired_servers = BTreeMap::new();
+    for (package, _) in packages {
+        if matches!(package.source, PackageSource::Root) && !package.manifest.manifest.publish_root
+        {
+            continue;
+        }
+
+        for (server_id, server) in &package.manifest.manifest.mcp_servers {
+            if !server.enabled {
+                continue;
+            }
+            desired_servers.insert(
+                managed_mcp_server_name(&package.alias, server_id),
+                emitted_codex_mcp_server(server),
+            );
+        }
+    }
+
+    if desired_servers.is_empty() && previously_managed.is_empty() {
+        return Ok(None);
+    }
+
+    let mut config = if merge_existing_mcp && path.exists() {
+        read_project_codex_config(&path)?
+    } else {
+        ProjectCodexConfig::default()
+    };
+
+    config.mcp_servers.retain(|server_name, _| {
+        !previously_managed.contains(server_name) && !desired_servers.contains_key(server_name)
+    });
+    config.mcp_servers.extend(desired_servers);
+
+    if config.mcp_servers.is_empty() && config.extra.is_empty() {
+        return Ok(None);
+    }
+
+    let mut contents = toml::to_string_pretty(&config)
+        .context("failed to serialize managed Codex MCP configuration")?
+        .into_bytes();
+    contents.push(b'\n');
+    Ok(Some(ManagedFile { path, contents }))
+}
+
+fn read_project_codex_config(path: &Path) -> Result<ProjectCodexConfig> {
+    let contents =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    toml::from_str(&contents)
+        .with_context(|| format!("failed to parse Codex config {}", path.display()))
+}
+
+fn emitted_codex_mcp_server(server: &McpServerConfig) -> TomlValue {
+    let mut table = toml::map::Map::new();
+
+    if let Some(command) = &server.command {
+        table.insert("command".into(), TomlValue::String(command.clone()));
+        if !server.args.is_empty() {
+            table.insert(
+                "args".into(),
+                TomlValue::Array(server.args.iter().cloned().map(TomlValue::String).collect()),
+            );
+        }
+        if !server.env.is_empty() {
+            table.insert(
+                "env".into(),
+                TomlValue::Table(
+                    server
+                        .env
+                        .iter()
+                        .map(|(key, value)| (key.clone(), TomlValue::String(value.clone())))
+                        .collect(),
+                ),
+            );
+        }
+        if let Some(cwd) = &server.cwd {
+            table.insert("cwd".into(), TomlValue::String(display_path(cwd)));
+        }
+    } else if let Some(url) = &server.url {
+        table.insert("url".into(), TomlValue::String(url.clone()));
+        let (bearer_token_env_var, http_headers, env_http_headers) =
+            emitted_codex_http_headers(&server.headers);
+        if let Some(value) = bearer_token_env_var {
+            table.insert("bearer_token_env_var".into(), TomlValue::String(value));
+        }
+        if !http_headers.is_empty() {
+            table.insert(
+                "http_headers".into(),
+                TomlValue::Table(
+                    http_headers
+                        .into_iter()
+                        .map(|(key, value)| (key, TomlValue::String(value)))
+                        .collect(),
+                ),
+            );
+        }
+        if !env_http_headers.is_empty() {
+            table.insert(
+                "env_http_headers".into(),
+                TomlValue::Table(
+                    env_http_headers
+                        .into_iter()
+                        .map(|(key, value)| (key, TomlValue::String(value)))
+                        .collect(),
+                ),
+            );
+        }
+    }
+
+    if !server.enabled {
+        table.insert("enabled".into(), TomlValue::Boolean(false));
+    }
+
+    TomlValue::Table(table)
+}
+
+fn emitted_codex_http_headers(
+    headers: &BTreeMap<String, String>,
+) -> (
+    Option<String>,
+    BTreeMap<String, String>,
+    BTreeMap<String, String>,
+) {
+    let mut bearer_token_env_var = None;
+    let mut http_headers = BTreeMap::new();
+    let mut env_http_headers = BTreeMap::new();
+
+    for (key, value) in headers {
+        if key.eq_ignore_ascii_case("authorization")
+            && let Some(env_var) = extract_bearer_env_reference(value)
+        {
+            bearer_token_env_var = Some(env_var.to_string());
+            continue;
+        }
+        if let Some(env_var) = extract_exact_env_reference(value) {
+            env_http_headers.insert(key.clone(), env_var.to_string());
+        } else {
+            http_headers.insert(key.clone(), value.clone());
+        }
+    }
+
+    (bearer_token_env_var, http_headers, env_http_headers)
+}
+
+fn opencode_mcp_config_file(
+    project_root: &Path,
+    packages: &[(ResolvedPackage, PathBuf)],
+    existing_lockfile: Option<&Lockfile>,
+    merge_existing_mcp: bool,
+    warnings: &mut Vec<String>,
+) -> Result<Option<ManagedFile>> {
+    let path = project_root.join("opencode.json");
+    let previously_managed = existing_lockfile
+        .map(Lockfile::managed_mcp_server_names)
+        .unwrap_or_default();
+    let mut desired_servers = BTreeMap::new();
+    for (package, _) in packages {
+        if matches!(package.source, PackageSource::Root) && !package.manifest.manifest.publish_root
+        {
+            continue;
+        }
+
+        for (server_id, server) in &package.manifest.manifest.mcp_servers {
+            if !server.enabled {
+                continue;
+            }
+            let managed_name = managed_mcp_server_name(&package.alias, server_id);
+            let Some(server_value) =
+                emitted_opencode_mcp_server(package, server_id, server, warnings)
+            else {
+                continue;
+            };
+            desired_servers.insert(managed_name, server_value);
+        }
+    }
+
+    if desired_servers.is_empty() && previously_managed.is_empty() {
+        return Ok(None);
+    }
+
+    let mut config = if merge_existing_mcp && path.exists() {
+        read_project_opencode_config(&path)?
+    } else {
+        ProjectOpenCodeConfig::default()
+    };
+
+    config.mcp_servers.retain(|server_name, _| {
+        !previously_managed.contains(server_name) && !desired_servers.contains_key(server_name)
+    });
+    config.mcp_servers.extend(desired_servers);
+
+    if config.mcp_servers.is_empty() && config.extra.is_empty() {
+        return Ok(None);
+    }
+
+    let mut contents = serde_json::to_vec_pretty(&config)
+        .context("failed to serialize managed OpenCode MCP configuration")?;
+    contents.push(b'\n');
+    Ok(Some(ManagedFile { path, contents }))
+}
+
+fn read_project_opencode_config(path: &Path) -> Result<ProjectOpenCodeConfig> {
+    let contents =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    serde_json::from_str(&contents)
+        .with_context(|| format!("failed to parse OpenCode config {}", path.display()))
+}
+
+fn emitted_opencode_mcp_server(
+    package: &ResolvedPackage,
+    server_id: &str,
+    server: &McpServerConfig,
+    warnings: &mut Vec<String>,
+) -> Option<JsonValue> {
+    let mut object = JsonMap::new();
+
+    if let Some(command) = &server.command {
+        if server.cwd.is_some() {
+            warnings.push(format!(
+                "skipping OpenCode MCP server `{}` from package `{}` because OpenCode project config does not support `cwd`",
+                server_id, package.alias
+            ));
+            return None;
+        }
+        object.insert("type".into(), JsonValue::String("local".into()));
+        object.insert(
+            "command".into(),
+            JsonValue::Array(
+                std::iter::once(command.clone())
+                    .chain(server.args.iter().cloned())
+                    .map(JsonValue::String)
+                    .collect(),
+            ),
+        );
+        if !server.env.is_empty() {
+            object.insert(
+                "environment".into(),
+                JsonValue::Object(
+                    server
+                        .env
+                        .iter()
+                        .map(|(key, value)| (key.clone(), JsonValue::String(value.clone())))
+                        .collect(),
+                ),
+            );
+        }
+    } else if let Some(url) = &server.url {
+        object.insert("type".into(), JsonValue::String("remote".into()));
+        object.insert("url".into(), JsonValue::String(url.clone()));
+        if !server.headers.is_empty() {
+            object.insert(
+                "headers".into(),
+                JsonValue::Object(
+                    server
+                        .headers
+                        .iter()
+                        .map(|(key, value)| {
+                            (
+                                key.clone(),
+                                JsonValue::String(emitted_opencode_header_value(value)),
+                            )
+                        })
+                        .collect(),
+                ),
+            );
+        }
+    }
+
+    if !server.enabled {
+        object.insert("enabled".into(), JsonValue::Bool(false));
+    }
+
+    Some(JsonValue::Object(object))
+}
+
+fn emitted_opencode_header_value(value: &str) -> String {
+    if let Some(env_var) = extract_exact_env_reference(value) {
+        return format!("{{env:{env_var}}}");
+    }
+    if let Some(env_var) = extract_bearer_env_reference(value) {
+        return format!("Bearer {{env:{env_var}}}");
+    }
+    value.to_string()
+}
+
+fn extract_exact_env_reference(value: &str) -> Option<&str> {
+    let env_var = value.strip_prefix("${")?.strip_suffix('}')?;
+    if env_var.is_empty() {
+        None
+    } else {
+        Some(env_var)
+    }
+}
+
+fn extract_bearer_env_reference(value: &str) -> Option<&str> {
+    let env_var = value.strip_prefix("Bearer ${")?.strip_suffix('}')?;
+    if env_var.is_empty() {
+        None
+    } else {
+        Some(env_var)
+    }
 }
 
 fn emitted_mcp_server(server: &McpServerConfig) -> EmittedMcpServerConfig {
@@ -954,5 +1308,38 @@ mod tests {
 
         assert!(plan.consumed_inputs.is_empty());
         assert!(plan.files.is_empty());
+    }
+
+    #[test]
+    fn codex_http_headers_promote_bearer_env_references() {
+        let (bearer_token_env_var, http_headers, env_http_headers) =
+            emitted_codex_http_headers(&BTreeMap::from([
+                (
+                    String::from("Authorization"),
+                    String::from("Bearer ${FIGMA_TOKEN}"),
+                ),
+                (String::from("X-Figma-Region"), String::from("us-east-1")),
+                (String::from("X-Workspace"), String::from("${WORKSPACE_ID}")),
+            ]));
+
+        assert_eq!(bearer_token_env_var.as_deref(), Some("FIGMA_TOKEN"));
+        assert_eq!(
+            http_headers,
+            BTreeMap::from([(String::from("X-Figma-Region"), String::from("us-east-1"))])
+        );
+        assert_eq!(
+            env_http_headers,
+            BTreeMap::from([(String::from("X-Workspace"), String::from("WORKSPACE_ID"))])
+        );
+    }
+
+    #[test]
+    fn opencode_header_values_convert_env_references() {
+        assert_eq!(emitted_opencode_header_value("${API_KEY}"), "{env:API_KEY}");
+        assert_eq!(
+            emitted_opencode_header_value("Bearer ${API_KEY}"),
+            "Bearer {env:API_KEY}"
+        );
+        assert_eq!(emitted_opencode_header_value("us-east-1"), "us-east-1");
     }
 }

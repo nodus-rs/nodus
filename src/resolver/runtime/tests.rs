@@ -3818,6 +3818,176 @@ IS_FIREBASE_MCP = "true"
 }
 
 #[test]
+fn sync_emits_codex_config_toml_from_dependency_manifests() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[dependencies.firebase]
+path = "vendor/firebase"
+"#,
+    );
+    write_file(
+        &temp.path().join("vendor/firebase/nodus.toml"),
+        r#"
+[mcp_servers.firebase]
+command = "npx"
+args = ["-y", "firebase-tools", "mcp", "--dir", "."]
+cwd = "."
+
+[mcp_servers.firebase.env]
+IS_FIREBASE_MCP = "true"
+
+[mcp_servers.figma]
+url = "https://mcp.figma.com/mcp"
+
+[mcp_servers.figma.headers]
+Authorization = "Bearer ${FIGMA_TOKEN}"
+X-Figma-Region = "us-east-1"
+"#,
+    );
+
+    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
+
+    let config: toml::Value =
+        toml::from_str(&fs::read_to_string(temp.path().join(".codex/config.toml")).unwrap())
+            .unwrap();
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    let firebase_package = lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == "firebase")
+        .unwrap();
+
+    assert_eq!(firebase_package.mcp_servers, vec!["figma", "firebase"]);
+    assert!(
+        lockfile
+            .managed_files
+            .contains(&String::from(".codex/config.toml"))
+    );
+    assert_eq!(
+        config["mcp_servers"]["firebase__firebase"]["command"].as_str(),
+        Some("npx")
+    );
+    assert_eq!(
+        config["mcp_servers"]["firebase__firebase"]["args"].as_array(),
+        Some(&vec![
+            toml::Value::String("-y".into()),
+            toml::Value::String("firebase-tools".into()),
+            toml::Value::String("mcp".into()),
+            toml::Value::String("--dir".into()),
+            toml::Value::String(".".into()),
+        ])
+    );
+    assert_eq!(
+        config["mcp_servers"]["firebase__firebase"]["cwd"].as_str(),
+        Some(".")
+    );
+    assert_eq!(
+        config["mcp_servers"]["firebase__firebase"]["env"]["IS_FIREBASE_MCP"].as_str(),
+        Some("true")
+    );
+    assert_eq!(
+        config["mcp_servers"]["firebase__figma"]["url"].as_str(),
+        Some("https://mcp.figma.com/mcp")
+    );
+    assert_eq!(
+        config["mcp_servers"]["firebase__figma"]["bearer_token_env_var"].as_str(),
+        Some("FIGMA_TOKEN")
+    );
+    assert_eq!(
+        config["mcp_servers"]["firebase__figma"]["http_headers"]["X-Figma-Region"].as_str(),
+        Some("us-east-1")
+    );
+}
+
+#[test]
+fn sync_emits_opencode_json_from_dependency_manifests() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[dependencies.firebase]
+path = "vendor/firebase"
+"#,
+    );
+    write_file(
+        &temp.path().join("vendor/firebase/nodus.toml"),
+        r#"
+[mcp_servers.firebase]
+command = "npx"
+args = ["-y", "firebase-tools", "mcp", "--dir", "."]
+
+[mcp_servers.firebase.env]
+IS_FIREBASE_MCP = "true"
+
+[mcp_servers.figma]
+url = "https://mcp.figma.com/mcp"
+
+[mcp_servers.figma.headers]
+Authorization = "Bearer ${FIGMA_TOKEN}"
+X-Figma-Region = "us-east-1"
+"#,
+    );
+
+    sync_in_dir_with_adapters(
+        temp.path(),
+        cache.path(),
+        false,
+        false,
+        &[Adapter::OpenCode],
+    )
+    .unwrap();
+
+    let json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(temp.path().join("opencode.json")).unwrap())
+            .unwrap();
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    let firebase_package = lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == "firebase")
+        .unwrap();
+
+    assert_eq!(firebase_package.mcp_servers, vec!["figma", "firebase"]);
+    assert!(
+        lockfile
+            .managed_files
+            .contains(&String::from("opencode.json"))
+    );
+    assert_eq!(
+        json["mcp"]["firebase__firebase"]["type"].as_str(),
+        Some("local")
+    );
+    assert_eq!(
+        json["mcp"]["firebase__firebase"]["command"],
+        serde_json::json!(["npx", "-y", "firebase-tools", "mcp", "--dir", "."])
+    );
+    assert_eq!(
+        json["mcp"]["firebase__firebase"]["environment"]["IS_FIREBASE_MCP"].as_str(),
+        Some("true")
+    );
+    assert_eq!(
+        json["mcp"]["firebase__figma"]["type"].as_str(),
+        Some("remote")
+    );
+    assert_eq!(
+        json["mcp"]["firebase__figma"]["url"].as_str(),
+        Some("https://mcp.figma.com/mcp")
+    );
+    assert_eq!(
+        json["mcp"]["firebase__figma"]["headers"]["Authorization"].as_str(),
+        Some("Bearer {env:FIGMA_TOKEN}")
+    );
+    assert_eq!(
+        json["mcp"]["firebase__figma"]["headers"]["X-Figma-Region"].as_str(),
+        Some("us-east-1")
+    );
+}
+
+#[test]
 fn sync_emits_url_backed_mcp_servers() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();
@@ -6581,6 +6751,79 @@ fn doctor_repairs_invalid_managed_mcp_json_when_it_owns_the_file() {
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
 
     write_file(&temp.path().join(".mcp.json"), "{");
+
+    let summary = doctor_in_dir_with_mode(
+        temp.path(),
+        cache.path(),
+        DoctorMode::Repair,
+        &Reporter::silent(),
+    )
+    .unwrap();
+
+    assert_eq!(summary.status, DoctorStatus::Fixed);
+    assert!(
+        summary
+            .applied_actions
+            .iter()
+            .any(|action| action.message.contains("rewrote managed output"))
+    );
+}
+
+#[test]
+fn doctor_repairs_invalid_managed_codex_config_when_it_owns_the_file() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        "[dependencies.firebase]\npath = \"vendor/firebase\"\n",
+    );
+    write_file(
+        &temp.path().join("vendor/firebase/nodus.toml"),
+        "[mcp_servers.firebase]\ncommand = \"npx\"\n",
+    );
+    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
+
+    write_file(&temp.path().join(".codex/config.toml"), "[mcp_servers");
+
+    let summary = doctor_in_dir_with_mode(
+        temp.path(),
+        cache.path(),
+        DoctorMode::Repair,
+        &Reporter::silent(),
+    )
+    .unwrap();
+
+    assert_eq!(summary.status, DoctorStatus::Fixed);
+    assert!(
+        summary
+            .applied_actions
+            .iter()
+            .any(|action| action.message.contains("rewrote managed output"))
+    );
+}
+
+#[test]
+fn doctor_repairs_invalid_managed_opencode_config_when_it_owns_the_file() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        "[dependencies.firebase]\npath = \"vendor/firebase\"\n",
+    );
+    write_file(
+        &temp.path().join("vendor/firebase/nodus.toml"),
+        "[mcp_servers.firebase]\ncommand = \"npx\"\n",
+    );
+    sync_in_dir_with_adapters(
+        temp.path(),
+        cache.path(),
+        false,
+        false,
+        &[Adapter::OpenCode],
+    )
+    .unwrap();
+
+    write_file(&temp.path().join("opencode.json"), "{");
 
     let summary = doctor_in_dir_with_mode(
         temp.path(),
