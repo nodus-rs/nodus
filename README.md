@@ -34,6 +34,7 @@ If a package publishes content such as `skills/`, `agents/`, `rules/`, or `comma
 - record what you asked for in `nodus.toml`
 - lock the exact resolved revision in `nodus.lock`
 - write managed files into adapter roots such as `.codex/`, `.claude/`, `.cursor/`, `.github/`, `.agents/`, or `.opencode/`
+- compose managed MCP server config for supported runtimes, including `.mcp.json`, `.codex/config.toml`, and `opencode.json`
 - prune stale generated files without touching unmanaged ones
 
 For most teams, the normal flow is:
@@ -105,6 +106,10 @@ That flow:
 - resolves and locks the exact revision in `nodus.lock`
 - writes the managed runtime files for the selected or detected adapter
 
+If the package publishes `mcp_servers`, Nodus now carries that MCP config into the repo's managed
+runtime outputs as well. Today that includes the legacy project `.mcp.json`, Codex
+`.codex/config.toml`, and OpenCode `opencode.json`.
+
 If the package is a wrapper that exposes multiple child packages, `nodus add` now records the
 wrapper itself and leaves child packages disabled until you either edit `members` in
 `nodus.toml` or opt in up front with `--accept-all-dependencies`.
@@ -147,6 +152,8 @@ Commands most users need:
 - Package author manifest example: [examples/package-author.nodus.toml](./examples/package-author.nodus.toml)
 
 For package authoring details, workspace packaging, managed exports, or relay workflows, prefer the website docs and `nodus --help` over treating this README as the full command reference.
+That applies to MCP packages too: package authors can publish `mcp_servers` in `nodus.toml`, and
+consumers get the matching managed project config for the adapter they use.
 
 ## Contributing
 
