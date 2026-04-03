@@ -5,7 +5,6 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use sha2::{Digest, Sha256};
 
 use super::{
     RelaySummary, build_mappings, dependency_context, display_relative, load_workspace,
@@ -270,8 +269,6 @@ fn path_fingerprint(path: &Path) -> Result<PathFingerprint> {
 
     let contents = fs::read(path)
         .with_context(|| format!("failed to read watched file {}", path.display()))?;
-    let digest = Sha256::digest(contents);
-    let mut hash = [0u8; 32];
-    hash.copy_from_slice(&digest);
+    let hash: [u8; 32] = *blake3::hash(&contents).as_bytes();
     Ok(PathFingerprint::File(hash))
 }
