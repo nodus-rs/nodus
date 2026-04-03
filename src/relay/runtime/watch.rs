@@ -1,10 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use tokio::sync::mpsc;
 
 use super::{
     RelaySummary, build_mappings, dependency_context, display_relative, load_workspace,
@@ -55,7 +56,7 @@ pub(super) struct RelayWatchInvocation<'a> {
     pub(super) options: RelayWatchOptions,
 }
 
-pub(super) fn watch_dependency_in_dir_with_options(
+pub(super) async fn watch_dependency_in_dir_with_options(
     project_root: &Path,
     cache_root: &Path,
     package: &str,
@@ -70,9 +71,10 @@ pub(super) fn watch_dependency_in_dir_with_options(
         invocation,
         reporter,
     )
+    .await
 }
 
-pub(super) fn watch_dependencies_in_dir_with_options(
+pub(super) async fn watch_dependencies_in_dir_with_options(
     project_root: &Path,
     cache_root: &Path,
     packages: &[String],
@@ -86,9 +88,10 @@ pub(super) fn watch_dependencies_in_dir_with_options(
         invocation,
         reporter,
     )
+    .await
 }
 
-fn watch_dependencies_in_dir_impl_with_options(
+async fn watch_dependencies_in_dir_impl_with_options(
     project_root: &Path,
     cache_root: &Path,
     packages: &[String],
@@ -102,6 +105,7 @@ fn watch_dependencies_in_dir_impl_with_options(
         bail!("`nodus relay --repo-path` requires exactly one dependency");
     }
 
+    // Initial relay pass.
     let mut summaries = Vec::with_capacity(packages.len());
     for package in packages {
         let summary = relay_dependency_in_dir(
@@ -124,27 +128,58 @@ fn watch_dependencies_in_dir_impl_with_options(
     }
 
     let mut state = capture_watch_state(project_root, cache_root, packages, reporter)?;
-    reporter.note("watching managed outputs for changes; press Ctrl-C to stop")?;
-    let mut polls = 0usize;
+
+    // Set up notify watcher.
+    let (tx, mut rx) = mpsc::channel(256);
+    let watcher_result = setup_watcher(&state, project_root, tx);
+    let _watcher = match watcher_result {
+        Ok(watcher) => {
+            reporter.note("watching managed outputs for changes; press Ctrl-C to stop")?;
+            Some(watcher)
+        }
+        Err(err) => {
+            reporter.warning(format!(
+                "failed to initialize file watcher ({err:#}); falling back to periodic polling"
+            ))?;
+            reporter.note("watching managed outputs for changes; press Ctrl-C to stop")?;
+            None
+        }
+    };
+
+    let deadline = invocation
+        .options
+        .timeout
+        .map(|t| tokio::time::Instant::now() + t);
 
     loop {
         if invocation
             .options
             .max_events
-            .is_some_and(|max_events| summaries.len() >= max_events)
-        {
-            return Ok(summaries);
-        }
-        if invocation
-            .options
-            .max_polls
-            .is_some_and(|max_polls| polls >= max_polls)
+            .is_some_and(|max| summaries.len() >= max)
         {
             return Ok(summaries);
         }
 
-        thread::sleep(invocation.options.poll_interval);
-        polls += 1;
+        // Wait for a notify event, fallback timeout, deadline, or ctrl-c.
+        tokio::select! {
+            _ = rx.recv() => {
+                // Debounce: wait briefly then drain any queued events.
+                tokio::time::sleep(invocation.options.debounce).await;
+                while rx.try_recv().is_ok() {}
+            }
+            _ = tokio::time::sleep(invocation.options.fallback_interval) => {}
+            _ = async {
+                match deadline {
+                    Some(d) => tokio::time::sleep_until(d).await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                return Ok(summaries);
+            }
+            _ = tokio::signal::ctrl_c() => {
+                return Ok(summaries);
+            }
+        }
 
         let next_state = capture_watch_state(project_root, cache_root, packages, reporter)?;
         let config_changed = next_state.config != state.config;
@@ -180,6 +215,51 @@ fn watch_dependencies_in_dir_impl_with_options(
             summaries.push(summary);
         }
     }
+}
+
+fn setup_watcher(
+    state: &RelayWatchState,
+    project_root: &Path,
+    tx: mpsc::Sender<()>,
+) -> Result<RecommendedWatcher> {
+    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if res.is_ok() {
+            let _ = tx.blocking_send(());
+        }
+    })?;
+
+    // Watch config files (non-recursive).
+    for path in state.config.keys() {
+        if path.exists() {
+            let watch_path = if path.is_file() {
+                path.parent().unwrap_or(project_root)
+            } else {
+                path.as_path()
+            };
+            let _ = watcher.watch(watch_path, RecursiveMode::NonRecursive);
+        }
+    }
+
+    // Watch managed output directories (recursive).
+    let mut watched_dirs = BTreeSet::new();
+    for package_managed in state.managed.values() {
+        for path in package_managed.keys() {
+            if let Some(parent) = path.parent() {
+                let mut candidate = parent;
+                while let Some(grandparent) = candidate.parent() {
+                    if grandparent == project_root || !grandparent.starts_with(project_root) {
+                        break;
+                    }
+                    candidate = grandparent;
+                }
+                if watched_dirs.insert(candidate.to_path_buf()) && candidate.exists() {
+                    watcher.watch(candidate, RecursiveMode::Recursive)?;
+                }
+            }
+        }
+    }
+
+    Ok(watcher)
 }
 
 fn changed_watch_packages(previous: &RelayWatchState, next: &RelayWatchState) -> Vec<String> {
