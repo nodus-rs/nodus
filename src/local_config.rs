@@ -39,7 +39,8 @@ pub struct RelayLink {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayedFileState {
-    pub source_sha256: String,
+    #[serde(alias = "source_sha256")]
+    pub source_hash: String,
 }
 
 impl LocalConfig {
@@ -151,7 +152,7 @@ mod tests {
                 files: BTreeMap::from([(
                     "skills/review/SKILL.md".into(),
                     RelayedFileState {
-                        source_sha256: "abc123".into(),
+                        source_hash: "abc123".into(),
                     },
                 )]),
             },
@@ -182,7 +183,7 @@ mod tests {
                     files: BTreeMap::from([(
                         "skills/review/SKILL.md".into(),
                         RelayedFileState {
-                            source_sha256: "123456".into(),
+                            source_hash: "123456".into(),
                         },
                     )]),
                 },
@@ -206,7 +207,7 @@ mod tests {
             Some("sha256:def")
         );
         assert_eq!(
-            decoded["relay"]["playbook_ios"]["files"]["skills/review/SKILL.md"]["source_sha256"]
+            decoded["relay"]["playbook_ios"]["files"]["skills/review/SKILL.md"]["source_hash"]
                 .as_str(),
             Some("123456")
         );

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 
 use anyhow::{Context, Result, anyhow, bail};
-use sha2::{Digest, Sha256};
+use crate::hashing::blake3_hex;
 
 use self::watch::{
     RelayWatchInvocation, RelayWatchOptions, watch_dependencies_in_dir_with_options,
@@ -732,13 +732,13 @@ fn build_relay_plan(
             })
             .and_then(|link| link.files.get(&relative_path))
             .zip(linked_current.as_deref())
-            .is_some_and(|(state, current)| state.source_sha256 == sha256_hex(current));
+            .is_some_and(|(state, current)| state.source_hash == content_hash(current));
         if linked_current.as_deref() == Some(candidate_source.as_slice()) {
             plan.noops.insert(linked_source_path);
             plan.state_files.insert(
                 relative_path,
                 RelayedFileState {
-                    source_sha256: sha256_hex(&candidate_source),
+                    source_hash: content_hash(&candidate_source),
                 },
             );
             continue;
@@ -767,7 +767,7 @@ fn build_relay_plan(
         plan.state_files.insert(
             relative_path.clone(),
             RelayedFileState {
-                source_sha256: sha256_hex(&candidate_source),
+                source_hash: content_hash(&candidate_source),
             },
         );
         let kind = if linked_current.is_some() {
@@ -905,8 +905,8 @@ fn apply_relay_job(job: &RelayJobPlan) -> Result<()> {
     Ok(())
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+fn content_hash(bytes: &[u8]) -> String {
+    blake3_hex(bytes)
 }
 
 fn build_mappings(
@@ -2185,8 +2185,8 @@ mod tests {
             Some(package.digest.as_str())
         );
         assert_eq!(
-            link.files["skills/review/SKILL.md"].source_sha256,
-            sha256_hex(relayed.as_bytes())
+            link.files["skills/review/SKILL.md"].source_hash,
+            content_hash(relayed.as_bytes())
         );
     }
 
