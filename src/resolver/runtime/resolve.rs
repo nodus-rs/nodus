@@ -2,9 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::hashing::content_digest;
 use anyhow::{Context, Result, bail};
 use rayon::prelude::*;
-use crate::hashing::content_digest;
 
 use super::{
     ManagedMappingMigration, PackageSource, Resolution, ResolveMode, ResolvedManagedFile,

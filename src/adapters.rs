@@ -519,9 +519,9 @@ pub fn namespaced_file_name(
 pub fn package_short_id(package: &ResolvedPackage) -> String {
     match &package.source {
         PackageSource::Git { rev, .. } => short_source_id(rev),
-        PackageSource::Path { .. } | PackageSource::Root => short_source_id(strip_digest_prefix(
-            &package.digest,
-        )),
+        PackageSource::Path { .. } | PackageSource::Root => {
+            short_source_id(strip_digest_prefix(&package.digest))
+        }
     }
 }
 

@@ -2,9 +2,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::hashing::blake3_hex;
 use anyhow::{Context, Result, anyhow, bail};
 use semver::{Version, VersionReq};
-use crate::hashing::blake3_hex;
 
 use crate::adapters::Adapter;
 use crate::execution::ExecutionMode;

@@ -5,8 +5,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::thread;
 
-use anyhow::{Context, Result, anyhow, bail};
 use crate::hashing::blake3_hex;
+use anyhow::{Context, Result, anyhow, bail};
 
 use self::watch::{
     RelayWatchInvocation, RelayWatchOptions, watch_dependencies_in_dir_with_options,
