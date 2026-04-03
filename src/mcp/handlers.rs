@@ -77,7 +77,7 @@ fn handle_add(args: &JsonValue, cwd: &Path, cache_root: &Path) -> Result<String>
         _ => None,
     };
 
-    let version_req = version.map(|v| semver::VersionReq::parse(v)).transpose()?;
+    let version_req = version.map(semver::VersionReq::parse).transpose()?;
 
     let adapters = parse_string_array::<Adapter>(args, "adapter")?;
     let components = parse_string_array::<DependencyComponent>(args, "component")?;

@@ -82,14 +82,12 @@ impl ServerHandler for NodusHandler {
     }
 }
 
+type SchemaProperties =
+    Option<std::collections::BTreeMap<String, serde_json::Map<String, serde_json::Value>>>;
+
 /// Extract `required` and `properties` from a JSON schema value into the types
 /// expected by `ToolInputSchema::new`.
-fn extract_schema_parts(
-    schema: &serde_json::Value,
-) -> (
-    Vec<String>,
-    Option<std::collections::BTreeMap<String, serde_json::Map<String, serde_json::Value>>>,
-) {
+fn extract_schema_parts(schema: &serde_json::Value) -> (Vec<String>, SchemaProperties) {
     let required = schema
         .get("required")
         .and_then(|v| v.as_array())
@@ -155,11 +153,10 @@ pub async fn run(cwd: PathBuf, cache_root: PathBuf) -> Result<()> {
     });
 
     server.start().await.map_err(|err| {
-        anyhow::anyhow!(
-            "MCP server error: {}",
-            err.rpc_error_message()
-                .unwrap_or(&err.to_string())
-                .to_string()
-        )
+        let message = err
+            .rpc_error_message()
+            .map(String::from)
+            .unwrap_or_else(|| err.to_string());
+        anyhow::anyhow!("MCP server error: {}", message)
     })
 }

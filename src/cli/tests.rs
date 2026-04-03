@@ -2637,3 +2637,76 @@ fn relay_supports_multiple_dependencies_in_one_command() {
             .ends_with("\nBatch relay update.\n")
     );
 }
+
+#[test]
+fn mcp_serve_help_describes_stdio_transport() {
+    let mut root = <Cli as clap::CommandFactory>::command();
+    let mcp = root.find_subcommand_mut("mcp").unwrap();
+    let help = mcp
+        .find_subcommand_mut("serve")
+        .unwrap()
+        .render_long_help()
+        .to_string();
+
+    assert!(help.contains("Start a Model Context Protocol server"));
+    assert!(help.contains("stdin/stdout"));
+    assert!(help.contains("nodus"));
+    assert!(help.contains("mcp"));
+    assert!(help.contains("serve"));
+}
+
+#[test]
+fn sync_auto_registers_nodus_mcp_server_in_mcp_json() {
+    let temp = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    write_file(
+        &temp.path().join("nodus.toml"),
+        r#"
+[dependencies]
+local_playbook = { path = "vendor/playbook", components = ["skills"] }
+"#,
+    );
+    write_skill(&temp.path().join("vendor/playbook/skills/review"), "Review");
+
+    run_command_in_dir(
+        Command::Sync {
+            locked: false,
+            frozen: false,
+            allow_high_sensitivity: false,
+            force: false,
+            adapter: vec![Adapter::Codex],
+            sync_on_launch: false,
+            dry_run: false,
+        },
+        temp.path(),
+        cache.path(),
+        &Reporter::silent(),
+    )
+    .unwrap();
+
+    let mcp_path = temp.path().join(".mcp.json");
+    assert!(mcp_path.exists(), ".mcp.json should exist after sync");
+
+    let json: Value = serde_json::from_str(&fs::read_to_string(&mcp_path).unwrap()).unwrap();
+    let nodus_entry = &json["mcpServers"]["nodus"];
+    assert!(
+        !nodus_entry.is_null(),
+        "nodus entry should be present in .mcp.json"
+    );
+    assert_eq!(
+        nodus_entry["command"].as_str(),
+        Some("nodus"),
+        "nodus MCP command should be \"nodus\""
+    );
+    let args: Vec<&str> = nodus_entry["args"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        args,
+        ["mcp", "serve"],
+        "nodus MCP args should be [\"mcp\", \"serve\"]"
+    );
+}
