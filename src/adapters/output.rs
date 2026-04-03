@@ -653,6 +653,20 @@ fn mcp_config_file(
         }
     }
 
+    // Auto-register the nodus CLI itself as an MCP server.
+    desired_servers.insert(
+        "nodus".to_string(),
+        EmittedMcpServerConfig {
+            transport_type: None,
+            command: Some("nodus".to_string()),
+            url: None,
+            args: vec!["mcp".to_string(), "serve".to_string()],
+            env: BTreeMap::new(),
+            headers: BTreeMap::new(),
+            cwd: None,
+        },
+    );
+
     if desired_servers.is_empty() && previously_managed.is_empty() {
         return Ok(None);
     }
@@ -711,6 +725,20 @@ fn codex_mcp_config_file(
                 emitted_codex_mcp_server(server),
             );
         }
+    }
+
+    // Auto-register the nodus CLI itself as an MCP server.
+    {
+        let mut table = toml::map::Map::new();
+        table.insert("command".into(), TomlValue::String("nodus".into()));
+        table.insert(
+            "args".into(),
+            TomlValue::Array(vec![
+                TomlValue::String("mcp".into()),
+                TomlValue::String("serve".into()),
+            ]),
+        );
+        desired_servers.insert("nodus".to_string(), TomlValue::Table(table));
     }
 
     if desired_servers.is_empty() && previously_managed.is_empty() {
@@ -868,6 +896,21 @@ fn opencode_mcp_config_file(
             };
             desired_servers.insert(managed_name, server_value);
         }
+    }
+
+    // Auto-register the nodus CLI itself as an MCP server.
+    {
+        let mut object = JsonMap::new();
+        object.insert("type".into(), JsonValue::String("local".into()));
+        object.insert(
+            "command".into(),
+            JsonValue::Array(vec![
+                JsonValue::String("nodus".into()),
+                JsonValue::String("mcp".into()),
+                JsonValue::String("serve".into()),
+            ]),
+        );
+        desired_servers.insert("nodus".to_string(), JsonValue::Object(object));
     }
 
     if desired_servers.is_empty() && previously_managed.is_empty() {

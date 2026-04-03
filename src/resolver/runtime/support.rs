@@ -790,12 +790,17 @@ fn directory_exactly_matches_planned_files(
         .iter()
         .map(|file| file.path.clone())
         .collect::<HashSet<_>>();
-    let expected_dirs = planned_in_dir
-        .iter()
-        .filter_map(|file| file.path.parent())
-        .filter(|parent| *parent != path)
-        .map(Path::to_path_buf)
-        .collect::<HashSet<_>>();
+    let mut expected_dirs = HashSet::new();
+    for file in &planned_in_dir {
+        let mut current = file.path.parent();
+        while let Some(parent) = current {
+            if parent == path {
+                break;
+            }
+            expected_dirs.insert(parent.to_path_buf());
+            current = parent.parent();
+        }
+    }
     let expected_entries = expected_files
         .into_iter()
         .chain(expected_dirs)

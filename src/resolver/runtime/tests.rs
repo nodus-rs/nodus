@@ -4040,7 +4040,21 @@ enabled = false
 
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
 
-    assert!(!temp.path().join(".mcp.json").exists());
+    let mcp_path = temp.path().join(".mcp.json");
+    assert!(
+        mcp_path.exists(),
+        ".mcp.json should exist (nodus server auto-registered)"
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&mcp_path).unwrap()).unwrap();
+    assert!(
+        json["mcpServers"].get("xcode__xcode").is_none(),
+        "disabled xcode server should not be in .mcp.json"
+    );
+    assert!(
+        json["mcpServers"].get("nodus").is_some(),
+        "nodus server should be auto-registered"
+    );
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     let xcode_package = lockfile
         .packages
@@ -4048,7 +4062,7 @@ enabled = false
         .find(|package| package.alias == "xcode")
         .unwrap();
     assert_eq!(xcode_package.mcp_servers, vec!["xcode"]);
-    assert!(!lockfile.managed_files.contains(&String::from(".mcp.json")));
+    assert!(lockfile.managed_files.contains(&String::from(".mcp.json")));
 }
 
 #[test]
@@ -4143,7 +4157,11 @@ command = "npx"
         json["mcpServers"]["local"]["command"].as_str(),
         Some("node")
     );
-    assert!(!lockfile.managed_files.contains(&String::from(".mcp.json")));
+    assert!(
+        json["mcpServers"].get("nodus").is_some(),
+        "nodus server should be auto-registered"
+    );
+    assert!(lockfile.managed_files.contains(&String::from(".mcp.json")));
 }
 
 #[test]
@@ -4970,7 +4988,9 @@ shared = { path = "vendor/shared", components = ["agents"] }
     let summary =
         sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex])
             .unwrap();
-    assert_eq!(summary.managed_file_count, 0);
+    // nodus auto-registers itself as an MCP server, generating .mcp.json,
+    // .codex/config.toml, and .codex/.gitignore
+    assert_eq!(summary.managed_file_count, 3);
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     let shared = lockfile
@@ -4982,7 +5002,8 @@ shared = { path = "vendor/shared", components = ["agents"] }
         shared.selected_components,
         Some(vec![DependencyComponent::Agents])
     );
-    assert!(lockfile.managed_files.is_empty());
+    assert_eq!(lockfile.managed_files.len(), 3);
+    assert!(lockfile.managed_files.contains(&String::from(".mcp.json")));
     assert!(!temp.path().join(".codex/agents").exists());
 }
 
