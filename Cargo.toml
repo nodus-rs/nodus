@@ -43,4 +43,5 @@ dunce = "1.0.5"
 async-trait = "0.1.89"
 mentra = "0.5.0"
 notify = "8"
+rust-mcp-sdk = { version = "0.9", default-features = false, features = ["server", "stdio", "macros"] }
 tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread", "time", "sync", "signal"] }
