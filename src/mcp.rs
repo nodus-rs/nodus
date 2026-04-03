@@ -1,4 +1,5 @@
 mod handlers;
+mod server;
 mod tools;
 
 pub use tools::*;
@@ -28,4 +29,8 @@ pub fn dispatch_tool(
     cache_root: &Path,
 ) -> Result<String> {
     handlers::dispatch_tool(tool_name, args, cwd, cache_root)
+}
+
+pub async fn start_server(cwd: PathBuf, cache_root: PathBuf) -> Result<()> {
+    server::run(cwd, cache_root).await
 }
