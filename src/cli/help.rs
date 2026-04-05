@@ -198,9 +198,10 @@ pub(super) const DOCTOR_ABOUT: &str =
 pub(super) const DOCTOR_LONG_ABOUT: &str = r#"If Nodus feels broken, start here.
 
 Default behavior:
-  - runs the current read-only doctor check
+  - runs a read-only preview
   - reports repo consistency problems without changing anything
-  - treats `--check` and `--force` as reserved mode flags for upcoming flows
+  - use `--apply` to repair safe issues and confirm risky ones
+  - use `--apply --yes` for non-interactive repairs
 
 Validate that `nodus.toml`, `nodus.lock`, the shared store, and the managed adapter outputs are still in sync.
 
@@ -208,17 +209,14 @@ Run this after `nodus add`, `nodus sync`, `nodus update`, or `nodus remove` when
 
 pub(super) const DOCTOR_AFTER_LONG_HELP: &str = r#"Common commands:
   nodus doctor
-  nodus doctor --check
-  nodus doctor --force
+  nodus doctor --apply
+  nodus doctor --apply --yes
   nodus doctor --json
-
-Flag note:
-  `--check` and `--force` parse today but do not change doctor behavior yet.
 
 Examples:
   nodus doctor
-  nodus doctor --check
-  nodus doctor --force
+  nodus doctor --apply
+  nodus doctor --apply --yes
   nodus doctor --json"#;
 
 pub(super) const MCP_ABOUT: &str = "MCP server for AI tool integration";

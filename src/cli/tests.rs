@@ -332,13 +332,37 @@ fn parses_json_flags_for_read_only_commands() {
 }
 
 #[test]
-fn doctor_command_parses_check_and_force_flags() {
+fn doctor_command_parses_apply_and_compatibility_flags() {
+    let apply = Cli::try_parse_from(["nodus", "doctor", "--apply"]).unwrap();
+    let apply_yes = Cli::try_parse_from(["nodus", "doctor", "--apply", "--yes"]).unwrap();
     let check = Cli::try_parse_from(["nodus", "doctor", "--check"]).unwrap();
     let force = Cli::try_parse_from(["nodus", "doctor", "--force"]).unwrap();
 
     assert!(matches!(
+        apply.command,
+        Command::Doctor {
+            apply: true,
+            yes: false,
+            check: false,
+            force: false,
+            json: false
+        }
+    ));
+    assert!(matches!(
+        apply_yes.command,
+        Command::Doctor {
+            check: false,
+            apply: true,
+            yes: true,
+            force: false,
+            json: false
+        }
+    ));
+    assert!(matches!(
         check.command,
         Command::Doctor {
+            apply: false,
+            yes: false,
             check: true,
             force: false,
             json: false
@@ -347,6 +371,8 @@ fn doctor_command_parses_check_and_force_flags() {
     assert!(matches!(
         force.command,
         Command::Doctor {
+            apply: false,
+            yes: false,
             check: false,
             force: true,
             json: false
@@ -355,10 +381,15 @@ fn doctor_command_parses_check_and_force_flags() {
 }
 
 #[test]
-fn doctor_command_rejects_check_and_force_together() {
-    let error = Cli::try_parse_from(["nodus", "doctor", "--check", "--force"]).unwrap_err();
+fn doctor_command_rejects_invalid_flag_combinations() {
+    let conflict = Cli::try_parse_from(["nodus", "doctor", "--check", "--force"]).unwrap_err();
+    let missing_apply = Cli::try_parse_from(["nodus", "doctor", "--yes"]).unwrap_err();
 
-    assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    assert_eq!(conflict.kind(), clap::error::ErrorKind::ArgumentConflict);
+    assert_eq!(
+        missing_apply.kind(),
+        clap::error::ErrorKind::MissingRequiredArgument
+    );
 }
 
 #[test]
@@ -778,7 +809,7 @@ fn read_only_help_mentions_json() {
 }
 
 #[test]
-fn doctor_help_describes_default_check_force_modes() {
+fn doctor_help_describes_preview_and_apply_modes() {
     let mut root = <Cli as clap::CommandFactory>::command();
     let help = root
         .find_subcommand_mut("doctor")
@@ -787,12 +818,13 @@ fn doctor_help_describes_default_check_force_modes() {
         .to_string();
 
     assert!(help.contains("If Nodus feels broken, start here"));
-    assert!(help.contains("reserved mode flags"));
-    assert!(help.contains("Reserved read-only doctor mode for future guided checks"));
-    assert!(help.contains("Reserved doctor mode for future repair flows"));
-    assert!(help.contains("does not change behavior yet"));
-    assert!(help.contains("--check"));
-    assert!(help.contains("--force"));
+    assert!(help.contains("runs a read-only preview"));
+    assert!(help.contains("use `--apply` to repair safe issues"));
+    assert!(help.contains("use `--apply --yes` for non-interactive repairs"));
+    assert!(help.contains("--apply"));
+    assert!(help.contains("--yes"));
+    assert!(!help.contains("--check"));
+    assert!(!help.contains("--force"));
 }
 
 #[test]
@@ -1662,6 +1694,8 @@ fn doctor_command_emits_checking_and_finished_lines() {
 
     let output = run_command_output(
         Command::Doctor {
+            apply: false,
+            yes: false,
             check: false,
             force: false,
             json: false,
@@ -1672,11 +1706,11 @@ fn doctor_command_emits_checking_and_finished_lines() {
 
     assert!(output.contains("Checking"));
     assert!(output.contains("Finished"));
-    assert!(output.contains("project state is consistent"));
+    assert!(output.contains("previewed project state"));
 }
 
 #[test]
-fn doctor_command_uses_current_behavior_for_reserved_modes() {
+fn doctor_command_maps_preview_apply_and_force_modes() {
     let temp = TempDir::new().unwrap();
     let cache = TempDir::new().unwrap();
     fs::create_dir_all(temp.path().join(".codex")).unwrap();
@@ -1696,6 +1730,8 @@ fn doctor_command_uses_current_behavior_for_reserved_modes() {
 
     let default_output = run_command_output(
         Command::Doctor {
+            apply: false,
+            yes: false,
             check: false,
             force: false,
             json: false,
@@ -1703,9 +1739,11 @@ fn doctor_command_uses_current_behavior_for_reserved_modes() {
         temp.path(),
         cache.path(),
     );
-    let check_output = run_command_output(
+    let apply_output = run_command_output(
         Command::Doctor {
-            check: true,
+            apply: true,
+            yes: false,
+            check: false,
             force: false,
             json: false,
         },
@@ -1714,6 +1752,30 @@ fn doctor_command_uses_current_behavior_for_reserved_modes() {
     );
     let force_output = run_command_output(
         Command::Doctor {
+            apply: true,
+            yes: true,
+            check: false,
+            force: false,
+            json: false,
+        },
+        temp.path(),
+        cache.path(),
+    );
+    let compat_check_output = run_command_output(
+        Command::Doctor {
+            apply: false,
+            yes: false,
+            check: true,
+            force: false,
+            json: false,
+        },
+        temp.path(),
+        cache.path(),
+    );
+    let compat_force_output = run_command_output(
+        Command::Doctor {
+            apply: false,
+            yes: false,
             check: false,
             force: true,
             json: false,
@@ -1722,11 +1784,15 @@ fn doctor_command_uses_current_behavior_for_reserved_modes() {
         cache.path(),
     );
 
-    assert_eq!(check_output, default_output);
-    assert_eq!(force_output, default_output);
+    assert_eq!(compat_check_output, default_output);
+    assert_eq!(compat_force_output, force_output);
+    assert_ne!(apply_output, default_output);
+    assert_ne!(force_output, default_output);
     assert!(default_output.contains("Checking"));
     assert!(default_output.contains("Finished"));
-    assert!(default_output.contains("project state is consistent"));
+    assert!(default_output.contains("previewed project state"));
+    assert!(apply_output.contains("project state is consistent"));
+    assert!(force_output.contains("project state is consistent"));
 }
 
 #[test]
@@ -1750,6 +1816,8 @@ fn doctor_command_emits_json_without_status_lines() {
 
     let output = run_command_output(
         Command::Doctor {
+            apply: false,
+            yes: false,
             check: false,
             force: false,
             json: true,
@@ -1759,6 +1827,7 @@ fn doctor_command_emits_json_without_status_lines() {
     );
 
     let json: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(json["mode"], serde_json::json!("preview"));
     assert_eq!(json["package_count"], 1);
     assert_eq!(json["warnings"], serde_json::json!([]));
     assert!(!output.contains("Checking"));

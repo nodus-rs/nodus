@@ -122,9 +122,22 @@ pub(super) fn run_command_in_dir(
         ),
         Command::Clean { all, dry_run } => system::handle_clean(&context, all, dry_run),
         Command::Completion { shell } => system::handle_completion(shell),
-        Command::Doctor { check, force, json } => {
-            query::handle_doctor(&context, query::DoctorCommand { check, force, json })
-        }
+        Command::Doctor {
+            apply,
+            yes,
+            check,
+            force,
+            json,
+        } => query::handle_doctor(
+            &context,
+            query::DoctorCommand {
+                apply,
+                yes,
+                check,
+                force,
+                json,
+            },
+        ),
         Command::Mcp { command } => match command {
             crate::cli::args::McpCommand::Serve => mcp::handle_mcp_serve(&context),
         },

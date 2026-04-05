@@ -13,6 +13,8 @@ pub(crate) struct ReviewCommand {
 }
 
 pub(crate) struct DoctorCommand {
+    pub(crate) apply: bool,
+    pub(crate) yes: bool,
     pub(crate) check: bool,
     pub(crate) force: bool,
     pub(crate) json: bool,
@@ -121,13 +123,20 @@ pub(crate) fn handle_doctor(
     context: &CommandContext<'_>,
     command: DoctorCommand,
 ) -> anyhow::Result<()> {
-    let DoctorCommand { check, force, json } = command;
-    let mode = if force {
+    let DoctorCommand {
+        apply,
+        yes,
+        check,
+        force,
+        json,
+    } = command;
+    let mode = if force || (apply && yes) {
         DoctorMode::Force
-    } else if check {
-        DoctorMode::Check
-    } else {
+    } else if apply {
         DoctorMode::Repair
+    } else {
+        let _ = check;
+        DoctorMode::Check
     };
     if json {
         let summary = crate::resolver::doctor_in_dir_with_mode(
@@ -144,20 +153,32 @@ pub(crate) fn handle_doctor(
             mode,
             context.reporter,
         )?;
-        let outcome = match summary.status {
-            crate::resolver::DoctorStatus::Healthy => {
+        let outcome = match (mode, summary.status) {
+            (DoctorMode::Check, crate::resolver::DoctorStatus::Healthy) => {
+                format!(
+                    "previewed project state across {} packages; no issues found",
+                    summary.package_count
+                )
+            }
+            (DoctorMode::Check, crate::resolver::DoctorStatus::Blocked) => {
+                format!(
+                    "previewed project state across {} packages; found issues",
+                    summary.package_count
+                )
+            }
+            (DoctorMode::Repair | DoctorMode::Force, crate::resolver::DoctorStatus::Healthy) => {
                 format!(
                     "project state is consistent across {} packages",
                     summary.package_count
                 )
             }
-            crate::resolver::DoctorStatus::Fixed => {
+            (_, crate::resolver::DoctorStatus::Fixed) => {
                 format!(
                     "repaired project state across {} packages",
                     summary.package_count
                 )
             }
-            crate::resolver::DoctorStatus::Blocked => {
+            (_, crate::resolver::DoctorStatus::Blocked) => {
                 format!(
                     "project state is blocked across {} packages",
                     summary.package_count

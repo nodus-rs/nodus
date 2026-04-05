@@ -366,14 +366,27 @@ pub(super) enum Command {
     Doctor {
         #[arg(
             long,
-            conflicts_with = "force",
-            help = "Reserved read-only doctor mode for future guided checks; parses today but does not change behavior yet"
+            help = "Apply doctor repairs instead of running a read-only preview"
+        )]
+        apply: bool,
+        #[arg(
+            long,
+            requires = "apply",
+            help = "Apply risky repairs without prompting"
+        )]
+        yes: bool,
+        #[arg(
+            long,
+            hide = true,
+            conflicts_with_all = ["apply", "yes", "force"],
+            help = "Compatibility alias for the legacy read-only doctor mode"
         )]
         check: bool,
         #[arg(
             long,
-            conflicts_with = "check",
-            help = "Reserved doctor mode for future repair flows; parses today but does not change behavior yet"
+            hide = true,
+            conflicts_with_all = ["apply", "yes", "check"],
+            help = "Compatibility alias for the legacy non-interactive doctor repair mode"
         )]
         force: bool,
         #[arg(

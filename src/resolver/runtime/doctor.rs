@@ -32,6 +32,14 @@ pub enum DoctorMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+pub enum DoctorRunMode {
+    Preview,
+    Apply,
+    ApplyForce,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DoctorStatus {
     Healthy,
     Fixed,
@@ -69,6 +77,7 @@ impl DoctorActionRecord {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DoctorSummary {
+    pub mode: DoctorRunMode,
     pub package_count: usize,
     pub warnings: Vec<String>,
     pub status: DoctorStatus,
@@ -427,14 +436,14 @@ fn execute_doctor_plan(
     }
 
     match mode {
-        DoctorMode::Check => Ok(plan.into_summary(Vec::new())),
+        DoctorMode::Check => Ok(plan.into_summary(mode, Vec::new())),
         DoctorMode::Repair => {
             let mut prompt = TtyDoctorPrompt;
             let mut applied_actions = Vec::new();
             let risky_actions = plan.risky_actions().cloned().collect::<Vec<_>>();
             for action in &risky_actions {
                 if !prompt.confirm(action)? {
-                    return Ok(plan.into_blocked_summary());
+                    return Ok(plan.into_blocked_summary(mode));
                 }
                 applied_actions.push(apply_risky_action(
                     action,
@@ -444,9 +453,9 @@ fn execute_doctor_plan(
             }
             if plan.needs_safe_repair() {
                 applied_actions.extend(execute_safe_repairs(inspection, reporter)?);
-                return Ok(plan.into_summary(applied_actions));
+                return Ok(plan.into_summary(mode, applied_actions));
             }
-            Ok(plan.into_summary(applied_actions))
+            Ok(plan.into_summary(mode, applied_actions))
         }
         DoctorMode::Force => {
             let mut applied_actions = Vec::new();
@@ -461,7 +470,7 @@ fn execute_doctor_plan(
             if plan.needs_safe_repair() {
                 applied_actions.extend(execute_safe_repairs(inspection, reporter)?);
             }
-            Ok(plan.into_summary(applied_actions))
+            Ok(plan.into_summary(mode, applied_actions))
         }
     }
 }
@@ -582,13 +591,18 @@ impl DoctorFinding {
 }
 
 impl DoctorPlan {
-    fn into_blocked_summary(self) -> DoctorSummary {
-        self.into_summary(Vec::new())
+    fn into_blocked_summary(self, mode: DoctorMode) -> DoctorSummary {
+        self.into_summary(mode, Vec::new())
     }
 
-    fn into_summary(self, applied_actions: Vec<DoctorActionRecord>) -> DoctorSummary {
+    fn into_summary(
+        self,
+        mode: DoctorMode,
+        applied_actions: Vec<DoctorActionRecord>,
+    ) -> DoctorSummary {
         let status = doctor_status(&self.findings, &applied_actions);
         DoctorSummary {
+            mode: doctor_run_mode(mode),
             package_count: self.package_count,
             warnings: self.warnings,
             status,
@@ -605,6 +619,14 @@ impl DoctorPlan {
 
     fn risky_actions(&self) -> impl Iterator<Item = &DoctorAction> {
         self.risky_actions.iter()
+    }
+}
+
+fn doctor_run_mode(mode: DoctorMode) -> DoctorRunMode {
+    match mode {
+        DoctorMode::Check => DoctorRunMode::Preview,
+        DoctorMode::Repair => DoctorRunMode::Apply,
+        DoctorMode::Force => DoctorRunMode::ApplyForce,
     }
 }
 
