@@ -1391,6 +1391,86 @@ fn reads_codex_plugin_version_and_mcp_servers_from_json() {
 }
 
 #[test]
+fn allows_identical_mcp_servers_from_claude_and_codex_plugin_metadata() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_modern_claude_plugin_json(temp.path(), Some("2.34.0"));
+    write_codex_mcp_config(temp.path());
+    write_codex_plugin_json(temp.path(), "2.34.0", Some("./.mcp.json"));
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    assert_eq!(loaded.manifest.mcp_servers.len(), 1);
+    let server = loaded.manifest.mcp_servers.get("figma").unwrap();
+    assert_eq!(server.url.as_deref(), Some("http://127.0.0.1:3845/mcp"));
+}
+
+#[test]
+fn deduplicates_standard_roots_referenced_by_claude_plugin_metadata() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(&temp.path().join("agents/reviewer.md"), "# Reviewer\n");
+    write_file(
+        &temp.path().join("commands/review.md"),
+        "Review this code.\n",
+    );
+    write_modern_claude_plugin_json_with_fields(
+        temp.path(),
+        &[
+            r#"  "skills": ["./skills"]"#,
+            r#"  "agents": ["./agents/reviewer.md"]"#,
+            r#"  "commands": ["./commands/review.md"]"#,
+        ],
+    );
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    assert_eq!(loaded.discovered.skills.len(), 1);
+    assert_eq!(loaded.discovered.skills[0].id, "review");
+    assert_eq!(loaded.discovered.agents.len(), 1);
+    assert_eq!(loaded.discovered.agents[0].id, "reviewer");
+    assert_eq!(loaded.discovered.commands.len(), 1);
+    assert_eq!(loaded.discovered.commands[0].id, "review");
+}
+
+#[test]
+fn rejects_conflicting_mcp_servers_from_claude_and_codex_plugin_metadata() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_modern_claude_plugin_json(temp.path(), Some("2.34.0"));
+    write_file(
+        &temp.path().join(".mcp.json"),
+        r#"{
+  "mcpServers": {
+    "figma": {
+      "url": "http://127.0.0.1:3845/mcp"
+    }
+  }
+}
+"#,
+    );
+    write_file(
+        &temp.path().join("config/codex-mcp.json"),
+        r#"{
+  "mcpServers": {
+    "figma": {
+      "url": "http://127.0.0.1:9999/mcp"
+    }
+  }
+}
+"#,
+    );
+    write_codex_plugin_json(temp.path(), "2.34.0", Some("./config/codex-mcp.json"));
+
+    let error = load_dependency_from_dir(temp.path())
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("declares conflicting MCP server `figma`"));
+    assert!(error.contains("config/codex-mcp.json"));
+}
+
+#[test]
 fn ignores_non_semver_codex_plugin_version_in_metadata() {
     let temp = TempDir::new().unwrap();
     write_codex_mcp_config(temp.path());

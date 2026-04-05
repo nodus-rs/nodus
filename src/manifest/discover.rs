@@ -1074,8 +1074,11 @@ fn insert_mcp_servers(
         if id.is_empty() {
             bail!("{source_label} contains an empty MCP server id");
         }
-        if manifest.mcp_servers.contains_key(id) {
-            bail!("{source_label} declares duplicate MCP server `{id}`");
+        if let Some(existing) = manifest.mcp_servers.get(id) {
+            if existing == &server {
+                continue;
+            }
+            bail!("{source_label} declares conflicting MCP server `{id}`");
         }
         manifest.mcp_servers.insert(id.to_string(), server);
     }
@@ -1187,7 +1190,7 @@ pub(super) fn discover_package_contents(
             &mut agents,
             &mut agent_ids,
             "agent",
-            discover_explicit_files(root, &claude_plugin.agents, true)?,
+            discover_explicit_files(root, &claude_plugin.agents, true, Some(("agents", false)))?,
         )?;
         merge_file_entries(
             &mut commands,
@@ -1238,6 +1241,9 @@ fn merge_skill_entries(
 ) -> Result<()> {
     for skill in discovered {
         if !ids.insert(skill.id.clone()) {
+            if destination.iter().any(|existing| existing == &skill) {
+                continue;
+            }
             bail!("duplicate skill id `{}`", skill.id);
         }
         destination.push(skill);
@@ -1253,6 +1259,9 @@ fn merge_file_entries(
 ) -> Result<()> {
     for entry in discovered {
         if !ids.insert(entry.id.clone()) {
+            if destination.iter().any(|existing| existing == &entry) {
+                continue;
+            }
             bail!("duplicate {singular} id `{}`", entry.id);
         }
         destination.push(entry);
@@ -1441,6 +1450,7 @@ fn discover_explicit_files(
     root: &Path,
     files: &[PathBuf],
     markdown_only: bool,
+    standard_root: Option<(&str, bool)>,
 ) -> Result<Vec<FileEntry>> {
     let mut items = Vec::new();
     for relative_path in files {
@@ -1475,7 +1485,7 @@ fn discover_explicit_files(
             );
         }
         items.push(FileEntry {
-            id: derive_file_entry_id(relative_path)?,
+            id: derive_explicit_file_entry_id(relative_path, standard_root)?,
             path: relative_path.clone(),
         });
     }
@@ -1526,7 +1536,7 @@ fn discover_explicit_commands(
         items.push(FileEntry {
             id: match &command.id {
                 Some(id) => id.clone(),
-                None => derive_file_entry_id(&command.path)?,
+                None => derive_explicit_file_entry_id(&command.path, Some(("commands", true)))?,
             },
             path: command.path.clone(),
         });
@@ -1558,6 +1568,21 @@ fn derive_file_entry_id(relative: &Path) -> Result<String> {
         bail!("failed to derive id from {}", relative.display());
     }
     Ok(id)
+}
+
+fn derive_explicit_file_entry_id(
+    relative: &Path,
+    standard_root: Option<(&str, bool)>,
+) -> Result<String> {
+    if let Some((root, allow_nested)) = standard_root {
+        if let Ok(stripped) = relative.strip_prefix(root)
+            && (allow_nested || stripped.components().count() == 1)
+        {
+            return derive_file_entry_id(stripped);
+        }
+    }
+
+    derive_file_entry_id(relative)
 }
 
 fn validate_skill_directory(skill_dir: &Path, fallback_name: &str) -> Result<()> {
