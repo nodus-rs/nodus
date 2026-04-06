@@ -1081,7 +1081,7 @@ dependencies = [
 
 [[package]]
 name = "nodus"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anstream",
  "anstyle",
