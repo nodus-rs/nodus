@@ -16,6 +16,7 @@ pub(crate) struct AddCommand {
     pub(crate) adapter: Vec<Adapter>,
     pub(crate) component: Vec<DependencyComponent>,
     pub(crate) sync_on_launch: bool,
+    pub(crate) no_sync_on_launch: bool,
     pub(crate) accept_all_dependencies: bool,
     pub(crate) dry_run: bool,
 }
@@ -40,12 +41,18 @@ pub(crate) fn handle_add(context: &CommandContext<'_>, command: AddCommand) -> a
         adapter,
         component,
         sync_on_launch,
+        no_sync_on_launch,
         accept_all_dependencies,
         dry_run,
     } = command;
     if global && sync_on_launch {
         anyhow::bail!("`nodus add --global` does not support `--sync-on-launch`");
     }
+    let sync_on_launch = if global {
+        false
+    } else {
+        sync_on_launch || !no_sync_on_launch
+    };
     let install_paths = if global {
         InstallPaths::global(context.cache_root)?
     } else {

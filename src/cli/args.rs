@@ -108,6 +108,12 @@ pub(super) enum Command {
         )]
         sync_on_launch: bool,
         #[arg(
+            long = "no-sync-on-launch",
+            conflicts_with = "sync_on_launch",
+            help = "Skip persisting project startup hooks for this install even though project-scoped installs enable them by default"
+        )]
+        no_sync_on_launch: bool,
+        #[arg(
             long = "accept-all-dependencies",
             help = "Enable every child package exposed by a workspace or marketplace wrapper instead of leaving multi-package wrappers disabled by default"
         )]
@@ -340,6 +346,12 @@ pub(super) enum Command {
             help = "Persist project startup hooks so supported tools run `nodus sync` when they open this repository"
         )]
         sync_on_launch: bool,
+        #[arg(
+            long = "no-sync-on-launch",
+            conflicts_with = "sync_on_launch",
+            help = "Skip persisting project startup hooks for this sync even though plain project sync enables them by default"
+        )]
+        no_sync_on_launch: bool,
         #[arg(
             long = "dry-run",
             help = "Preview project changes without writing to the project or linked repo; may still populate the shared store to compute the result"

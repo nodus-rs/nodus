@@ -23,6 +23,7 @@ pub(crate) struct SyncCommand {
     pub(crate) force: bool,
     pub(crate) adapter: Vec<Adapter>,
     pub(crate) sync_on_launch: bool,
+    pub(crate) no_sync_on_launch: bool,
     pub(crate) dry_run: bool,
 }
 
@@ -172,8 +173,14 @@ pub(crate) fn handle_sync(
         force,
         adapter,
         sync_on_launch,
+        no_sync_on_launch,
         dry_run,
     } = command;
+    let sync_on_launch = if locked || frozen {
+        sync_on_launch
+    } else {
+        sync_on_launch || !no_sync_on_launch
+    };
     let summary = if frozen {
         if dry_run {
             crate::resolver::sync_in_dir_with_adapters_frozen_dry_run(

@@ -779,7 +779,9 @@ fn add_help_leads_with_safe_example_and_next_step() {
     assert!(help.contains("Select one or more adapters to persist for this install target"));
     assert!(help.contains("Select which dependency components to install from the package"));
     assert!(help.contains("Persist project startup hooks"));
+    assert!(help.contains("Skip persisting project startup hooks for this install"));
     assert!(help.contains("Enable every child package exposed by a workspace or marketplace wrapper instead of leaving multi-package wrappers disabled by default"));
+    assert!(help.contains("Project-scoped installs persist startup sync hooks by default"));
     assert!(help.contains("By default Nodus installs the whole package"));
     assert!(help.contains("Most common use"));
     assert!(help.contains("<PACKAGE>"));
@@ -882,6 +884,7 @@ fn sync_help_describes_force() {
     assert!(help.contains("Resolve the dependencies already declared in `nodus.toml`"));
     assert!(help.contains("--force"));
     assert!(help.contains("Overwrite unmanaged files"));
+    assert!(help.contains("--no-sync-on-launch"));
     assert!(help.contains("nodus sync --locked"));
     assert!(help.contains("Use `--locked` when the lockfile must stay unchanged"));
 }
@@ -898,6 +901,7 @@ fn sync_help_explains_when_to_use_sync_and_what_to_run_next() {
     assert!(
         help.contains("Use this when you want to rebuild from what this repo already declares")
     );
+    assert!(help.contains("Plain `nodus sync` persists startup sync hooks by default"));
     assert!(help.contains("Run `nodus doctor` next"));
     assert!(help.contains("Common options"));
 }
@@ -1103,6 +1107,7 @@ fn list_command_emits_json_with_locked_metadata() {
             adapter: vec![Adapter::Codex],
             component: vec![],
             sync_on_launch: false,
+            no_sync_on_launch: false,
             accept_all_dependencies: false,
             dry_run: false,
         },
@@ -1234,6 +1239,7 @@ fn list_command_emits_version_requested_ref_for_semver_dependencies() {
             adapter: vec![Adapter::Codex],
             component: vec![],
             sync_on_launch: false,
+            no_sync_on_launch: false,
             accept_all_dependencies: false,
             dry_run: false,
         },
@@ -1344,14 +1350,55 @@ fn parses_add_branch_and_revision_flags() {
 fn parses_sync_on_launch_flags() {
     let add = Cli::try_parse_from(["nodus", "add", "example/repo", "--sync-on-launch"]).unwrap();
     let sync = Cli::try_parse_from(["nodus", "sync", "--sync-on-launch"]).unwrap();
+    let add_no_sync =
+        Cli::try_parse_from(["nodus", "add", "example/repo", "--no-sync-on-launch"]).unwrap();
+    let sync_no_sync = Cli::try_parse_from(["nodus", "sync", "--no-sync-on-launch"]).unwrap();
 
     match add.command {
-        Command::Add { sync_on_launch, .. } => assert!(sync_on_launch),
+        Command::Add {
+            sync_on_launch,
+            no_sync_on_launch,
+            ..
+        } => {
+            assert!(sync_on_launch);
+            assert!(!no_sync_on_launch);
+        }
         other => panic!("expected add command, got {other:?}"),
     }
 
     match sync.command {
-        Command::Sync { sync_on_launch, .. } => assert!(sync_on_launch),
+        Command::Sync {
+            sync_on_launch,
+            no_sync_on_launch,
+            ..
+        } => {
+            assert!(sync_on_launch);
+            assert!(!no_sync_on_launch);
+        }
+        other => panic!("expected sync command, got {other:?}"),
+    }
+
+    match add_no_sync.command {
+        Command::Add {
+            sync_on_launch,
+            no_sync_on_launch,
+            ..
+        } => {
+            assert!(!sync_on_launch);
+            assert!(no_sync_on_launch);
+        }
+        other => panic!("expected add command, got {other:?}"),
+    }
+
+    match sync_no_sync.command {
+        Command::Sync {
+            sync_on_launch,
+            no_sync_on_launch,
+            ..
+        } => {
+            assert!(!sync_on_launch);
+            assert!(no_sync_on_launch);
+        }
         other => panic!("expected sync command, got {other:?}"),
     }
 }
@@ -1566,6 +1613,7 @@ fn add_command_emits_resolving_and_adding_lines() {
             adapter: vec![Adapter::Claude],
             component: vec![],
             sync_on_launch: false,
+            no_sync_on_launch: false,
             accept_all_dependencies: false,
             dry_run: false,
         },
@@ -1609,6 +1657,7 @@ fn info_command_renders_version_requirement_for_semver_dependencies() {
             adapter: vec![Adapter::Claude],
             component: vec![],
             sync_on_launch: false,
+            no_sync_on_launch: false,
             accept_all_dependencies: false,
             dry_run: false,
         },
@@ -1659,6 +1708,7 @@ fn add_dry_run_previews_without_writing_project_files() {
             adapter: vec![Adapter::Claude],
             component: vec![],
             sync_on_launch: false,
+            no_sync_on_launch: false,
             accept_all_dependencies: false,
             dry_run: true,
         },
@@ -1691,6 +1741,7 @@ fn add_dry_run_previews_dependency_members_and_config() {
             adapter: vec![Adapter::Claude],
             component: vec![],
             sync_on_launch: false,
+            no_sync_on_launch: false,
             accept_all_dependencies: false,
             dry_run: true,
         },
@@ -1724,6 +1775,7 @@ fn add_dry_run_warns_and_disables_invalid_workspace_members() {
             adapter: vec![Adapter::Claude],
             component: vec![],
             sync_on_launch: false,
+            no_sync_on_launch: false,
             accept_all_dependencies: false,
             dry_run: true,
         },
@@ -1756,6 +1808,7 @@ fn members_list_and_enable_update_workspace_dependency_selection() {
             adapter: vec![Adapter::Claude],
             component: vec![],
             sync_on_launch: false,
+            no_sync_on_launch: false,
             accept_all_dependencies: false,
             dry_run: false,
         },
@@ -1819,6 +1872,7 @@ fn members_set_empty_clears_workspace_dependency_selection() {
             adapter: vec![Adapter::Claude],
             component: vec![],
             sync_on_launch: false,
+            no_sync_on_launch: false,
             accept_all_dependencies: false,
             dry_run: false,
         },
@@ -1884,6 +1938,7 @@ fn members_enable_dry_run_previews_workspace_selection_without_writing() {
             adapter: vec![Adapter::Claude],
             component: vec![],
             sync_on_launch: false,
+            no_sync_on_launch: false,
             accept_all_dependencies: false,
             dry_run: false,
         },
@@ -1937,6 +1992,7 @@ fn members_command_rejects_unknown_workspace_member_before_mutating_manifest() {
             adapter: vec![Adapter::Claude],
             component: vec![],
             sync_on_launch: false,
+            no_sync_on_launch: false,
             accept_all_dependencies: false,
             dry_run: false,
         },
@@ -1992,6 +2048,7 @@ fn members_enable_and_disable_manage_wrapper_child_packages() {
             adapter: vec![Adapter::Claude],
             component: vec![],
             sync_on_launch: false,
+            no_sync_on_launch: false,
             accept_all_dependencies: false,
             dry_run: false,
         },
@@ -2072,6 +2129,7 @@ justification = "Run checks."
             force: false,
             adapter: vec![],
             sync_on_launch: false,
+            no_sync_on_launch: false,
             dry_run: false,
         },
         temp.path(),
@@ -2098,6 +2156,7 @@ fn sync_dry_run_previews_without_writing_project_files() {
             force: false,
             adapter: vec![Adapter::Codex],
             sync_on_launch: true,
+            no_sync_on_launch: false,
             dry_run: true,
         },
         temp.path(),
@@ -2290,6 +2349,7 @@ fn outdated_command_emits_json_without_status_lines() {
             adapter: vec![Adapter::Codex],
             component: vec![],
             sync_on_launch: false,
+            no_sync_on_launch: false,
             accept_all_dependencies: false,
             dry_run: false,
         },
@@ -2336,6 +2396,7 @@ fn clean_command_removes_project_scoped_cache_entries_only() {
             adapter: vec![Adapter::Codex],
             component: vec![],
             sync_on_launch: false,
+            no_sync_on_launch: false,
             accept_all_dependencies: false,
             dry_run: false,
         },
@@ -2392,6 +2453,7 @@ fn clean_command_dry_run_previews_cache_removals_without_deleting() {
             adapter: vec![Adapter::Codex],
             component: vec![],
             sync_on_launch: false,
+            no_sync_on_launch: false,
             accept_all_dependencies: false,
             dry_run: false,
         },
@@ -2438,6 +2500,7 @@ fn sync_recreates_cache_after_clean_command() {
             adapter: vec![Adapter::Codex],
             component: vec![],
             sync_on_launch: false,
+            no_sync_on_launch: false,
             accept_all_dependencies: false,
             dry_run: false,
         },
@@ -2472,6 +2535,7 @@ fn sync_recreates_cache_after_clean_command() {
             force: false,
             adapter: vec![],
             sync_on_launch: false,
+            no_sync_on_launch: false,
             dry_run: false,
         },
         temp.path(),
@@ -2562,6 +2626,7 @@ fn update_command_emits_updating_and_finished_lines() {
             adapter: vec![Adapter::Codex],
             component: vec![],
             sync_on_launch: false,
+            no_sync_on_launch: false,
             accept_all_dependencies: false,
             dry_run: false,
         },
@@ -2603,6 +2668,7 @@ fn remove_dry_run_keeps_manifest_and_lockfile_unchanged() {
             adapter: vec![Adapter::Claude],
             component: vec![],
             sync_on_launch: false,
+            no_sync_on_launch: false,
             accept_all_dependencies: false,
             dry_run: false,
         },
@@ -2662,6 +2728,7 @@ fn update_dry_run_keeps_manifest_and_lockfile_unchanged() {
             adapter: vec![Adapter::Codex],
             component: vec![],
             sync_on_launch: false,
+            no_sync_on_launch: false,
             accept_all_dependencies: false,
             dry_run: false,
         },
@@ -2723,6 +2790,7 @@ fn sync_dry_run_locked_and_frozen_modes_leave_state_unchanged() {
             adapter: vec![Adapter::Claude],
             component: vec![],
             sync_on_launch: false,
+            no_sync_on_launch: false,
             accept_all_dependencies: false,
             dry_run: false,
         },
@@ -2743,6 +2811,7 @@ fn sync_dry_run_locked_and_frozen_modes_leave_state_unchanged() {
             force: false,
             adapter: vec![],
             sync_on_launch: false,
+            no_sync_on_launch: false,
             dry_run: true,
         },
         temp.path(),
@@ -2756,6 +2825,7 @@ fn sync_dry_run_locked_and_frozen_modes_leave_state_unchanged() {
             force: false,
             adapter: vec![],
             sync_on_launch: false,
+            no_sync_on_launch: false,
             dry_run: true,
         },
         temp.path(),
@@ -2803,6 +2873,7 @@ fn relay_dry_run_does_not_persist_local_config_or_repo_edits() {
             adapter: vec![Adapter::Claude],
             component: vec![],
             sync_on_launch: false,
+            no_sync_on_launch: false,
             accept_all_dependencies: false,
             dry_run: false,
         },
@@ -2878,6 +2949,7 @@ fn relay_dry_run_previews_state_only_local_config_changes() {
             adapter: vec![Adapter::Claude],
             component: vec![],
             sync_on_launch: false,
+            no_sync_on_launch: false,
             accept_all_dependencies: false,
             dry_run: false,
         },
@@ -3026,6 +3098,7 @@ fn relay_supports_multiple_dependencies_in_one_command() {
             adapter: vec![Adapter::Claude],
             component: vec![],
             sync_on_launch: false,
+            no_sync_on_launch: false,
             accept_all_dependencies: false,
             dry_run: false,
         },
@@ -3054,6 +3127,7 @@ fn relay_supports_multiple_dependencies_in_one_command() {
             adapter: vec![Adapter::Claude],
             component: vec![],
             sync_on_launch: false,
+            no_sync_on_launch: false,
             accept_all_dependencies: false,
             dry_run: false,
         },
@@ -3183,6 +3257,7 @@ local_playbook = { path = "vendor/playbook", components = ["skills"] }
             force: false,
             adapter: vec![Adapter::Codex],
             sync_on_launch: false,
+            no_sync_on_launch: false,
             dry_run: false,
         },
         temp.path(),
