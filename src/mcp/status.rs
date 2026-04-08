@@ -475,7 +475,7 @@ fn binary_looks_like_nodus(command: &str) -> bool {
         .is_some_and(|value| value == "nodus" || value.starts_with("nodus-"))
 }
 
-fn normalized_server_args<'a>(args: &'a [String]) -> Option<Vec<&'a str>> {
+fn normalized_server_args(args: &[String]) -> Option<Vec<&str>> {
     let args = args.iter().map(String::as_str).collect::<Vec<_>>();
     match args.as_slice() {
         ["--store-path", store_path, rest @ ..] if !store_path.is_empty() => Some(rest.to_vec()),
