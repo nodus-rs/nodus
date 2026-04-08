@@ -210,6 +210,7 @@ fn inspect_doctor_state(
         selected_adapters,
         existing_lockfile.as_ref(),
         true,
+        Some(cache_root),
     ) {
         Ok(plan) => plan,
         Err(error) => {
@@ -223,6 +224,7 @@ fn inspect_doctor_state(
                 selected_adapters,
                 existing_lockfile.as_ref(),
                 false,
+                Some(cache_root),
             )?
         }
     };

@@ -13,7 +13,6 @@ use crate::report::Reporter;
 const SERVER_NAME: &str = "nodus";
 const EXPECTED_COMMAND: &str = "nodus";
 const EXPECTED_ARGS: [&str; 2] = ["mcp", "serve"];
-const EXPECTED_OPENCODE_COMMAND: [&str; 3] = ["nodus", "mcp", "serve"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -253,7 +252,7 @@ fn inspect_project_json(project_root: &Path) -> Result<McpConfigStatus> {
             message: "configured".into(),
             observed_command: Some(command.to_vec()),
         },
-        Some(command) if command == legacy_expected_command().as_slice() => McpConfigStatus {
+        Some(command) if command_is_path_dependent(command) => McpConfigStatus {
             runtime: "project".into(),
             path: display,
             exists: true,
@@ -331,7 +330,7 @@ fn inspect_codex_config(project_root: &Path) -> Result<McpConfigStatus> {
             message: "configured".into(),
             observed_command: Some(command.to_vec()),
         },
-        Some(command) if command == legacy_expected_command().as_slice() => McpConfigStatus {
+        Some(command) if command_is_path_dependent(command) => McpConfigStatus {
             runtime: "codex".into(),
             path: display,
             exists: true,
@@ -401,7 +400,7 @@ fn inspect_opencode_config(project_root: &Path) -> Result<McpConfigStatus> {
 
     let observed = opencode_command(server);
     Ok(match observed.as_deref() {
-        Some(command) if command_matches_opencode_command(command) => McpConfigStatus {
+        Some(command) if command_matches_project_command(command) => McpConfigStatus {
             runtime: "opencode".into(),
             path: display,
             exists: true,
@@ -409,7 +408,7 @@ fn inspect_opencode_config(project_root: &Path) -> Result<McpConfigStatus> {
             message: "configured".into(),
             observed_command: Some(command.to_vec()),
         },
-        Some(command) if command == EXPECTED_OPENCODE_COMMAND => McpConfigStatus {
+        Some(command) if command_is_path_dependent(command) => McpConfigStatus {
             runtime: "opencode".into(),
             path: display,
             exists: true,
@@ -492,34 +491,24 @@ fn opencode_command(value: &JsonValue) -> Option<Vec<String>> {
         .map(|parts| parts.into_iter().map(ToOwned::to_owned).collect())
 }
 
-fn expected_command() -> Vec<String> {
-    std::iter::once(EXPECTED_COMMAND.to_string())
-        .chain(EXPECTED_ARGS.into_iter().map(str::to_string))
-        .collect()
-}
-
-fn legacy_expected_command() -> Vec<String> {
-    expected_command()
-}
-
 fn command_matches_project_command(command: &[String]) -> bool {
-    command.len() == EXPECTED_ARGS.len() + 1
-        && binary_looks_like_nodus(&command[0])
-        && command[1..]
-            .iter()
-            .map(String::as_str)
-            .eq(EXPECTED_ARGS.iter().copied())
-        && command[0] != EXPECTED_COMMAND
+    let Some((binary, args)) = command.split_first() else {
+        return false;
+    };
+    if !binary_looks_like_nodus(binary) || binary == EXPECTED_COMMAND {
+        return false;
+    }
+    normalized_server_args(args)
+        .is_some_and(|args| args.iter().copied().eq(EXPECTED_ARGS.iter().copied()))
 }
 
-fn command_matches_opencode_command(command: &[String]) -> bool {
-    command.len() == EXPECTED_OPENCODE_COMMAND.len()
-        && binary_looks_like_nodus(&command[0])
-        && command[1..]
-            .iter()
-            .map(String::as_str)
-            .eq(EXPECTED_OPENCODE_COMMAND[1..].iter().copied())
-        && command[0] != EXPECTED_COMMAND
+fn command_is_path_dependent(command: &[String]) -> bool {
+    let Some((binary, args)) = command.split_first() else {
+        return false;
+    };
+    binary == EXPECTED_COMMAND
+        && normalized_server_args(args)
+            .is_some_and(|args| args.iter().copied().eq(EXPECTED_ARGS.iter().copied()))
 }
 
 fn binary_looks_like_nodus(command: &str) -> bool {
@@ -527,6 +516,14 @@ fn binary_looks_like_nodus(command: &str) -> bool {
         .file_name()
         .and_then(|value| value.to_str())
         .is_some_and(|value| value == "nodus" || value.starts_with("nodus-"))
+}
+
+fn normalized_server_args<'a>(args: &'a [String]) -> Option<Vec<&'a str>> {
+    let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+    match args.as_slice() {
+        ["--store-path", store_path, rest @ ..] if !store_path.is_empty() => Some(rest.to_vec()),
+        rest => Some(rest.to_vec()),
+    }
 }
 
 fn format_command(command: &[String]) -> String {

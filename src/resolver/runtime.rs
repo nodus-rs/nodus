@@ -513,6 +513,7 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
             selected_adapters,
             existing_lockfile.as_ref(),
             true,
+            Some(cache_root),
         )?;
         let mut planned_files = output_plan.files.clone();
         let mut desired_paths =
@@ -899,9 +900,15 @@ impl Resolution {
             .iter()
             .map(|package| (package.clone(), package.root.clone()))
             .collect::<Vec<_>>();
-        let mut managed_files =
-            build_output_plan(runtime_root, &package_roots, selected_adapters, None, false)?
-                .managed_files;
+        let mut managed_files = build_output_plan(
+            runtime_root,
+            &package_roots,
+            selected_adapters,
+            None,
+            false,
+            None,
+        )?
+        .managed_files;
         managed_files.extend(workspace_marketplace_managed_files(self)?);
         managed_files.sort();
         managed_files.dedup();

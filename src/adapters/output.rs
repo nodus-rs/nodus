@@ -90,6 +90,17 @@ fn managed_nodus_command() -> String {
         .unwrap_or_else(|| "nodus".to_string())
 }
 
+fn managed_nodus_args(self_store_root: Option<&Path>) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(store_root) = self_store_root {
+        args.push("--store-path".to_string());
+        args.push(display_path(store_root));
+    }
+    args.push("mcp".to_string());
+    args.push("serve".to_string());
+    args
+}
+
 fn resolve_path_command(command: &str) -> Option<String> {
     let path_var = env::var_os("PATH")?;
     for directory in env::split_paths(&path_var) {
@@ -132,6 +143,7 @@ pub(crate) fn build_output_plan(
     selected_adapters: Adapters,
     existing_lockfile: Option<&Lockfile>,
     merge_existing_mcp: bool,
+    self_store_root: Option<&Path>,
 ) -> Result<OutputPlan> {
     let mut plan = OutputAccumulator::default();
     let managed_names =
@@ -512,6 +524,7 @@ pub(crate) fn build_output_plan(
         packages,
         existing_lockfile,
         merge_existing_mcp,
+        self_store_root,
     )? {
         plan.managed_files
             .insert(display_relative(project_root, &file.path));
@@ -524,6 +537,7 @@ pub(crate) fn build_output_plan(
             existing_lockfile,
             merge_existing_mcp,
             root_launch_sync_enabled,
+            self_store_root,
         )?
     {
         plan.managed_files
@@ -537,6 +551,7 @@ pub(crate) fn build_output_plan(
             existing_lockfile,
             merge_existing_mcp,
             &mut plan.warnings,
+            self_store_root,
         )?
     {
         plan.managed_files
@@ -682,6 +697,7 @@ fn mcp_config_file(
     packages: &[(ResolvedPackage, PathBuf)],
     existing_lockfile: Option<&Lockfile>,
     merge_existing_mcp: bool,
+    self_store_root: Option<&Path>,
 ) -> Result<Option<ManagedFile>> {
     let path = project_root.join(".mcp.json");
     let previously_managed = existing_lockfile
@@ -707,13 +723,14 @@ fn mcp_config_file(
 
     // Auto-register the nodus CLI itself as an MCP server.
     let nodus_command = managed_nodus_command();
+    let nodus_args = managed_nodus_args(self_store_root);
     desired_servers.insert(
         "nodus".to_string(),
         EmittedMcpServerConfig {
             transport_type: None,
             command: Some(nodus_command),
             url: None,
-            args: vec!["mcp".to_string(), "serve".to_string()],
+            args: nodus_args,
             env: BTreeMap::new(),
             headers: BTreeMap::new(),
             cwd: None,
@@ -758,6 +775,7 @@ fn codex_mcp_config_file(
     existing_lockfile: Option<&Lockfile>,
     merge_existing_mcp: bool,
     emit_launch_sync: bool,
+    self_store_root: Option<&Path>,
 ) -> Result<Option<ManagedFile>> {
     let path = project_root.join(".codex/config.toml");
     let previously_managed = existing_lockfile
@@ -788,10 +806,12 @@ fn codex_mcp_config_file(
         table.insert("command".into(), TomlValue::String(nodus_command));
         table.insert(
             "args".into(),
-            TomlValue::Array(vec![
-                TomlValue::String("mcp".into()),
-                TomlValue::String("serve".into()),
-            ]),
+            TomlValue::Array(
+                managed_nodus_args(self_store_root)
+                    .into_iter()
+                    .map(TomlValue::String)
+                    .collect(),
+            ),
         );
         desired_servers.insert("nodus".to_string(), TomlValue::Table(table));
     }
@@ -934,6 +954,7 @@ fn opencode_mcp_config_file(
     existing_lockfile: Option<&Lockfile>,
     merge_existing_mcp: bool,
     warnings: &mut Vec<String>,
+    self_store_root: Option<&Path>,
 ) -> Result<Option<ManagedFile>> {
     let path = project_root.join("opencode.json");
     let previously_managed = existing_lockfile
@@ -967,11 +988,12 @@ fn opencode_mcp_config_file(
         object.insert("type".into(), JsonValue::String("local".into()));
         object.insert(
             "command".into(),
-            JsonValue::Array(vec![
-                JsonValue::String(nodus_command),
-                JsonValue::String("mcp".into()),
-                JsonValue::String("serve".into()),
-            ]),
+            JsonValue::Array(
+                std::iter::once(nodus_command)
+                    .chain(managed_nodus_args(self_store_root))
+                    .map(JsonValue::String)
+                    .collect(),
+            ),
         );
         desired_servers.insert("nodus".to_string(), JsonValue::Object(object));
     }

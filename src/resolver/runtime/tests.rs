@@ -7650,8 +7650,15 @@ fn doctor_accepts_legacy_detected_adapter_roots_without_manifest_config() {
         .iter()
         .map(|package| (package.clone(), package.root.clone()))
         .collect::<Vec<_>>();
-    let output_plan =
-        build_output_plan(temp.path(), &package_roots, Adapters::CODEX, None, false).unwrap();
+    let output_plan = build_output_plan(
+        temp.path(),
+        &package_roots,
+        Adapters::CODEX,
+        None,
+        false,
+        Some(cache.path()),
+    )
+    .unwrap();
     write_managed_files(&output_plan.files).unwrap();
     resolution
         .to_lockfile(Adapters::CODEX, temp.path())

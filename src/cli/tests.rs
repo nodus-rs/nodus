@@ -3354,9 +3354,16 @@ local_playbook = { path = "vendor/playbook", components = ["skills"] }
         .iter()
         .map(|v| v.as_str().unwrap())
         .collect();
-    assert_eq!(
-        args,
-        ["mcp", "serve"],
-        "nodus MCP args should be [\"mcp\", \"serve\"]"
+    assert!(
+        args.ends_with(&["mcp", "serve"]),
+        "nodus MCP args should end with [\"mcp\", \"serve\"]: {args:?}"
     );
+    if args.len() == 4 {
+        assert_eq!(args[0], "--store-path");
+        assert!(
+            Path::new(args[1]).is_absolute(),
+            "managed store path should be absolute: {}",
+            args[1]
+        );
+    }
 }
