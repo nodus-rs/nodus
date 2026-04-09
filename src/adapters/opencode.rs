@@ -284,13 +284,12 @@ fn plugin_contents(hooks: &[HookSpec]) -> Vec<u8> {
     let session_start_hooks = hooks
         .iter()
         .filter(|hook| matches!(hook.event, HookEvent::SessionStart))
-        .filter_map(|hook| {
-            session_start_matches(hook, HookSessionSource::Startup).then(|| {
-                format!(
-                    "      await runHook(ctx, root, {}, {{ event: \"session_start\", source: \"startup\", input }});",
-                    hook_js_config(hook)
-                )
-            })
+        .filter(|hook| session_start_matches(hook, HookSessionSource::Startup))
+        .map(|hook| {
+            format!(
+                "      await runHook(ctx, root, {}, {{ event: \"session_start\", source: \"startup\", input }});",
+                hook_js_config(hook)
+            )
         })
         .collect::<Vec<_>>()
         .join("\n");
