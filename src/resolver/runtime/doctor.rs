@@ -553,7 +553,15 @@ fn invalid_owned_output_path(
 ) -> Option<PathBuf> {
     [
         (
+            runtime_root.join(".claude/settings.json"),
+            "failed to parse existing",
+        ),
+        (
             runtime_root.join(".claude/settings.local.json"),
+            "failed to parse existing",
+        ),
+        (
+            runtime_root.join(".codex/hooks.json"),
             "failed to parse existing",
         ),
         (runtime_root.join(".mcp.json"), "failed to parse MCP config"),

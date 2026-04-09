@@ -9,7 +9,7 @@ use toml::Value as TomlValue;
 
 use super::{Adapter, Adapters, ArtifactKind, ManagedArtifactNames, ManagedFile};
 use crate::lockfile::{Lockfile, managed_mcp_server_name};
-use crate::manifest::{DependencyComponent, McpServerConfig};
+use crate::manifest::{DependencyComponent, HookSpec, McpServerConfig};
 use crate::paths::{display_path, strip_path_prefix};
 use crate::resolver::{PackageSource, ResolvedPackage};
 
@@ -91,6 +91,14 @@ fn managed_nodus_args() -> Vec<String> {
     vec!["mcp".to_string(), "serve".to_string()]
 }
 
+fn root_hooks(packages: &[(ResolvedPackage, PathBuf)]) -> Vec<HookSpec> {
+    packages
+        .iter()
+        .find(|(package, _)| matches!(package.source, PackageSource::Root))
+        .map(|(package, _)| package.manifest.manifest.effective_hooks())
+        .unwrap_or_default()
+}
+
 pub(crate) fn build_output_plan(
     project_root: &Path,
     packages: &[(ResolvedPackage, PathBuf)],
@@ -101,10 +109,12 @@ pub(crate) fn build_output_plan(
     let mut plan = OutputAccumulator::default();
     let managed_names =
         ManagedArtifactNames::from_resolved_packages(packages.iter().map(|(package, _)| package));
-    let root_launch_sync_enabled = packages.iter().any(|(package, _)| {
-        matches!(package.source, PackageSource::Root)
-            && package.manifest.manifest.sync_on_launch_enabled()
-    });
+    let root_hooks = root_hooks(packages);
+    let emit_codex_hooks = !cfg!(windows)
+        && selected_adapters.contains(Adapter::Codex)
+        && root_hooks
+            .iter()
+            .any(|hook| hook_targets_adapter(hook, selected_adapters, Adapter::Codex));
 
     for (package, snapshot_root) in packages {
         if matches!(package.source, PackageSource::Root) && !package.manifest.manifest.publish_root
@@ -488,7 +498,7 @@ pub(crate) fn build_output_plan(
             packages,
             existing_lockfile,
             merge_existing_mcp,
-            root_launch_sync_enabled,
+            emit_codex_hooks,
         )?
     {
         plan.managed_files
@@ -509,13 +519,10 @@ pub(crate) fn build_output_plan(
         merge_file(&mut plan.files, file)?;
     }
 
-    if packages
-        .iter()
-        .any(|(package, _)| matches!(package.source, PackageSource::Root))
-        && root_launch_sync_enabled
-    {
-        for file in sync_on_startup_files(
+    if !root_hooks.is_empty() {
+        for file in hook_files(
             project_root,
+            &root_hooks,
             selected_adapters,
             merge_existing_mcp,
             &mut plan.warnings,
@@ -782,8 +789,6 @@ fn codex_mcp_config_file(
         config
             .features
             .insert("codex_hooks".into(), TomlValue::Boolean(true));
-    } else {
-        config.features.remove("codex_hooks");
     }
 
     if config.mcp_servers.is_empty() && config.features.is_empty() && config.extra.is_empty() {
@@ -1201,48 +1206,88 @@ fn render_gitignore(explicit_lines: &[String], patterns: &BTreeSet<String>) -> S
     output
 }
 
-fn sync_on_startup_files(
+fn hook_files(
     project_root: &Path,
+    hooks: &[HookSpec],
     selected_adapters: Adapters,
     merge_existing_mcp: bool,
     warnings: &mut Vec<String>,
 ) -> Result<Vec<ManagedFile>> {
     let mut files = Vec::new();
 
-    if selected_adapters.contains(Adapter::Claude) {
-        files.extend(super::claude::sync_on_startup_files(
+    let claude_hooks = hooks_for_adapter(hooks, selected_adapters, Adapter::Claude);
+    if !claude_hooks.is_empty() {
+        files.extend(super::claude::hook_files(
             project_root,
+            &claude_hooks,
             merge_existing_mcp,
         )?);
     }
-    if selected_adapters.contains(Adapter::OpenCode) {
-        files.extend(super::opencode::sync_on_startup_files(project_root));
+    let opencode_hooks = hooks_for_adapter(hooks, selected_adapters, Adapter::OpenCode);
+    if !opencode_hooks.is_empty() {
+        files.extend(super::opencode::hook_files(project_root, &opencode_hooks));
     }
-    if selected_adapters.contains(Adapter::Agents) {
+    if hooks
+        .iter()
+        .any(|hook| hook_targets_adapter(hook, selected_adapters, Adapter::Agents))
+    {
         warnings.push(
-            "launch sync is not emitted for `agents`; no documented project startup hook surface is available".into(),
+            "hooks are not emitted for `agents`; no documented project hook surface is available"
+                .into(),
         );
     }
-    if selected_adapters.contains(Adapter::Codex) {
-        files.extend(super::codex::sync_on_startup_files(project_root)?);
+    let codex_hooks = hooks_for_adapter(hooks, selected_adapters, Adapter::Codex);
+    if !codex_hooks.is_empty() {
         if cfg!(windows) {
             warnings.push(
-                "launch sync is emitted for `codex`, but Codex hooks are currently disabled on Windows".into(),
+                "hooks are emitted for `codex`, but Codex hooks are currently disabled on Windows"
+                    .into(),
             );
+        } else {
+            files.extend(super::codex::hook_files(project_root, &codex_hooks)?);
         }
     }
-    if selected_adapters.contains(Adapter::Copilot) {
+    if hooks
+        .iter()
+        .any(|hook| hook_targets_adapter(hook, selected_adapters, Adapter::Copilot))
+    {
         warnings.push(
-            "launch sync is not emitted for `copilot`; repo-scoped assets are supported, but no documented startup hook is available".into(),
+            "hooks are not emitted for `copilot`; repo-scoped assets are supported, but no documented project hook surface is available".into(),
         );
     }
-    if selected_adapters.contains(Adapter::Cursor) {
+    if hooks
+        .iter()
+        .any(|hook| hook_targets_adapter(hook, selected_adapters, Adapter::Cursor))
+    {
         warnings.push(
-            "launch sync is not emitted for `cursor`; project hooks exist, but no documented auto-start hook is available for repo-local config".into(),
+            "hooks are not emitted for `cursor`; project hooks exist, but no documented auto-start hook is available for repo-local config".into(),
         );
     }
 
     Ok(files)
+}
+
+fn hooks_for_adapter(
+    hooks: &[HookSpec],
+    selected_adapters: Adapters,
+    adapter: Adapter,
+) -> Vec<HookSpec> {
+    hooks
+        .iter()
+        .filter(|hook| hook_targets_adapter(hook, selected_adapters, adapter))
+        .cloned()
+        .collect()
+}
+
+fn hook_targets_adapter(hook: &HookSpec, selected_adapters: Adapters, adapter: Adapter) -> bool {
+    if !selected_adapters.contains(adapter) {
+        return false;
+    }
+    if hook.adapters.is_empty() {
+        true
+    } else {
+        hook.adapters.contains(&adapter)
+    }
 }
 
 fn display_relative(project_root: &Path, path: &Path) -> String {

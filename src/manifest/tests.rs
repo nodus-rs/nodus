@@ -2722,7 +2722,9 @@ command = "./scripts/preflight.sh"
 "#,
     );
 
-    let error = load_dependency_from_dir(temp.path()).unwrap_err().to_string();
+    let error = load_dependency_from_dir(temp.path())
+        .unwrap_err()
+        .to_string();
     assert!(error.contains("root project manifests"));
 }
 

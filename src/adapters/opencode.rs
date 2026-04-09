@@ -7,7 +7,9 @@ use crate::adapters::{
     ArtifactKind, ManagedArtifactNames, ManagedFile, managed_artifact_path, managed_skill_id,
     managed_skill_root,
 };
+use crate::hashing::blake3_hex;
 use crate::manifest::{FileEntry, SkillEntry};
+use crate::manifest::{HookEvent, HookHandlerType, HookSessionSource, HookSpec, HookTool};
 use crate::paths::strip_path_prefix;
 use crate::resolver::ResolvedPackage;
 
@@ -117,30 +119,19 @@ pub fn rule_file(
     )
 }
 
-pub fn sync_on_startup_files(project_root: &Path) -> Vec<ManagedFile> {
-    vec![
-        ManagedFile {
-            path: project_root.join(".opencode/scripts/nodus-sync.sh"),
-            contents: sync_script_contents(),
-        },
-        ManagedFile {
-            path: project_root.join(".opencode/plugins/nodus-sync.js"),
-            contents:
-                br#"export default async function nodusSyncPlugin({ $, directory, worktree }) {
-  const root = worktree ?? directory;
-
-  try {
-    await $`sh ${`${root}/.opencode/scripts/nodus-sync.sh`}`;
-  } catch (error) {
-    console.error("nodus sync hook failed", error);
-  }
-
-  return {};
-}
-"#
-                .to_vec(),
-        },
-    ]
+pub fn hook_files(project_root: &Path, hooks: &[HookSpec]) -> Vec<ManagedFile> {
+    let mut files = hooks
+        .iter()
+        .map(|hook| ManagedFile {
+            path: project_root.join(managed_script_relative_path(hook)),
+            contents: hook_script_contents(hook),
+        })
+        .collect::<Vec<_>>();
+    files.push(ManagedFile {
+        path: project_root.join(".opencode/plugins/nodus-hooks.js"),
+        contents: plugin_contents(hooks),
+    });
+    files
 }
 
 fn copy_file(target_path: impl AsRef<Path>, source_path: impl AsRef<Path>) -> Result<ManagedFile> {
@@ -244,23 +235,209 @@ fn rewrite_frontmatter_name_line(line: &str, name: &str) -> String {
     format!("{leading}name: {name}{newline}")
 }
 
-fn sync_script_contents() -> Vec<u8> {
-    br#"#!/bin/sh
+fn hook_script_contents(hook: &HookSpec) -> Vec<u8> {
+    debug_assert!(matches!(
+        hook.handler.handler_type,
+        HookHandlerType::Command
+    ));
+    format!(
+        r#"#!/bin/sh
 set -eu
 
-project_root="${1:-$(pwd)}"
-
-if ! command -v nodus >/dev/null 2>&1; then
-  echo "nodus not found on PATH; skipping startup sync" >&2
-  exit 0
+project_root="${{1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
+if [ {cwd} = "git_root" ]; then
+  cd "$project_root"
 fi
 
-cd "$project_root"
-if ! nodus sync >/dev/null 2>&1; then
-  echo "nodus sync failed in $project_root" >&2
+export NODUS_HOOK_ID={hook_id}
+export NODUS_HOOK_EVENT={hook_event}
+{timeout_export}
+if [ {blocking} = "true" ]; then
+  exec sh -lc {command}
 fi
+
+if ! sh -lc {command}; then
+  echo "nodus hook {hook_label} failed" >&2
+fi
+"#,
+        cwd = shell_quote(match hook.handler.cwd {
+            crate::manifest::HookWorkingDirectory::GitRoot => "git_root",
+            crate::manifest::HookWorkingDirectory::Session => "session",
+        }),
+        hook_id = shell_quote(&hook.id),
+        hook_event = shell_quote(hook.event.as_str()),
+        timeout_export = hook
+            .timeout_sec
+            .map(|timeout_sec| format!(
+                "export NODUS_HOOK_TIMEOUT_SEC={}\n",
+                shell_quote(&timeout_sec.to_string())
+            ))
+            .unwrap_or_default(),
+        blocking = shell_quote(if hook.blocking { "true" } else { "false" }),
+        command = shell_quote(&hook.handler.command),
+        hook_label = hook.id,
+    )
+    .into_bytes()
+}
+
+fn plugin_contents(hooks: &[HookSpec]) -> Vec<u8> {
+    let session_start_hooks = hooks
+        .iter()
+        .filter(|hook| matches!(hook.event, HookEvent::SessionStart))
+        .filter_map(|hook| {
+            session_start_matches(hook, HookSessionSource::Startup).then(|| {
+                format!(
+                    "      await runHook(ctx, root, {}, {{ event: \"session_start\", source: \"startup\", input }});",
+                    hook_js_config(hook)
+                )
+            })
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let stop_hooks = hooks
+        .iter()
+        .filter(|hook| matches!(hook.event, HookEvent::Stop))
+        .map(|hook| {
+            format!(
+                "      await runHook(ctx, root, {}, {{ event: \"stop\", input }});",
+                hook_js_config(hook)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let pre_tool_hooks = hooks
+        .iter()
+        .filter(|hook| matches!(hook.event, HookEvent::PreToolUse))
+        .map(|hook| {
+            format!(
+                "      await runToolHook(ctx, root, {}, input, output, \"pre_tool_use\");",
+                hook_js_config(hook)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let post_tool_hooks = hooks
+        .iter()
+        .filter(|hook| matches!(hook.event, HookEvent::PostToolUse))
+        .map(|hook| {
+            format!(
+                "      await runToolHook(ctx, root, {}, input, output, \"post_tool_use\");",
+                hook_js_config(hook)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
+        r#"const SCRIPT_TIMEOUT = 10_000;
+
+async function runScript(root, scriptPath, payload) {{
+  const process = Bun.spawn(["sh", scriptPath, root], {{
+    stdin: new Blob([JSON.stringify(payload)]),
+    stdout: "inherit",
+    stderr: "pipe",
+  }});
+  const exitCode = await process.exited;
+  if (exitCode !== 0) {{
+    const stderr = await new Response(process.stderr).text();
+    throw new Error(stderr || `hook exited with code ${{exitCode}}`);
+  }}
+}}
+
+async function runHook(ctx, root, hook, payload) {{
+  try {{
+    await runScript(root, `${{root}}/${{hook.script}}`, payload);
+  }} catch (error) {{
+    console.error(`nodus hook ${{hook.id}} failed`, error);
+    if (hook.blocking) throw error;
+  }}
+}}
+
+async function runToolHook(ctx, root, hook, input, output, eventName) {{
+  const toolName = String(input?.tool ?? "").toLowerCase();
+  if (hook.toolNames.length > 0 && !hook.toolNames.includes(toolName)) return;
+  await runHook(ctx, root, hook, {{ event: eventName, input, output }});
+}}
+
+function plugin(ctx) {{
+  const root = ctx.worktree ?? ctx.directory;
+  return {{
+    "session.created": async (input) => {{
+{session_start_hooks}
+    }},
+    "session.idle": async (input) => {{
+{stop_hooks}
+    }},
+    "tool.execute.before": async (input, output) => {{
+{pre_tool_hooks}
+    }},
+    "tool.execute.after": async (input, output) => {{
+{post_tool_hooks}
+    }},
+  }};
+}}
+
+export default plugin;
 "#
-    .to_vec()
+    )
+    .into_bytes()
+}
+
+fn session_start_matches(hook: &HookSpec, source: HookSessionSource) -> bool {
+    hook.matcher
+        .as_ref()
+        .map(|matcher| matcher.sources.is_empty() || matcher.sources.contains(&source))
+        .unwrap_or(true)
+}
+
+fn hook_js_config(hook: &HookSpec) -> String {
+    let tool_names = hook
+        .matcher
+        .as_ref()
+        .map(|matcher| {
+            matcher.tool_names.iter().map(|tool_name| match tool_name {
+                HookTool::Bash => "\"bash\"".to_string(),
+            })
+        })
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "{{ id: {id}, blocking: {blocking}, script: {script}, toolNames: [{tool_names}] }}",
+        id = js_string(&hook.id),
+        blocking = if hook.blocking { "true" } else { "false" },
+        script = js_string(&managed_script_relative_path(hook)),
+        tool_names = tool_names,
+    )
+}
+
+fn managed_script_relative_path(hook: &HookSpec) -> String {
+    format!(".opencode/scripts/{}.sh", managed_script_stem(hook))
+}
+
+fn managed_script_stem(hook: &HookSpec) -> String {
+    let sanitized = hook
+        .id
+        .chars()
+        .map(|character| match character {
+            'a'..='z' | '0'..='9' => character,
+            'A'..='Z' => character.to_ascii_lowercase(),
+            _ => '-',
+        })
+        .collect::<String>();
+    format!(
+        "nodus-hook-{sanitized}-{}",
+        &blake3_hex(hook.id.as_bytes())[..8]
+    )
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r#"'"'"'"#))
+}
+
+fn js_string(value: &str) -> String {
+    format!("{value:?}")
 }
 
 #[cfg(test)]

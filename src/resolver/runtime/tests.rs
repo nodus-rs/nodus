@@ -4468,16 +4468,34 @@ sync_on_startup = true
 
     sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
 
-    assert!(temp.path().join(".claude/hooks/nodus-sync.sh").exists());
-    assert!(temp.path().join(".claude/settings.local.json").exists());
-    assert!(temp.path().join(".codex/hooks/nodus-sync.sh").exists());
+    assert!(temp.path().join(".claude/settings.json").exists());
     assert!(temp.path().join(".codex/hooks.json").exists());
     assert!(temp.path().join(".codex/config.toml").exists());
-    assert!(temp.path().join(".opencode/plugins/nodus-sync.js").exists());
-    assert!(temp.path().join(".opencode/scripts/nodus-sync.sh").exists());
+    assert!(
+        temp.path()
+            .join(".opencode/plugins/nodus-hooks.js")
+            .exists()
+    );
+    assert_eq!(
+        fs::read_dir(temp.path().join(".claude/hooks"))
+            .unwrap()
+            .count(),
+        1
+    );
+    assert_eq!(
+        fs::read_dir(temp.path().join(".codex/hooks"))
+            .unwrap()
+            .count(),
+        1
+    );
+    assert_eq!(
+        fs::read_dir(temp.path().join(".opencode/scripts"))
+            .unwrap()
+            .count(),
+        1
+    );
 
-    let claude_settings =
-        fs::read_to_string(temp.path().join(".claude/settings.local.json")).unwrap();
+    let claude_settings = fs::read_to_string(temp.path().join(".claude/settings.json")).unwrap();
     let codex_hooks: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(temp.path().join(".codex/hooks.json")).unwrap())
             .unwrap();
@@ -4485,10 +4503,10 @@ sync_on_startup = true
         toml::from_str(&fs::read_to_string(temp.path().join(".codex/config.toml")).unwrap())
             .unwrap();
     let opencode_plugin =
-        fs::read_to_string(temp.path().join(".opencode/plugins/nodus-sync.js")).unwrap();
+        fs::read_to_string(temp.path().join(".opencode/plugins/nodus-hooks.js")).unwrap();
 
     assert!(claude_settings.contains("\"SessionStart\""));
-    assert!(claude_settings.contains("\"startup\""));
+    assert!(claude_settings.contains("\"startup|resume\""));
     assert_eq!(
         codex_config["features"]["codex_hooks"].as_bool(),
         Some(true)
@@ -4500,10 +4518,18 @@ sync_on_startup = true
     assert_eq!(
         codex_hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"].as_str(),
         Some(
-            r#"sh "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.codex/hooks/nodus-sync.sh""#
+            codex_hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
         )
     );
-    assert!(opencode_plugin.contains(".opencode/scripts/nodus-sync.sh"));
+    assert!(
+        codex_hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("/.codex/hooks/nodus-hook-")
+    );
+    assert!(opencode_plugin.contains(".opencode/scripts/nodus-hook-"));
 }
 
 #[test]
@@ -4572,10 +4598,9 @@ sync_on_startup = true
                 entry["hooks"].as_array().is_some_and(|hooks| {
                     hooks.iter().any(|hook| {
                         hook["type"].as_str() == Some("command")
-                            && hook["command"].as_str()
-                                == Some(
-                                    r#"sh "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.codex/hooks/nodus-sync.sh""#,
-                                )
+                            && hook["command"].as_str().is_some_and(|command| {
+                                command.contains("/.codex/hooks/nodus-hook-")
+                            })
                     })
                 })
             })
@@ -4585,7 +4610,7 @@ sync_on_startup = true
 }
 
 #[test]
-fn sync_merges_claude_startup_hook_into_existing_local_settings_without_duplicates() {
+fn sync_merges_claude_startup_hook_into_existing_settings_without_duplicates() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();
     write_skill(&temp.path().join("skills/review"), "Review");
@@ -4600,7 +4625,7 @@ sync_on_startup = true
 "#,
     );
     write_file(
-        &temp.path().join(".claude/settings.local.json"),
+        &temp.path().join(".claude/settings.json"),
         r#"{
   "permissions": {
     "allow": ["Bash(git status)"]
@@ -4635,7 +4660,7 @@ sync_on_startup = true
     sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
 
     let settings: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(temp.path().join(".claude/settings.local.json")).unwrap(),
+        &fs::read_to_string(temp.path().join(".claude/settings.json")).unwrap(),
     )
     .unwrap();
 
@@ -4645,14 +4670,14 @@ sync_on_startup = true
     );
 
     let session_start = settings["hooks"]["SessionStart"].as_array().unwrap();
-    assert_eq!(session_start.len(), 2);
+    assert_eq!(session_start.len(), 3);
 
     let startup = session_start
         .iter()
         .find(|entry| entry["matcher"].as_str() == Some("startup"))
         .unwrap();
     let startup_hooks = startup["hooks"].as_array().unwrap();
-    assert_eq!(startup_hooks.len(), 2);
+    assert_eq!(startup_hooks.len(), 1);
     assert!(startup_hooks.iter().any(|hook| {
         hook["type"].as_str() == Some("command")
             && hook["command"].as_str() == Some("./scripts/custom-startup.sh")
@@ -4662,15 +4687,24 @@ sync_on_startup = true
             .iter()
             .filter(|hook| {
                 hook["type"].as_str() == Some("command")
-                    && hook["command"].as_str() == Some("./.claude/hooks/nodus-sync.sh")
+                    && hook["command"]
+                        .as_str()
+                        .is_some_and(|command| command.starts_with("./.claude/hooks/nodus-hook-"))
             })
+            .count(),
+        0
+    );
+    assert_eq!(
+        session_start
+            .iter()
+            .filter(|entry| entry["matcher"].as_str() == Some("startup|resume"))
             .count(),
         1
     );
 }
 
 #[test]
-fn sync_gracefully_merges_claude_local_settings_when_launch_hooks_are_enabled_later() {
+fn sync_gracefully_preserves_user_claude_local_settings_when_hooks_are_enabled_later() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();
     write_skill(&temp.path().join("skills/review"), "Review");
@@ -4707,18 +4741,22 @@ sync_on_startup = true
     sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
     sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
 
-    let settings: serde_json::Value = serde_json::from_str(
+    let local_settings: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(temp.path().join(".claude/settings.local.json")).unwrap(),
+    )
+    .unwrap();
+    let settings: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(temp.path().join(".claude/settings.json")).unwrap(),
     )
     .unwrap();
 
     assert_eq!(
-        settings["permissions"]["allow"][0].as_str(),
+        local_settings["permissions"]["allow"][0].as_str(),
         Some("Bash(git status)")
     );
     assert_eq!(
         settings["hooks"]["SessionStart"][0]["matcher"].as_str(),
-        Some("startup")
+        Some("startup|resume")
     );
     assert_eq!(
         settings["hooks"]["SessionStart"][0]["hooks"]
@@ -4727,11 +4765,62 @@ sync_on_startup = true
             .iter()
             .filter(|hook| {
                 hook["type"].as_str() == Some("command")
-                    && hook["command"].as_str() == Some("./.claude/hooks/nodus-sync.sh")
+                    && hook["command"]
+                        .as_str()
+                        .is_some_and(|command| command.starts_with("./.claude/hooks/nodus-hook-"))
             })
             .count(),
         1
     );
+}
+
+#[test]
+fn sync_emits_explicit_pre_tool_hooks_for_supported_adapters() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_skill(&temp.path().join("skills/review"), "Review");
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[adapters]
+enabled = ["claude", "codex", "opencode"]
+
+[[hooks]]
+id = "bash-preflight"
+event = "pre_tool_use"
+
+[hooks.matcher]
+tool_names = ["bash"]
+
+[hooks.handler]
+type = "command"
+command = "./scripts/preflight.sh"
+"#,
+    );
+
+    sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+
+    let claude_settings = fs::read_to_string(temp.path().join(".claude/settings.json")).unwrap();
+    let codex_hooks: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(temp.path().join(".codex/hooks.json")).unwrap())
+            .unwrap();
+    let opencode_plugin =
+        fs::read_to_string(temp.path().join(".opencode/plugins/nodus-hooks.js")).unwrap();
+
+    assert!(claude_settings.contains("\"PreToolUse\""));
+    assert!(claude_settings.contains("\"Bash\""));
+    assert_eq!(
+        codex_hooks["hooks"]["PreToolUse"][0]["matcher"].as_str(),
+        Some("Bash")
+    );
+    assert!(
+        codex_hooks["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("/.codex/hooks/nodus-hook-")
+    );
+    assert!(opencode_plugin.contains("\"tool.execute.before\""));
+    assert!(opencode_plugin.contains(".opencode/scripts/nodus-hook-"));
 }
 
 #[test]
@@ -4765,8 +4854,8 @@ sync_on_startup = true
     .unwrap();
 
     let output = buffer.contents();
-    assert!(output.contains("launch sync is not emitted for `agents`"));
-    assert!(output.contains("launch sync is not emitted for `cursor`"));
+    assert!(output.contains("hooks are not emitted for `agents`"));
+    assert!(output.contains("hooks are not emitted for `cursor`"));
 }
 
 #[test]
@@ -6956,7 +7045,7 @@ fn doctor_repairs_invalid_managed_mcp_json_when_it_owns_the_file() {
 }
 
 #[test]
-fn doctor_repairs_invalid_managed_claude_local_settings_when_it_owns_the_file() {
+fn doctor_repairs_invalid_managed_claude_settings_when_it_owns_the_file() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();
     write_manifest(
@@ -6972,7 +7061,7 @@ sync_on_startup = true
 
     sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
 
-    write_file(&temp.path().join(".claude/settings.local.json"), "{");
+    write_file(&temp.path().join(".claude/settings.json"), "{");
 
     let summary = doctor_in_dir_with_mode(
         temp.path(),

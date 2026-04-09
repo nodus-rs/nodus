@@ -305,10 +305,7 @@ pub fn serialize_manifest(manifest: &Manifest) -> Result<String> {
                     super::HookHandlerType::Command => "command",
                 })
             ));
-            output.push_str(&format!(
-                "command = {}\n",
-                quote(&hook.handler.command)
-            ));
+            output.push_str(&format!("command = {}\n", quote(&hook.handler.command)));
             if !matches!(hook.handler.cwd, super::HookWorkingDirectory::GitRoot) {
                 output.push_str(&format!(
                     "cwd = {}\n",

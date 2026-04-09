@@ -447,7 +447,9 @@ impl Manifest {
     pub fn effective_hooks(&self) -> Vec<HookSpec> {
         let mut hooks = self.hooks.clone();
         if self.sync_on_launch_enabled()
-            && !hooks.iter().any(|hook| hook.id == LEGACY_SYNC_ON_STARTUP_HOOK_ID)
+            && !hooks
+                .iter()
+                .any(|hook| hook.id == LEGACY_SYNC_ON_STARTUP_HOOK_ID)
         {
             hooks.push(Self::legacy_sync_on_startup_hook());
         }
