@@ -1,10 +1,11 @@
 name = "nodus"
 content_roots = ["plugin"]
 publish_root = true
-
-[adapters]
-enabled = ["codex"]
-
 [mcp_servers.nodus]
 command = "nodus"
 args = ["mcp", "serve"]
+
+[adapters]
+enabled = ["codex"]
+[launch_hooks]
+sync_on_startup = true
