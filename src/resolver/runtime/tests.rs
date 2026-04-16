@@ -4689,7 +4689,7 @@ sync_on_startup = true
                 hook["type"].as_str() == Some("command")
                     && hook["command"]
                         .as_str()
-                        .is_some_and(|command| command.starts_with("./.claude/hooks/nodus-hook-"))
+                        .is_some_and(|command| command.contains("./.claude/hooks/nodus-hook-"))
             })
             .count(),
         0
@@ -4767,7 +4767,7 @@ sync_on_startup = true
                 hook["type"].as_str() == Some("command")
                     && hook["command"]
                         .as_str()
-                        .is_some_and(|command| command.starts_with("./.claude/hooks/nodus-hook-"))
+                        .is_some_and(|command| command.contains("./.claude/hooks/nodus-hook-"))
             })
             .count(),
         1

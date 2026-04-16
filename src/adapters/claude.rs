@@ -292,13 +292,20 @@ fn entry_is_managed(entry: &Value) -> bool {
                     && hook
                         .get("command")
                         .and_then(Value::as_str)
-                        .is_some_and(|command| command.starts_with("./.claude/hooks/nodus-hook-"))
+                        .is_some_and(is_managed_hook_command)
             })
         })
 }
 
+fn is_managed_hook_command(command: &str) -> bool {
+    command.contains("./.claude/hooks/nodus-hook-")
+}
+
 fn managed_hook_command(hook: &HookSpec) -> String {
-    format!("./{}", managed_script_relative_path(hook))
+    format!(
+        "sh {}",
+        shell_quote(&format!("./{}", managed_script_relative_path(hook)))
+    )
 }
 
 fn managed_script_relative_path(hook: &HookSpec) -> String {
