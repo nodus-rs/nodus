@@ -602,6 +602,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "glob-match"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9985c9503b412198aa4197559e9a318524ebc4519c229bfa05a535828c950b9d"
+
+[[package]]
 name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1022,16 +1028,18 @@ checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
 name = "mentra"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db7d2879f25732a311e2a340048f28a0edde4c7c9ad3a240b1ef2fe783277c70"
+checksum = "2783bcbfaaaf9c2f39e09bb50b71d7bb72f15bbf5c6e9b65aa78c8f5a18f30ef"
 dependencies = [
  "async-trait",
  "base64",
  "directories",
  "futures-util",
+ "glob-match",
  "libc",
  "mentra-provider",
+ "rand",
  "regex",
  "reqwest",
  "rusqlite",
