@@ -1168,6 +1168,33 @@ placement = "project"
     }
 
     #[test]
+    fn info_lists_managed_exports_for_export_only_package() {
+        let package = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+
+        write_file(
+            &package.path().join("nodus.toml"),
+            r#"
+name = "wenext-local-metrics"
+
+[[managed_exports]]
+source = "plugins/metrics-collector.js"
+target = ".opencode/plugins/metrics-collector.js"
+placement = "project"
+"#,
+        );
+        write_file(
+            &package.path().join("plugins/metrics-collector.js"),
+            "export default function plugin() {}\n",
+        );
+
+        let output = capture_info_output(package.path(), cache.path(), ".", None, None);
+
+        assert!(output.contains("managed-exports:"));
+        assert!(output.contains("plugins/metrics-collector.js -> .opencode/plugins/metrics-collector.js (project, root .)"));
+    }
+
+    #[test]
     fn info_shows_dev_dependencies_for_local_package_inspection() {
         let package = TempDir::new().unwrap();
         let cache = TempDir::new().unwrap();

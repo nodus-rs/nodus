@@ -5375,6 +5375,56 @@ placement = "project"
 }
 
 #[test]
+fn sync_writes_package_managed_exports_from_export_only_dependency() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[dependencies.metrics]
+path = "vendor/metrics"
+"#,
+    );
+    write_manifest(
+        &temp.path().join("vendor/metrics"),
+        r#"
+name = "wenext-local-metrics"
+
+[[managed_exports]]
+source = "plugins/metrics-collector.js"
+target = ".opencode/plugins/metrics-collector.js"
+placement = "project"
+
+[[managed_exports]]
+source = "metrics-config.json"
+target = "metrics-config.json"
+placement = "project"
+"#,
+    );
+    write_file(
+        &temp
+            .path()
+            .join("vendor/metrics/plugins/metrics-collector.js"),
+        "export default function plugin() {}\n",
+    );
+    write_file(
+        &temp.path().join("vendor/metrics/metrics-config.json"),
+        "{\n  \"enabled\": true\n}\n",
+    );
+
+    sync_all(temp.path(), cache.path());
+
+    assert_eq!(
+        fs::read_to_string(temp.path().join(".opencode/plugins/metrics-collector.js")).unwrap(),
+        "export default function plugin() {}\n"
+    );
+    assert_eq!(
+        fs::read_to_string(temp.path().join("metrics-config.json")).unwrap(),
+        "{\n  \"enabled\": true\n}\n"
+    );
+}
+
+#[test]
 fn sync_emits_transitive_package_managed_exports() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();

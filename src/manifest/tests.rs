@@ -566,6 +566,30 @@ args = ["-y", "firebase-tools", "mcp", "--dir", "."]
 }
 
 #[test]
+fn accepts_dependency_repo_with_only_managed_exports() {
+    let temp = TempDir::new().unwrap();
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[[managed_exports]]
+source = "hooks"
+target = "hooks"
+"#,
+    );
+    write_file(
+        &temp.path().join("hooks/hook-stop.sh"),
+        "#!/usr/bin/env bash\n",
+    );
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    assert!(loaded.discovered.is_empty());
+    assert!(loaded.manifest.dependencies.is_empty());
+    assert!(loaded.manifest.mcp_servers.is_empty());
+    assert_eq!(loaded.manifest.managed_exports.len(), 1);
+}
+
+#[test]
 fn accepts_dependency_repo_with_claude_marketplace_wrapper() {
     let temp = TempDir::new().unwrap();
     write_marketplace(

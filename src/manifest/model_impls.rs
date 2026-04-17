@@ -88,7 +88,8 @@ impl LoadedManifest {
                 } else {
                     self.manifest_path.is_some()
                         && (!self.manifest.dependencies.is_empty()
-                            || !self.manifest.mcp_servers.is_empty())
+                            || !self.manifest.mcp_servers.is_empty()
+                            || !self.manifest.managed_exports.is_empty())
                 }
             }
         };
@@ -97,7 +98,7 @@ impl LoadedManifest {
             && !allow_empty_package
         {
             bail!(
-                "package at {} must contain at least one of `agents/`, `commands/`, `rules/`, or `skills/`, declare `mcp_servers`, or declare dependencies in nodus.toml",
+                "package at {} must contain at least one of `agents/`, `commands/`, `rules/`, or `skills/`, declare `managed_exports`, declare `mcp_servers`, or declare dependencies in nodus.toml",
                 self.root.display()
             );
         }
