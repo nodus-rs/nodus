@@ -171,6 +171,13 @@ impl LoadedManifest {
         self.manifest.version.clone()
     }
 
+    pub fn claude_plugin_hook_sources(&self) -> &[ClaudePluginHookSource] {
+        self.claude_plugin
+            .as_ref()
+            .map(|plugin| plugin.hooks.as_slice())
+            .unwrap_or(&[])
+    }
+
     fn resolve_package_file_path(&self, path: &Path) -> Result<PathBuf> {
         let absolute = if path.is_absolute() {
             path.to_path_buf()

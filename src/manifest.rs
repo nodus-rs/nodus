@@ -13,6 +13,7 @@ pub use load::{
     serialize_manifest,
 };
 pub use model_impls::RequestedGitRef;
+pub(crate) use types::ClaudePluginHookSource;
 #[allow(unused_imports)]
 pub use types::{
     AdapterConfig, Capability, DependencyComponent, DependencyEntry, DependencyKind,

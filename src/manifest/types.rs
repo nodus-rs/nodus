@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use clap::ValueEnum;
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::adapters::Adapter;
 
@@ -371,6 +372,7 @@ pub(super) struct ClaudePluginExtras {
     pub(super) skills: Vec<PathBuf>,
     pub(super) agents: Vec<PathBuf>,
     pub(super) commands: Vec<ClaudePluginCommandSpec>,
+    pub(super) hooks: Vec<ClaudePluginHookSource>,
     pub(super) mcp_servers: Vec<ClaudePluginMcpSource>,
 }
 
@@ -379,6 +381,7 @@ impl ClaudePluginExtras {
         self.skills.is_empty()
             && self.agents.is_empty()
             && self.commands.is_empty()
+            && self.hooks.is_empty()
             && self.mcp_servers.is_empty()
     }
 
@@ -386,6 +389,7 @@ impl ClaudePluginExtras {
         !self.skills.is_empty()
             || !self.agents.is_empty()
             || !self.commands.is_empty()
+            || !self.hooks.is_empty()
             || !self.mcp_servers.is_empty()
     }
 }
@@ -399,6 +403,12 @@ pub(super) struct ClaudePluginCommandSpec {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ClaudePluginMcpSource {
     Inline(BTreeMap<String, McpServerConfig>),
+    Path(PathBuf),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ClaudePluginHookSource {
+    Inline(Value),
     Path(PathBuf),
 }
 

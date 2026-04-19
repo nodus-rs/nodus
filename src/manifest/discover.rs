@@ -9,9 +9,9 @@ use toml::Table;
 
 use super::types::{
     ClaudeMarketplace, ClaudeMarketplaceMcpServers, ClaudeMarketplaceRemoteSource,
-    ClaudeMarketplaceSource, ClaudePluginCommandSpec, ClaudePluginExtras, ClaudePluginMcpConfig,
-    ClaudePluginMcpSource, ClaudePluginMetadata, CodexMarketplace, CodexMarketplacePlugin,
-    CodexPluginMcpConfig, CodexPluginMetadata, SkillFrontmatter,
+    ClaudeMarketplaceSource, ClaudePluginCommandSpec, ClaudePluginExtras, ClaudePluginHookSource,
+    ClaudePluginMcpConfig, ClaudePluginMcpSource, ClaudePluginMetadata, CodexMarketplace,
+    CodexMarketplacePlugin, CodexPluginMcpConfig, CodexPluginMetadata, SkillFrontmatter,
 };
 use super::*;
 use crate::git::github_slug_from_url;
@@ -544,32 +544,44 @@ fn import_marketplace_mcp_servers(
 
 pub(super) fn import_claude_plugin_metadata(loaded: &mut LoadedManifest) -> Result<()> {
     let metadata_path = loaded.root.join(".claude-plugin").join("plugin.json");
-    if !metadata_path.exists() {
+    let metadata_exists = metadata_path.exists();
+    let extras = if metadata_exists {
+        let (descriptor, version) = read_claude_plugin_descriptor(&metadata_path)?;
+        let extras = parse_claude_plugin_extras(
+            &loaded.root,
+            &descriptor,
+            &metadata_path,
+            &mut loaded.warnings,
+        )?;
+        if loaded.manifest.version.is_none()
+            && let Some(version) = version.as_deref()
+        {
+            loaded.manifest.version = parse_plugin_metadata_version(
+                version,
+                "Claude plugin",
+                &metadata_path,
+                &mut loaded.warnings,
+            );
+        }
+        extras
+    } else {
+        read_supported_claude_plugin_extras(&loaded.root)?.unwrap_or_default()
+    };
+    if !metadata_exists && extras.is_empty() {
         return Ok(());
     }
     loaded.allows_empty_dependency_wrapper = true;
-
-    let (descriptor, version) = read_claude_plugin_descriptor(&metadata_path)?;
-    let extras = parse_claude_plugin_extras(
-        &loaded.root,
-        &descriptor,
-        &metadata_path,
-        &mut loaded.warnings,
-    )?;
     loaded.claude_plugin = (!extras.is_empty()).then_some(extras.clone());
 
-    if loaded.manifest.version.is_none()
-        && let Some(version) = version.as_deref()
-    {
-        loaded.manifest.version = parse_plugin_metadata_version(
-            version,
-            "Claude plugin",
-            &metadata_path,
-            &mut loaded.warnings,
-        );
+    if metadata_exists {
+        loaded.extra_package_files.push(metadata_path.clone());
     }
 
-    loaded.extra_package_files.push(metadata_path.clone());
+    if !extras.hooks.is_empty() {
+        loaded
+            .extra_package_files
+            .extend(collect_claude_plugin_runtime_files(&loaded.root, &extras)?);
+    }
 
     let mut normalized_servers = BTreeMap::new();
 
@@ -620,18 +632,106 @@ pub(super) fn import_claude_plugin_metadata(loaded: &mut LoadedManifest) -> Resu
 
 fn read_supported_claude_plugin_extras(root: &Path) -> Result<Option<ClaudePluginExtras>> {
     let metadata_path = root.join(".claude-plugin").join("plugin.json");
-    if !metadata_path.exists() {
-        return Ok(None);
+    let mut warnings = Vec::new();
+
+    if metadata_path.exists() {
+        let (descriptor, _) = read_claude_plugin_descriptor(&metadata_path)?;
+        return Ok(Some(parse_claude_plugin_extras(
+            root,
+            &descriptor,
+            &metadata_path,
+            &mut warnings,
+        )?));
     }
 
-    let (descriptor, _) = read_claude_plugin_descriptor(&metadata_path)?;
-    let mut warnings = Vec::new();
-    Ok(Some(parse_claude_plugin_extras(
-        root,
-        &descriptor,
-        &metadata_path,
-        &mut warnings,
-    )?))
+    let mut extras = ClaudePluginExtras::default();
+    let default_hooks = PathBuf::from("hooks").join("hooks.json");
+    if root.join(&default_hooks).is_file() {
+        extras
+            .hooks
+            .push(ClaudePluginHookSource::Path(default_hooks));
+    }
+
+    Ok((!extras.is_empty()).then_some(extras))
+}
+
+fn collect_claude_plugin_runtime_files(
+    root: &Path,
+    extras: &ClaudePluginExtras,
+) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+
+    for relative in [
+        PathBuf::from(".claude-plugin").join("plugin.json"),
+        PathBuf::from("hooks"),
+        PathBuf::from("scripts"),
+        PathBuf::from("bin"),
+        PathBuf::from("settings.json"),
+        PathBuf::from(".mcp.json"),
+        PathBuf::from(".lsp.json"),
+        PathBuf::from("monitors"),
+        PathBuf::from("output-styles"),
+    ] {
+        collect_existing_path_files(root, &relative, &mut files)?;
+    }
+
+    for path in &extras.skills {
+        collect_existing_path_files(root, path, &mut files)?;
+    }
+    for path in &extras.agents {
+        collect_existing_path_files(root, path, &mut files)?;
+    }
+    for command in &extras.commands {
+        collect_existing_path_files(root, &command.path, &mut files)?;
+    }
+    for hook in &extras.hooks {
+        if let ClaudePluginHookSource::Path(path) = hook {
+            collect_existing_path_files(root, path, &mut files)?;
+        }
+    }
+    for source in &extras.mcp_servers {
+        if let ClaudePluginMcpSource::Path(path) = source {
+            collect_existing_path_files(root, path, &mut files)?;
+        }
+    }
+
+    files.sort();
+    files.dedup();
+    Ok(files)
+}
+
+fn collect_existing_path_files(
+    root: &Path,
+    relative: &Path,
+    files: &mut Vec<PathBuf>,
+) -> Result<()> {
+    let path = root.join(relative);
+    if !path.exists() {
+        return Ok(());
+    }
+    if path.is_file() {
+        files.push(canonicalize_existing_path(&path)?);
+        return Ok(());
+    }
+    if path.is_dir() {
+        files.extend(collect_files(&path)?.into_iter().filter(|candidate| {
+            candidate
+                .strip_prefix(&path)
+                .ok()
+                .and_then(|suffix| suffix.components().next())
+                .is_none_or(|component| {
+                    component.as_os_str() != ".git"
+                        && component.as_os_str() != ".nodus"
+                        && component.as_os_str() != ".claude"
+                        && component.as_os_str() != ".codex"
+                        && component.as_os_str() != ".cursor"
+                        && component.as_os_str() != ".github"
+                        && component.as_os_str() != ".opencode"
+                        && component.as_os_str() != ".agents"
+                })
+        }));
+    }
+    Ok(())
 }
 
 fn read_claude_plugin_descriptor(path: &Path) -> Result<(Value, Option<String>)> {
@@ -679,6 +779,7 @@ fn parse_claude_plugin_extras(
             metadata_path,
             warnings,
         )?,
+        hooks: parse_claude_plugin_hooks(root, object.get("hooks"), metadata_path, warnings)?,
         mcp_servers: parse_claude_plugin_mcp_sources(
             root,
             object.get("mcpServers"),
@@ -860,6 +961,65 @@ fn parse_claude_plugin_command_path(
     }
 
     Ok(Some(ClaudePluginCommandSpec { id, path }))
+}
+
+fn parse_claude_plugin_hooks(
+    root: &Path,
+    value: Option<&Value>,
+    metadata_path: &Path,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<ClaudePluginHookSource>> {
+    let Some(value) = value else {
+        let default_path = PathBuf::from("hooks").join("hooks.json");
+        return Ok(root
+            .join(&default_path)
+            .is_file()
+            .then_some(ClaudePluginHookSource::Path(default_path))
+            .into_iter()
+            .collect());
+    };
+
+    match value {
+        Value::String(path) => Ok(vec![ClaudePluginHookSource::Path(
+            normalize_manifest_relative_path(
+                Path::new(path),
+                &format!(
+                    "Claude plugin field `hooks` path in {}",
+                    metadata_path.display()
+                ),
+            )?,
+        )]),
+        Value::Array(items) => {
+            let mut sources = Vec::new();
+            for item in items {
+                match item {
+                    Value::String(path) => sources.push(ClaudePluginHookSource::Path(
+                        normalize_manifest_relative_path(
+                            Path::new(path),
+                            &format!(
+                                "Claude plugin field `hooks` path in {}",
+                                metadata_path.display()
+                            ),
+                        )?,
+                    )),
+                    Value::Object(_) => sources.push(ClaudePluginHookSource::Inline(item.clone())),
+                    _ => warnings.push(format!(
+                        "ignoring unsupported Claude plugin field `hooks` entry in {}: expected an inline object or relative JSON path",
+                        metadata_path.display()
+                    )),
+                }
+            }
+            Ok(sources)
+        }
+        Value::Object(_) => Ok(vec![ClaudePluginHookSource::Inline(value.clone())]),
+        _ => {
+            warnings.push(format!(
+                "ignoring unsupported Claude plugin field `hooks` in {}: expected an inline object, relative JSON path, or array of those forms",
+                metadata_path.display()
+            ));
+            Ok(Vec::new())
+        }
+    }
 }
 
 fn parse_claude_plugin_mcp_sources(

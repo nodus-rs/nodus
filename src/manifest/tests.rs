@@ -1796,7 +1796,32 @@ fn skips_marketplace_with_docs_only_local_plugin_source() {
 }
 
 #[test]
-fn skips_marketplace_with_hook_only_claude_plugin_source() {
+fn accepts_dependency_repo_with_only_default_claude_plugin_hooks() {
+    let temp = TempDir::new().unwrap();
+    write_file(
+        &temp.path().join("hooks/hooks.json"),
+        "{\n  \"hooks\": {\n    \"Stop\": []\n  }\n}\n",
+    );
+    write_file(
+        &temp.path().join("scripts/notify.sh"),
+        "#!/usr/bin/env bash\n",
+    );
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    assert!(loaded.discovered.is_empty());
+    assert!(loaded.manifest.dependencies.is_empty());
+    let package_files = loaded.package_files().unwrap();
+    assert!(
+        package_files.contains(&canonicalize_path(&temp.path().join("hooks/hooks.json")).unwrap())
+    );
+    assert!(
+        package_files.contains(&canonicalize_path(&temp.path().join("scripts/notify.sh")).unwrap())
+    );
+}
+
+#[test]
+fn accepts_marketplace_with_hook_only_claude_plugin_source() {
     let temp = TempDir::new().unwrap();
     write_marketplace(
         temp.path(),
@@ -1832,11 +1857,9 @@ fn skips_marketplace_with_hook_only_claude_plugin_source() {
             .keys()
             .map(String::as_str)
             .collect::<Vec<_>>(),
-        vec!["axiom"]
+        vec!["axiom", "hook_only"]
     );
-    assert_eq!(loaded.warnings.len(), 1);
-    assert!(loaded.warnings[0].contains("skipping marketplace plugin `Hook Only`"));
-    assert!(loaded.warnings[0].contains("./plugins/hook-only"));
+    assert!(loaded.warnings.is_empty());
 }
 
 #[test]

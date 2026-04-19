@@ -2211,7 +2211,7 @@ fn add_dependency_accepts_claude_marketplace_wrapper_with_hook_only_plugin_sourc
     init_git_repo(wrapper.path());
     rename_current_branch(wrapper.path(), "main");
 
-    add_dependency_in_dir_with_adapters(
+    let summary = add_dependency_in_dir_with_adapters(
         temp.path(),
         cache.path(),
         &wrapper.path().to_string_lossy(),
@@ -2222,20 +2222,116 @@ fn add_dependency_accepts_claude_marketplace_wrapper_with_hook_only_plugin_sourc
     .unwrap();
 
     let wrapper_alias = normalize_alias_from_url(&wrapper.path().to_string_lossy()).unwrap();
+    assert_eq!(
+        summary
+            .dependency_members
+            .iter()
+            .map(|member| (member.id.as_str(), member.enabled))
+            .collect::<Vec<_>>(),
+        vec![("axiom", false), ("hook_only", false)]
+    );
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     let wrapper_package = lockfile
         .packages
         .iter()
         .find(|package| package.alias == wrapper_alias)
         .unwrap();
-    assert_eq!(wrapper_package.dependencies, vec!["axiom"]);
+    assert!(wrapper_package.dependencies.is_empty());
+    assert!(
+        !lockfile
+            .packages
+            .iter()
+            .any(|package| package.alias == "axiom" || package.alias == "hook_only")
+    );
+}
 
-    let plugin_package = lockfile
-        .packages
-        .iter()
-        .find(|package| package.alias == "axiom")
+#[test]
+fn sync_emits_claude_plugin_command_hooks_from_dependency_packages() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+
+    write_manifest(
+        temp.path(),
+        r#"
+[dependencies.hook_plugin]
+path = "vendor/hook-plugin"
+"#,
+    );
+    write_file(
+        &temp
+            .path()
+            .join("vendor/hook-plugin/.claude-plugin/plugin.json"),
+        r#"{
+  "name": "hook-plugin"
+}
+"#,
+    );
+    write_file(
+        &temp.path().join("vendor/hook-plugin/hooks/hooks.json"),
+        r#"{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/format-code.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+"#,
+    );
+    write_file(
+        &temp
+            .path()
+            .join("vendor/hook-plugin/scripts/format-code.sh"),
+        "#!/usr/bin/env bash\nexit 0\n",
+    );
+
+    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Claude]).unwrap();
+
+    let settings: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(temp.path().join(".claude/settings.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        settings["hooks"]["PostToolUse"][0]["matcher"].as_str(),
+        Some("Write|Edit")
+    );
+    let command = settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+        .as_str()
         .unwrap();
-    assert_eq!(plugin_package.skills, vec!["review"]);
+    assert!(command.contains("./.claude/hooks/nodus-plugin-hook-"));
+
+    let wrapper_script = fs::read_to_string(
+        temp.path()
+            .join(".claude/hooks")
+            .read_dir()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path(),
+    )
+    .unwrap();
+    assert!(wrapper_script.contains("CLAUDE_PLUGIN_ROOT"));
+    assert!(wrapper_script.contains(".nodus/packages/hook_plugin/claude-plugin"));
+    assert!(wrapper_script.contains("${CLAUDE_PLUGIN_ROOT}/scripts/format-code.sh"));
+
+    assert!(
+        temp.path()
+            .join(".nodus/packages/hook_plugin/claude-plugin/hooks/hooks.json")
+            .exists()
+    );
+    assert!(
+        temp.path()
+            .join(".nodus/packages/hook_plugin/claude-plugin/scripts/format-code.sh")
+            .exists()
+    );
 }
 
 #[test]

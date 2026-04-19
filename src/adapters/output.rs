@@ -518,9 +518,15 @@ pub(crate) fn build_output_plan(
         merge_file(&mut plan.files, file)?;
     }
 
-    if !root_hooks.is_empty() {
+    let has_claude_plugin_hooks = selected_adapters.contains(Adapter::Claude)
+        && packages
+            .iter()
+            .any(|(package, _)| !package.manifest.claude_plugin_hook_sources().is_empty());
+
+    if !root_hooks.is_empty() || has_claude_plugin_hooks {
         for file in hook_files(
             project_root,
+            packages,
             &root_hooks,
             selected_adapters,
             merge_existing_mcp,
@@ -1207,6 +1213,7 @@ fn render_gitignore(explicit_lines: &[String], patterns: &BTreeSet<String>) -> S
 
 fn hook_files(
     project_root: &Path,
+    packages: &[(ResolvedPackage, PathBuf)],
     hooks: &[HookSpec],
     selected_adapters: Adapters,
     merge_existing_mcp: bool,
@@ -1215,12 +1222,20 @@ fn hook_files(
     let mut files = Vec::new();
 
     let claude_hooks = hooks_for_adapter(hooks, selected_adapters, Adapter::Claude);
-    if !claude_hooks.is_empty() {
-        files.extend(super::claude::hook_files(
+    let claude_plugin_packages = packages
+        .iter()
+        .filter(|(package, _)| !package.manifest.claude_plugin_hook_sources().is_empty())
+        .map(|(package, snapshot_root)| (package, snapshot_root.as_path()))
+        .collect::<Vec<_>>();
+    if !claude_hooks.is_empty() || !claude_plugin_packages.is_empty() {
+        let (claude_files, claude_warnings) = super::claude::hook_files(
             project_root,
             &claude_hooks,
+            &claude_plugin_packages,
             merge_existing_mcp,
-        )?);
+        )?;
+        files.extend(claude_files);
+        warnings.extend(claude_warnings);
     }
     let opencode_hooks = hooks_for_adapter(hooks, selected_adapters, Adapter::OpenCode);
     if !opencode_hooks.is_empty() {
