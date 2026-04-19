@@ -149,10 +149,18 @@ tooling = { path = "vendor/tooling", components = ["skills"] }
 # url = "https://github.com/acme/example-package.git"
 # revision = "0123456789abcdef0123456789abcdef01234567"
 
-# [launch_hooks]
-# Uncomment only if you want compatible adapters to auto-run sync on startup.
-# Current manifest validation requires this to be `true` when set.
-# sync_on_startup = true
+# [[hooks]]
+# Uncomment this hook if you want compatible adapters to auto-run `nodus sync`
+# when the repo session starts or resumes.
+# id = "nodus.sync_on_startup"
+# event = "session_start"
+#
+# [hooks.matcher]
+# sources = ["startup", "resume"]
+#
+# [hooks.handler]
+# type = "command"
+# command = "nodus sync"
 
 # -----------------------------------------------------------------------------
 # Workspace example

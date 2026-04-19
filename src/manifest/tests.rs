@@ -459,6 +459,32 @@ sync_on_startup = true
 }
 
 #[test]
+fn recognizes_canonical_sync_on_launch_hook() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[[hooks]]
+id = "nodus.sync_on_startup"
+event = "session_start"
+
+[hooks.matcher]
+sources = ["startup", "resume"]
+
+[hooks.handler]
+type = "command"
+command = "nodus sync"
+"#,
+    );
+
+    let loaded = load_root_from_dir(temp.path()).unwrap();
+
+    assert!(loaded.manifest.sync_on_launch_enabled());
+    assert_eq!(loaded.manifest.effective_hooks().len(), 1);
+}
+
+#[test]
 fn does_not_warn_for_supported_content_root_config() {
     let temp = TempDir::new().unwrap();
     write_valid_skill(temp.path());
@@ -2649,8 +2675,12 @@ fn serializes_launch_hooks() {
 
     let encoded = serialize_manifest(&manifest).unwrap();
 
-    assert!(encoded.contains("[launch_hooks]"));
-    assert!(encoded.contains("sync_on_startup = true"));
+    assert!(!encoded.contains("[launch_hooks]"));
+    assert!(encoded.contains("[[hooks]]"));
+    assert!(encoded.contains("id = \"nodus.sync_on_startup\""));
+    assert!(encoded.contains("event = \"session_start\""));
+    assert!(encoded.contains("sources = [\"startup\", \"resume\"]"));
+    assert!(encoded.contains("command = \"nodus sync\""));
 }
 
 #[test]

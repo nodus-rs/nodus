@@ -454,11 +454,7 @@ impl Manifest {
 
     pub fn effective_hooks(&self) -> Vec<HookSpec> {
         let mut hooks = self.hooks.clone();
-        if self.sync_on_launch_enabled()
-            && !hooks
-                .iter()
-                .any(|hook| hook.id == LEGACY_SYNC_ON_STARTUP_HOOK_ID)
-        {
+        if self.sync_on_launch_enabled() && !hooks.iter().any(Self::is_sync_on_launch_hook) {
             hooks.push(Self::legacy_sync_on_startup_hook());
         }
         hooks
@@ -484,15 +480,24 @@ impl Manifest {
     }
 
     pub fn sync_on_launch_enabled(&self) -> bool {
-        self.launch_hooks
-            .as_ref()
-            .is_some_and(|hooks| hooks.sync_on_startup)
+        self.hooks.iter().any(Self::is_sync_on_launch_hook)
+            || self
+                .launch_hooks
+                .as_ref()
+                .is_some_and(|hooks| hooks.sync_on_startup)
     }
 
     pub fn set_sync_on_launch(&mut self, enabled: bool) {
-        self.launch_hooks = enabled.then_some(LaunchHookConfig {
-            sync_on_startup: true,
-        });
+        self.launch_hooks = None;
+        self.hooks
+            .retain(|hook| !Self::is_sync_on_launch_hook(hook));
+        if enabled {
+            self.hooks.push(Self::legacy_sync_on_startup_hook());
+        }
+    }
+
+    fn is_sync_on_launch_hook(hook: &HookSpec) -> bool {
+        hook.id == LEGACY_SYNC_ON_STARTUP_HOOK_ID
     }
 
     pub fn remove_managed_mapping(&mut self, alias: &str, target_root: &Path) -> Result<bool> {

@@ -241,22 +241,12 @@ pub fn serialize_manifest(manifest: &Manifest) -> Result<String> {
         output.push_str(&format!("enabled = [{encoded}]\n"));
     }
 
-    if let Some(launch_hooks) = &manifest.launch_hooks {
+    let effective_hooks = manifest.effective_hooks();
+    if !effective_hooks.is_empty() {
         if !output.is_empty() && !output.ends_with('\n') {
             output.push('\n');
         }
-        output.push_str("[launch_hooks]\n");
-        output.push_str(&format!(
-            "sync_on_startup = {}\n",
-            launch_hooks.sync_on_startup
-        ));
-    }
-
-    if !manifest.hooks.is_empty() {
-        if !output.is_empty() && !output.ends_with('\n') {
-            output.push('\n');
-        }
-        for hook in &manifest.hooks {
+        for hook in &effective_hooks {
             output.push_str("[[hooks]]\n");
             output.push_str(&format!("id = {}\n", quote(&hook.id)));
             output.push_str(&format!("event = {}\n", quote(hook.event.as_str())));

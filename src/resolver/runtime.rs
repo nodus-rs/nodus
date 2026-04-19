@@ -397,7 +397,7 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
     if sync_on_launch {
         if sync_mode.checks_lockfile() {
             bail!(
-                "launch hook configuration must be persisted before running {}; rerun without `--locked` or `--frozen`, or set `[launch_hooks] sync_on_startup = true` in nodus.toml",
+                "launch hook configuration must be persisted before running {}; rerun without `--locked` or `--frozen`, or declare the `nodus.sync_on_startup` hook in [[hooks]]",
                 sync_mode.flag(),
             );
         }
