@@ -743,11 +743,7 @@ shared = { path = "vendor/shared" }
             .managed_files
             .contains(&".claude/skills/review".into())
     );
-    assert!(
-        lockfile
-            .managed_files
-            .contains(&".claude/skills/checks".into())
-    );
+    assert!(lockfile.managed_files.contains(&".claude/skills".into()));
 }
 
 #[test]
@@ -3609,11 +3605,7 @@ shared = { path = "vendor/shared", components = ["skills"] }
         shared.selected_components,
         Some(vec![DependencyComponent::Skills])
     );
-    assert!(
-        lockfile
-            .managed_files
-            .contains(&".claude/skills/review".into())
-    );
+    assert!(lockfile.managed_files.contains(&".claude/skills".into()));
     assert!(
         !lockfile
             .managed_files
@@ -3732,16 +3724,8 @@ publish_root = true
             .join(format!(".codex/skills/{managed_skill_id}/SKILL.md"))
             .exists()
     );
-    assert!(
-        lockfile
-            .managed_files
-            .contains(&".claude/skills/review".into())
-    );
-    assert!(
-        lockfile
-            .managed_files
-            .contains(&".codex/skills/review".into())
-    );
+    assert!(lockfile.managed_files.contains(&".claude/skills".into()));
+    assert!(lockfile.managed_files.contains(&".codex/skills".into()));
 }
 
 #[test]
@@ -5354,26 +5338,14 @@ shared = { path = "vendor/shared" }
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
 
-    assert!(
-        lockfile
-            .managed_files
-            .contains(&".claude/skills/iframe-ad".into())
-    );
-    assert!(
-        lockfile
-            .managed_files
-            .contains(&".github/skills/iframe-ad".into())
-    );
-    assert!(
-        lockfile
-            .managed_files
-            .contains(&".opencode/skills/iframe-ad".into())
-    );
+    assert!(lockfile.managed_files.contains(&".claude/skills".into()));
+    assert!(lockfile.managed_files.contains(&".github/skills".into()));
+    assert!(lockfile.managed_files.contains(&".opencode/skills".into()));
     assert!(
         !lockfile
             .managed_files
             .iter()
-            .any(|path| path.contains("iframe-ad_"))
+            .any(|path| path.contains("iframe-ad"))
     );
 }
 
@@ -5526,6 +5498,55 @@ placement = "project"
         fs::read_to_string(temp.path().join("learnings/review.md")).unwrap(),
         "Project-root learning.\n"
     );
+
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    assert!(lockfile.managed_files.contains(&String::from("learnings")));
+    assert!(
+        !lockfile
+            .managed_files
+            .contains(&String::from("learnings/review.md"))
+    );
+}
+
+#[test]
+fn sync_prunes_stale_files_inside_project_scoped_managed_export_root() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[dependencies.shared]
+path = "vendor/shared"
+"#,
+    );
+    write_manifest(
+        &temp.path().join("vendor/shared"),
+        r#"
+[[managed_exports]]
+source = "learnings"
+target = "learnings"
+placement = "project"
+"#,
+    );
+    write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+    write_file(
+        &temp.path().join("vendor/shared/learnings/review.md"),
+        "Project-root learning.\n",
+    );
+    write_file(
+        &temp.path().join("vendor/shared/learnings/nested/tips.md"),
+        "tips\n",
+    );
+
+    sync_all(temp.path(), cache.path());
+    write_file(&temp.path().join("learnings/extra.md"), "stale\n");
+    fs::remove_file(temp.path().join("vendor/shared/learnings/nested/tips.md")).unwrap();
+
+    sync_all(temp.path(), cache.path());
+
+    assert!(temp.path().join("learnings/review.md").exists());
+    assert!(!temp.path().join("learnings/nested/tips.md").exists());
+    assert!(!temp.path().join("learnings/extra.md").exists());
 }
 
 #[test]

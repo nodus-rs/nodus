@@ -17,7 +17,7 @@ use self::support::{
 };
 #[cfg(test)]
 use self::support::{prune_empty_parent_dirs, write_managed_files};
-use crate::adapters::{Adapter, Adapters, ManagedFile, build_output_plan};
+use crate::adapters::{Adapter, Adapters, ArtifactKind, ManagedFile, build_output_plan};
 use crate::execution::ExecutionMode;
 use crate::install_paths::{InstallPaths, InstallScope};
 use crate::lockfile::{LOCKFILE_NAME, LockedPackage, LockedSource, Lockfile};
@@ -159,8 +159,6 @@ struct PlannedFileWrite {
 #[derive(Debug, Clone)]
 struct SyncExecutionPlan {
     runtime_root: PathBuf,
-    owned_paths: HashSet<PathBuf>,
-    desired_paths: HashSet<PathBuf>,
     manifest_write: Option<PlannedFileWrite>,
     removals: Vec<PathBuf>,
     managed_writes: Vec<ManagedFile>,
@@ -899,14 +897,166 @@ impl Resolution {
             .iter()
             .map(|package| (package.clone(), package.root.clone()))
             .collect::<Vec<_>>();
-        let mut managed_files =
-            build_output_plan(runtime_root, &package_roots, selected_adapters, None, false)?
-                .managed_files;
+        let output_plan =
+            build_output_plan(runtime_root, &package_roots, selected_adapters, None, false)?;
+        let mut managed_files = compress_lockfile_managed_files(
+            self,
+            selected_adapters,
+            runtime_root,
+            output_plan.managed_files,
+        )?;
         managed_files.extend(workspace_marketplace_managed_files(self)?);
         managed_files.sort();
         managed_files.dedup();
         Ok(managed_files)
     }
+}
+
+fn compress_lockfile_managed_files(
+    resolution: &Resolution,
+    selected_adapters: Adapters,
+    runtime_root: &Path,
+    managed_files: Vec<String>,
+) -> Result<Vec<String>> {
+    let derivable_runtime_entries =
+        derivable_runtime_artifact_entries(resolution, selected_adapters, runtime_root);
+    let compressed_runtime_roots = derivable_runtime_entries
+        .iter()
+        .filter_map(|entry| Path::new(entry).parent().map(display_path))
+        .collect::<HashSet<_>>();
+    let managed_export_roots = resolution
+        .packages
+        .iter()
+        .flat_map(|package| {
+            package.managed_paths().iter().filter(|mapping| {
+                matches!(
+                    mapping.origin,
+                    ResolvedManagedPathOrigin::PackageManagedExport { .. }
+                )
+            })
+        })
+        .map(|mapping| display_path(&mapping.ownership_root))
+        .collect::<HashSet<_>>();
+
+    let mut compressed = managed_files
+        .into_iter()
+        .filter(|entry| {
+            !derivable_runtime_entries.contains(entry)
+                && !managed_export_roots
+                    .iter()
+                    .any(|root| entry != root && Path::new(entry).starts_with(root))
+        })
+        .collect::<Vec<_>>();
+    compressed.extend(compressed_runtime_roots);
+    compressed.extend(managed_export_roots);
+    compressed.sort();
+    compressed.dedup();
+    Ok(compressed)
+}
+
+fn derivable_runtime_artifact_entries(
+    resolution: &Resolution,
+    selected_adapters: Adapters,
+    runtime_root: &Path,
+) -> HashSet<String> {
+    let names =
+        crate::adapters::ManagedArtifactNames::from_resolved_packages(resolution.packages.iter());
+    let mut entries = HashSet::new();
+
+    for package in &resolution.packages {
+        if matches!(package.source, PackageSource::Root) && !package.manifest.manifest.publish_root
+        {
+            continue;
+        }
+
+        if package.selects_component(DependencyComponent::Skills) {
+            for skill in &package.manifest.discovered.skills {
+                for adapter in ArtifactKind::Skill.supported_adapters().iter() {
+                    if !selected_adapters.contains(adapter) {
+                        continue;
+                    }
+                    let path = crate::adapters::managed_skill_root(
+                        &names,
+                        runtime_root,
+                        adapter,
+                        package,
+                        &skill.id,
+                    );
+                    entries.insert(display_path(
+                        path.strip_prefix(runtime_root).unwrap_or(&path),
+                    ));
+                }
+            }
+        }
+
+        if package.selects_component(DependencyComponent::Agents) {
+            for agent in &package.manifest.discovered.agents {
+                for adapter in ArtifactKind::Agent.supported_adapters().iter() {
+                    if !selected_adapters.contains(adapter) {
+                        continue;
+                    }
+                    if let Some(path) = crate::adapters::managed_artifact_path(
+                        &names,
+                        runtime_root,
+                        adapter,
+                        ArtifactKind::Agent,
+                        package,
+                        &agent.id,
+                    ) {
+                        entries.insert(display_path(
+                            path.strip_prefix(runtime_root).unwrap_or(&path),
+                        ));
+                    }
+                }
+            }
+        }
+
+        if package.selects_component(DependencyComponent::Rules) {
+            for rule in &package.manifest.discovered.rules {
+                for adapter in ArtifactKind::Rule.supported_adapters().iter() {
+                    if !selected_adapters.contains(adapter) {
+                        continue;
+                    }
+                    if let Some(path) = crate::adapters::managed_artifact_path(
+                        &names,
+                        runtime_root,
+                        adapter,
+                        ArtifactKind::Rule,
+                        package,
+                        &rule.id,
+                    ) {
+                        entries.insert(display_path(
+                            path.strip_prefix(runtime_root).unwrap_or(&path),
+                        ));
+                    }
+                }
+            }
+        }
+
+        if package.selects_component(DependencyComponent::Commands) {
+            for command in &package.manifest.discovered.commands {
+                for adapter in ArtifactKind::Command.supported_adapters().iter() {
+                    if !selected_adapters.contains(adapter) {
+                        continue;
+                    }
+                    if let Some(path) = crate::adapters::managed_artifact_path(
+                        &names,
+                        runtime_root,
+                        adapter,
+                        ArtifactKind::Command,
+                        package,
+                        &command.id,
+                    ) {
+                        entries.insert(display_path(
+                            path.strip_prefix(runtime_root).unwrap_or(&path),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    entries
 }
 
 fn package_dependency_aliases(

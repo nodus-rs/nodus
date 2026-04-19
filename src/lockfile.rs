@@ -393,93 +393,172 @@ fn expand_managed_root_with_names(
         .map(|component| component.as_os_str().to_string_lossy().into_owned())
         .collect::<Vec<_>>();
 
-    let [runtime, artifact_dir, artifact_name] = components.as_slice() else {
-        return None;
-    };
-
-    if *runtime != ".agents"
-        && *runtime != ".claude"
-        && *runtime != ".codex"
-        && *runtime != ".github"
-        && *runtime != ".cursor"
-        && *runtime != ".opencode"
-    {
-        return None;
-    }
-
-    let paths = match artifact_dir.as_str() {
-        "skills" => packages
-            .iter()
-            .filter(|package| {
-                package
-                    .skills
+    match components.as_slice() {
+        [runtime, artifact_dir] => {
+            let paths = match artifact_dir.as_str() {
+                "skills" => packages
                     .iter()
-                    .any(|existing| existing == artifact_name)
-            })
-            .map(|package| {
-                project_root.join(format!(
-                    "{runtime}/skills/{}",
-                    names.locked_managed_skill_id(package, artifact_name)
-                ))
-            })
-            .collect::<Vec<_>>(),
-        "agents" if runtime == ".github" => packages
-            .iter()
-            .filter(|package| {
-                package
-                    .agents
+                    .flat_map(|package| {
+                        package.skills.iter().map(|artifact_id| {
+                            project_root.join(format!(
+                                "{runtime}/skills/{}",
+                                names.locked_managed_skill_id(package, artifact_id)
+                            ))
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+                "agents" if *runtime == ".github" => packages
                     .iter()
-                    .any(|existing| existing == artifact_name)
-            })
-            .map(|package| {
-                project_root.join(format!(
-                    "{runtime}/agents/{}",
-                    names.locked_managed_file_name(
-                        package,
-                        ArtifactKind::Agent,
-                        artifact_name,
-                        "agent.md"
-                    )
-                ))
-            })
-            .collect::<Vec<_>>(),
-        "agents" | "rules" | "commands" => {
-            let (artifact_id, extension) =
-                split_managed_file_name(runtime.as_str(), artifact_dir, artifact_name)?;
-            let kind = match artifact_dir.as_str() {
-                "agents" => ArtifactKind::Agent,
-                "rules" => ArtifactKind::Rule,
-                "commands" => ArtifactKind::Command,
+                    .flat_map(|package| {
+                        package.agents.iter().map(|artifact_id| {
+                            project_root.join(format!(
+                                "{runtime}/agents/{}",
+                                names.locked_managed_file_name(
+                                    package,
+                                    ArtifactKind::Agent,
+                                    artifact_id,
+                                    "agent.md",
+                                )
+                            ))
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+                "agents" | "rules" | "commands" => {
+                    let kind = match artifact_dir.as_str() {
+                        "agents" => ArtifactKind::Agent,
+                        "rules" => ArtifactKind::Rule,
+                        "commands" => ArtifactKind::Command,
+                        _ => return None,
+                    };
+                    packages
+                        .iter()
+                        .flat_map(|package| {
+                            let ids: Box<dyn Iterator<Item = &String> + '_> = match kind {
+                                ArtifactKind::Agent => Box::new(package.agents.iter()),
+                                ArtifactKind::Rule => Box::new(package.rules.iter()),
+                                ArtifactKind::Command => Box::new(package.commands.iter()),
+                                ArtifactKind::Skill => Box::new(std::iter::empty()),
+                            };
+                            ids.map(|artifact_id| {
+                                let extension = match (runtime.as_str(), kind) {
+                                    (".cursor", ArtifactKind::Rule) => "mdc",
+                                    _ => "md",
+                                };
+                                project_root.join(format!(
+                                    "{runtime}/{artifact_dir}/{}",
+                                    names.locked_managed_file_name(
+                                        package,
+                                        kind,
+                                        artifact_id,
+                                        extension,
+                                    )
+                                ))
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                }
                 _ => return None,
             };
-            packages
-                .iter()
-                .filter(|package| match kind {
-                    ArtifactKind::Agent => package
-                        .agents
-                        .iter()
-                        .any(|existing| existing == artifact_id),
-                    ArtifactKind::Rule => {
-                        package.rules.iter().any(|existing| existing == artifact_id)
-                    }
-                    ArtifactKind::Command => package
-                        .commands
-                        .iter()
-                        .any(|existing| existing == artifact_id),
-                    ArtifactKind::Skill => false,
-                })
-                .map(|package| {
-                    project_root.join(format!(
-                        "{runtime}/{artifact_dir}/{}",
-                        names.locked_managed_file_name(package, kind, artifact_id, extension)
-                    ))
-                })
-                .collect::<Vec<_>>()
-        }
-        _ => return None,
-    };
 
-    if paths.is_empty() { None } else { Some(paths) }
+            let paths = paths
+                .into_iter()
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            if paths.is_empty() { None } else { Some(paths) }
+        }
+        [runtime, artifact_dir, artifact_name] => {
+            if *runtime != ".agents"
+                && *runtime != ".claude"
+                && *runtime != ".codex"
+                && *runtime != ".github"
+                && *runtime != ".cursor"
+                && *runtime != ".opencode"
+            {
+                return None;
+            }
+
+            let paths = match artifact_dir.as_str() {
+                "skills" => packages
+                    .iter()
+                    .filter(|package| {
+                        package
+                            .skills
+                            .iter()
+                            .any(|existing| existing == artifact_name)
+                    })
+                    .map(|package| {
+                        project_root.join(format!(
+                            "{runtime}/skills/{}",
+                            names.locked_managed_skill_id(package, artifact_name)
+                        ))
+                    })
+                    .collect::<Vec<_>>(),
+                "agents" if runtime == ".github" => packages
+                    .iter()
+                    .filter(|package| {
+                        package
+                            .agents
+                            .iter()
+                            .any(|existing| existing == artifact_name)
+                    })
+                    .map(|package| {
+                        project_root.join(format!(
+                            "{runtime}/agents/{}",
+                            names.locked_managed_file_name(
+                                package,
+                                ArtifactKind::Agent,
+                                artifact_name,
+                                "agent.md"
+                            )
+                        ))
+                    })
+                    .collect::<Vec<_>>(),
+                "agents" | "rules" | "commands" => {
+                    let (artifact_id, extension) =
+                        split_managed_file_name(runtime.as_str(), artifact_dir, artifact_name)?;
+                    let kind = match artifact_dir.as_str() {
+                        "agents" => ArtifactKind::Agent,
+                        "rules" => ArtifactKind::Rule,
+                        "commands" => ArtifactKind::Command,
+                        _ => return None,
+                    };
+                    packages
+                        .iter()
+                        .filter(|package| match kind {
+                            ArtifactKind::Agent => package
+                                .agents
+                                .iter()
+                                .any(|existing| existing == artifact_id),
+                            ArtifactKind::Rule => {
+                                package.rules.iter().any(|existing| existing == artifact_id)
+                            }
+                            ArtifactKind::Command => package
+                                .commands
+                                .iter()
+                                .any(|existing| existing == artifact_id),
+                            ArtifactKind::Skill => false,
+                        })
+                        .map(|package| {
+                            project_root.join(format!(
+                                "{runtime}/{artifact_dir}/{}",
+                                names.locked_managed_file_name(
+                                    package,
+                                    kind,
+                                    artifact_id,
+                                    extension
+                                )
+                            ))
+                        })
+                        .collect::<Vec<_>>()
+                }
+                _ => return None,
+            };
+
+            if paths.is_empty() { None } else { Some(paths) }
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -655,6 +734,47 @@ managed_files = []
         assert!(managed_paths.contains(&PathBuf::from("/tmp/project/.github/skills/iframe-ad")));
         assert!(managed_paths.contains(&PathBuf::from("/tmp/project/.cursor/skills/iframe-ad")));
         assert!(managed_paths.contains(&PathBuf::from("/tmp/project/.opencode/skills/iframe-ad")));
+    }
+
+    #[test]
+    fn expands_compressed_runtime_artifact_roots() {
+        let lockfile = Lockfile::new(
+            vec![LockedPackage {
+                alias: "shared".into(),
+                name: "shared".into(),
+                version_tag: Some("v0.1.0".into()),
+                source: LockedSource {
+                    kind: "git".into(),
+                    path: None,
+                    url: Some("https://github.com/example/shared".into()),
+                    tag: Some("v0.1.0".into()),
+                    branch: None,
+                    rev: Some("01f556abcdef".into()),
+                },
+                digest: "sha256:abc".into(),
+                selected_components: None,
+                skills: vec!["review".into()],
+                agents: vec!["security".into()],
+                rules: vec!["default".into()],
+                commands: vec!["build".into()],
+                mcp_servers: vec![],
+                dependencies: vec![],
+                capabilities: vec![],
+            }],
+            vec![
+                ".claude/skills".into(),
+                ".claude/agents".into(),
+                ".claude/rules".into(),
+                ".opencode/commands".into(),
+            ],
+        );
+
+        let managed_paths = lockfile.managed_paths(Path::new("/tmp/project")).unwrap();
+
+        assert!(managed_paths.contains(&PathBuf::from("/tmp/project/.claude/skills/review")));
+        assert!(managed_paths.contains(&PathBuf::from("/tmp/project/.claude/agents/security.md")));
+        assert!(managed_paths.contains(&PathBuf::from("/tmp/project/.claude/rules/default.md")));
+        assert!(managed_paths.contains(&PathBuf::from("/tmp/project/.opencode/commands/build.md")));
     }
 
     #[test]

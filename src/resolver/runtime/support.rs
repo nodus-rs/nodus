@@ -38,6 +38,7 @@ pub(super) fn build_sync_execution_plan(
     removals.extend(planned_paths_to_replace(
         planned_files,
         owned_paths,
+        desired_paths,
         &working_root.root,
     )?);
     removals.sort();
@@ -50,8 +51,6 @@ pub(super) fn build_sync_execution_plan(
 
     Ok(SyncExecutionPlan {
         runtime_root: runtime_root.to_path_buf(),
-        owned_paths: owned_paths.clone(),
-        desired_paths: desired_paths.clone(),
         manifest_write,
         removals,
         managed_writes: planned_files.to_vec(),
@@ -92,12 +91,10 @@ pub(super) fn execute_sync_plan(
             reporter.status("Writing", write.path.display())?;
             write_atomic(&write.path, &write.contents)?;
         }
-        prune_stale_files(&plan.owned_paths, &plan.desired_paths, &plan.runtime_root)?;
-        prepare_managed_paths_for_write(
-            &plan.managed_writes,
-            &plan.owned_paths,
-            &plan.runtime_root,
-        )?;
+        for path in &plan.removals {
+            reporter.status("Removing", path.display())?;
+            remove_path_and_empty_parents(path, &plan.runtime_root)?;
+        }
         reporter.status("Writing", "managed runtime outputs")?;
         write_managed_files(&plan.managed_writes)?;
         if let Some(write) = &plan.lockfile_write {
@@ -173,6 +170,7 @@ fn planned_stale_paths(
 fn planned_paths_to_replace(
     planned_files: &[ManagedFile],
     owned_paths: &HashSet<PathBuf>,
+    desired_paths: &HashSet<PathBuf>,
     project_root: &Path,
 ) -> Result<Vec<PathBuf>> {
     let mut removed = HashSet::new();
@@ -190,11 +188,18 @@ fn planned_paths_to_replace(
             if parent == project_root {
                 break;
             }
-            if parent.is_file()
-                && path_is_owned(parent, owned_paths)
-                && removed.insert(parent.to_path_buf())
-            {
-                break;
+            if path_is_owned(parent, owned_paths) {
+                if parent.is_file() && removed.insert(parent.to_path_buf()) {
+                    break;
+                }
+                if parent.is_dir()
+                    && !desired_paths
+                        .iter()
+                        .any(|desired| desired != parent && desired.starts_with(parent))
+                    && removed.insert(parent.to_path_buf())
+                {
+                    break;
+                }
             }
             current = parent.parent();
         }
@@ -438,32 +443,6 @@ fn managed_collision_source(origin: ResolvedManagedPathOrigin) -> ManagedCollisi
     }
 }
 
-fn prune_stale_files(
-    owned_paths: &HashSet<PathBuf>,
-    desired_paths: &HashSet<PathBuf>,
-    project_root: &Path,
-) -> Result<()> {
-    for path in owned_paths.difference(desired_paths) {
-        if let Ok(metadata) = fs::symlink_metadata(path) {
-            if metadata.file_type().is_dir() {
-                fs::remove_dir_all(path).with_context(|| {
-                    format!(
-                        "failed to remove stale managed directory {}",
-                        path.display()
-                    )
-                })?;
-            } else {
-                fs::remove_file(path).with_context(|| {
-                    format!("failed to remove stale managed file {}", path.display())
-                })?;
-            }
-            prune_empty_parent_dirs(path, project_root)?;
-        }
-    }
-
-    Ok(())
-}
-
 pub(super) fn write_managed_files(planned_files: &[ManagedFile]) -> Result<()> {
     planned_files
         .par_iter()
@@ -505,51 +484,6 @@ pub(super) fn remove_path_and_empty_parents(path: &Path, project_root: &Path) ->
             )
         }),
     }
-}
-
-fn prepare_managed_paths_for_write(
-    planned_files: &[ManagedFile],
-    owned_paths: &HashSet<PathBuf>,
-    project_root: &Path,
-) -> Result<()> {
-    let mut removed = HashSet::new();
-
-    for file in planned_files {
-        if file.path.is_dir()
-            && path_is_owned(&file.path, owned_paths)
-            && removed.insert(file.path.clone())
-        {
-            fs::remove_dir_all(&file.path).with_context(|| {
-                format!(
-                    "failed to replace managed directory {} with a file",
-                    file.path.display()
-                )
-            })?;
-            prune_empty_parent_dirs(&file.path, project_root)?;
-        }
-
-        let mut current = file.path.parent();
-        while let Some(parent) = current {
-            if parent == project_root {
-                break;
-            }
-            if parent.is_file()
-                && path_is_owned(parent, owned_paths)
-                && removed.insert(parent.to_path_buf())
-            {
-                fs::remove_file(parent).with_context(|| {
-                    format!(
-                        "failed to replace managed file {} with a directory",
-                        parent.display()
-                    )
-                })?;
-                prune_empty_parent_dirs(parent, project_root)?;
-            }
-            current = parent.parent();
-        }
-    }
-
-    Ok(())
 }
 
 pub(super) fn validate_state_consistency(
