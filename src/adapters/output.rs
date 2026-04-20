@@ -1290,8 +1290,23 @@ fn hooks_for_adapter(
     hooks
         .iter()
         .filter(|hook| hook_targets_adapter(hook, selected_adapters, adapter))
+        .filter(|hook| hook_event_supported_by_adapter(adapter, hook.event))
         .cloned()
         .collect()
+}
+
+fn hook_event_supported_by_adapter(adapter: Adapter, event: crate::manifest::HookEvent) -> bool {
+    match adapter {
+        Adapter::Claude => true,
+        Adapter::Codex | Adapter::OpenCode => matches!(
+            event,
+            crate::manifest::HookEvent::SessionStart
+                | crate::manifest::HookEvent::PreToolUse
+                | crate::manifest::HookEvent::PostToolUse
+                | crate::manifest::HookEvent::Stop
+        ),
+        Adapter::Agents | Adapter::Copilot | Adapter::Cursor => false,
+    }
 }
 
 fn hook_targets_adapter(hook: &HookSpec, selected_adapters: Adapters, adapter: Adapter) -> bool {

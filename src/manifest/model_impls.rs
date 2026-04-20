@@ -598,6 +598,15 @@ fn validate_hooks(hooks: &[HookSpec], role: PackageRole) -> Result<()> {
                         );
                     }
                 }
+                HookEvent::UserPromptSubmit | HookEvent::SessionEnd => {
+                    if !matcher.sources.is_empty() || !matcher.tool_names.is_empty() {
+                        bail!(
+                            "manifest hook `{}` field `matcher` is not supported for `{}`",
+                            hook.id,
+                            hook.event.as_str()
+                        );
+                    }
+                }
                 HookEvent::Stop => {
                     if !matcher.sources.is_empty() || !matcher.tool_names.is_empty() {
                         bail!(

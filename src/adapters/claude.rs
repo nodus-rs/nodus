@@ -557,9 +557,11 @@ fn managed_script_stem(hook: &HookSpec) -> String {
 fn event_name(hook: &HookSpec) -> &'static str {
     match hook.event {
         HookEvent::SessionStart => "SessionStart",
+        HookEvent::UserPromptSubmit => "UserPromptSubmit",
         HookEvent::PreToolUse => "PreToolUse",
         HookEvent::PostToolUse => "PostToolUse",
         HookEvent::Stop => "Stop",
+        HookEvent::SessionEnd => "SessionEnd",
     }
 }
 
@@ -604,7 +606,7 @@ fn matcher_string(hook: &HookSpec) -> Option<String> {
                 )
             }
         }
-        HookEvent::Stop => None,
+        HookEvent::UserPromptSubmit | HookEvent::Stop | HookEvent::SessionEnd => None,
     }
 }
 

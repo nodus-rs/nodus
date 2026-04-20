@@ -4993,6 +4993,63 @@ command = "./scripts/preflight.sh"
 }
 
 #[test]
+fn sync_emits_claude_native_lifecycle_hooks_without_leaking_to_other_adapters() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_skill(&temp.path().join("skills/review"), "Review");
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[adapters]
+enabled = ["claude", "codex", "opencode"]
+
+[[hooks]]
+id = "prompt-remember"
+event = "user_prompt_submit"
+adapters = ["claude"]
+
+[hooks.handler]
+type = "command"
+command = "./scripts/remember.sh"
+
+[[hooks]]
+id = "session-finish"
+event = "session_end"
+adapters = ["claude"]
+
+[hooks.handler]
+type = "command"
+command = "./scripts/finish.sh"
+"#,
+    );
+
+    sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+
+    let claude_settings: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(temp.path().join(".claude/settings.json")).unwrap(),
+    )
+    .unwrap();
+
+    assert!(
+        claude_settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+            .as_str()
+            .is_some_and(|command| command.contains("./.claude/hooks/nodus-hook-"))
+    );
+    assert!(
+        claude_settings["hooks"]["SessionEnd"][0]["hooks"][0]["command"]
+            .as_str()
+            .is_some_and(|command| command.contains("./.claude/hooks/nodus-hook-"))
+    );
+    assert!(!temp.path().join(".codex/hooks.json").exists());
+    assert!(
+        !temp
+            .path()
+            .join(".opencode/plugins/nodus-hooks.js")
+            .exists()
+    );
+}
+
+#[test]
 fn sync_warns_when_launch_hooks_are_unsupported_for_selected_adapters() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();

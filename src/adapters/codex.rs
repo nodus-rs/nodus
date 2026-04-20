@@ -202,6 +202,9 @@ fn event_name(hook: &HookSpec) -> &'static str {
         HookEvent::PreToolUse => "PreToolUse",
         HookEvent::PostToolUse => "PostToolUse",
         HookEvent::Stop => "Stop",
+        HookEvent::UserPromptSubmit | HookEvent::SessionEnd => {
+            unreachable!("unsupported hook event for Codex")
+        }
     }
 }
 
@@ -247,6 +250,9 @@ fn matcher_string(hook: &HookSpec) -> Option<String> {
             }
         }
         HookEvent::Stop => None,
+        HookEvent::UserPromptSubmit | HookEvent::SessionEnd => {
+            unreachable!("unsupported hook event for Codex")
+        }
     }
 }
 

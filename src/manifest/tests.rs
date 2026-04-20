@@ -434,6 +434,42 @@ cwd = "session"
 }
 
 #[test]
+fn loads_root_manifest_claude_native_lifecycle_hooks() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[[hooks]]
+id = "prompt-remember"
+event = "user_prompt_submit"
+adapters = ["claude"]
+
+[hooks.handler]
+type = "command"
+command = "./scripts/remember.sh"
+
+[[hooks]]
+id = "session-finish"
+event = "session_end"
+adapters = ["claude"]
+
+[hooks.handler]
+type = "command"
+command = "./scripts/finish.sh"
+"#,
+    );
+
+    let loaded = load_root_from_dir(temp.path()).unwrap();
+
+    assert_eq!(loaded.manifest.hooks.len(), 2);
+    assert_eq!(loaded.manifest.hooks[0].event, HookEvent::UserPromptSubmit);
+    assert_eq!(loaded.manifest.hooks[1].event, HookEvent::SessionEnd);
+    assert_eq!(loaded.manifest.hooks[0].adapters, vec![Adapter::Claude]);
+    assert_eq!(loaded.manifest.hooks[1].adapters, vec![Adapter::Claude]);
+}
+
+#[test]
 fn lowers_legacy_launch_hook_into_effective_hooks() {
     let temp = TempDir::new().unwrap();
     write_valid_skill(temp.path());
@@ -2719,6 +2755,47 @@ fn serializes_hooks() {
 }
 
 #[test]
+fn serializes_claude_native_lifecycle_hooks() {
+    let manifest = Manifest {
+        hooks: vec![
+            HookSpec {
+                id: "prompt-remember".into(),
+                event: HookEvent::UserPromptSubmit,
+                adapters: vec![Adapter::Claude],
+                matcher: None,
+                handler: HookHandler {
+                    handler_type: HookHandlerType::Command,
+                    command: "./scripts/remember.sh".into(),
+                    cwd: HookWorkingDirectory::GitRoot,
+                },
+                timeout_sec: None,
+                blocking: false,
+            },
+            HookSpec {
+                id: "session-finish".into(),
+                event: HookEvent::SessionEnd,
+                adapters: vec![Adapter::Claude],
+                matcher: None,
+                handler: HookHandler {
+                    handler_type: HookHandlerType::Command,
+                    command: "./scripts/finish.sh".into(),
+                    cwd: HookWorkingDirectory::GitRoot,
+                },
+                timeout_sec: None,
+                blocking: false,
+            },
+        ],
+        ..Manifest::default()
+    };
+
+    let encoded = serialize_manifest(&manifest).unwrap();
+
+    assert!(encoded.contains("event = \"user_prompt_submit\""));
+    assert!(encoded.contains("event = \"session_end\""));
+    assert!(!encoded.contains("[hooks.matcher]"));
+}
+
+#[test]
 fn rejects_empty_adapter_selection() {
     let temp = TempDir::new().unwrap();
     write_valid_skill(temp.path());
@@ -2803,6 +2880,30 @@ command = "./scripts/preflight.sh"
         .unwrap_err()
         .to_string();
     assert!(error.contains("root project manifests"));
+}
+
+#[test]
+fn rejects_matcher_for_claude_native_lifecycle_hooks() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[[hooks]]
+id = "prompt-remember"
+event = "user_prompt_submit"
+
+[hooks.matcher]
+tool_names = ["bash"]
+
+[hooks.handler]
+type = "command"
+command = "./scripts/remember.sh"
+"#,
+    );
+
+    let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+    assert!(error.contains("field `matcher` is not supported for `user_prompt_submit`"));
 }
 
 #[test]

@@ -84,18 +84,22 @@ pub struct HookSpec {
 #[serde(rename_all = "snake_case")]
 pub enum HookEvent {
     SessionStart,
+    UserPromptSubmit,
     PreToolUse,
     PostToolUse,
     Stop,
+    SessionEnd,
 }
 
 impl HookEvent {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::SessionStart => "session_start",
+            Self::UserPromptSubmit => "user_prompt_submit",
             Self::PreToolUse => "pre_tool_use",
             Self::PostToolUse => "post_tool_use",
             Self::Stop => "stop",
+            Self::SessionEnd => "session_end",
         }
     }
 }
