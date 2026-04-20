@@ -420,10 +420,12 @@ fn resolve_project(root: &Path, cache_root: &Path, mode: ResolveMode) -> Result<
         cache_root,
         mode,
         &reporter,
-        None,
-        None,
-        None,
-        DependencyFailureMode::Graceful,
+        super::resolve::ResolveProjectOptions::new(
+            None,
+            None,
+            None,
+            DependencyFailureMode::Graceful,
+        ),
     )
 }
 

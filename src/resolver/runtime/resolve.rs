@@ -41,6 +41,30 @@ struct ResolveContext<'a> {
     reporter: &'a Reporter,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct ResolveProjectOptions<'a> {
+    pub(super) existing_lockfile: Option<&'a Lockfile>,
+    pub(super) frozen_lockfile: Option<&'a Lockfile>,
+    pub(super) root_override: Option<&'a LoadedManifest>,
+    pub(super) dependency_failure_mode: DependencyFailureMode,
+}
+
+impl<'a> ResolveProjectOptions<'a> {
+    pub(super) fn new(
+        existing_lockfile: Option<&'a Lockfile>,
+        frozen_lockfile: Option<&'a Lockfile>,
+        root_override: Option<&'a LoadedManifest>,
+        dependency_failure_mode: DependencyFailureMode,
+    ) -> Self {
+        Self {
+            existing_lockfile,
+            frozen_lockfile,
+            root_override,
+            dependency_failure_mode,
+        }
+    }
+}
+
 struct ResolvePackageInput {
     alias: String,
     package_root: PathBuf,
@@ -102,18 +126,14 @@ pub(super) fn validate_git_package(package: &ResolvedPackage, cache_root: &Path)
     validate_shared_checkout(&checkout_path, &mirror_path, url)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn resolve_project(
     root: &Path,
     cache_root: &Path,
     mode: ResolveMode,
     reporter: &Reporter,
-    existing_lockfile: Option<&Lockfile>,
-    frozen_lockfile: Option<&Lockfile>,
-    root_override: Option<&LoadedManifest>,
-    dependency_failure_mode: DependencyFailureMode,
+    options: ResolveProjectOptions<'_>,
 ) -> Result<Resolution> {
-    let project_root = if let Some(root_override) = root_override {
+    let project_root = if let Some(root_override) = options.root_override {
         root_override.root.clone()
     } else {
         canonicalize_path(root).with_context(|| format!("failed to access {}", root.display()))?
@@ -121,10 +141,10 @@ pub(super) fn resolve_project(
     let context = ResolveContext {
         cache_root,
         mode,
-        existing_lockfile,
-        frozen_lockfile,
-        root_override,
-        dependency_failure_mode,
+        existing_lockfile: options.existing_lockfile,
+        frozen_lockfile: options.frozen_lockfile,
+        root_override: options.root_override,
+        dependency_failure_mode: options.dependency_failure_mode,
         reporter,
     };
     let mut state = ResolverState::default();
