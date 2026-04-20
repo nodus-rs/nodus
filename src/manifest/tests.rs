@@ -687,6 +687,31 @@ target = "hooks"
 }
 
 #[test]
+fn accepts_dependency_repo_with_only_hooks() {
+    let temp = TempDir::new().unwrap();
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[[hooks]]
+id = "session-end"
+event = "session_end"
+
+[hooks.handler]
+type = "command"
+command = "example hook"
+"#,
+    );
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    assert!(loaded.discovered.is_empty());
+    assert!(loaded.manifest.dependencies.is_empty());
+    assert!(loaded.manifest.mcp_servers.is_empty());
+    assert_eq!(loaded.manifest.hooks.len(), 1);
+    assert_eq!(loaded.manifest.hooks[0].event, HookEvent::SessionEnd);
+}
+
+#[test]
 fn accepts_dependency_repo_with_claude_marketplace_wrapper() {
     let temp = TempDir::new().unwrap();
     write_marketplace(
@@ -2927,7 +2952,7 @@ sync_on_startup = false
 }
 
 #[test]
-fn rejects_hooks_in_dependency_manifest() {
+fn accepts_hooks_in_dependency_manifest() {
     let temp = TempDir::new().unwrap();
     write_valid_skill(temp.path());
     write_file(
@@ -2943,10 +2968,10 @@ command = "./scripts/preflight.sh"
 "#,
     );
 
-    let error = load_dependency_from_dir(temp.path())
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("root project manifests"));
+    let manifest = load_dependency_from_dir(temp.path()).unwrap();
+    assert_eq!(manifest.manifest.hooks.len(), 1);
+    assert_eq!(manifest.manifest.hooks[0].id, "bash-preflight");
+    assert_eq!(manifest.manifest.hooks[0].event, HookEvent::PreToolUse);
 }
 
 #[test]

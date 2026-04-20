@@ -4,10 +4,10 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde_json::{Map, Value, json};
 
-use crate::adapters::{ManagedArtifactNames, ManagedFile, managed_skill_root};
+use crate::adapters::{ManagedArtifactNames, ManagedFile, ManagedHookSpec, managed_skill_root};
 use crate::hashing::blake3_hex;
 use crate::manifest::SkillEntry;
-use crate::manifest::{HookEvent, HookHandlerType, HookSessionSource, HookSpec, HookTool};
+use crate::manifest::{HookEvent, HookHandlerType, HookSessionSource, HookTool};
 use crate::paths::strip_path_prefix;
 use crate::resolver::ResolvedPackage;
 
@@ -57,7 +57,7 @@ fn copy_directory(
     Ok(files)
 }
 
-pub fn hook_files(project_root: &Path, hooks: &[HookSpec]) -> Result<Vec<ManagedFile>> {
+pub fn hook_files(project_root: &Path, hooks: &[ManagedHookSpec]) -> Result<Vec<ManagedFile>> {
     let hooks_path = project_root.join(".codex/hooks.json");
     let mut files = hooks
         .iter()
@@ -73,7 +73,7 @@ pub fn hook_files(project_root: &Path, hooks: &[HookSpec]) -> Result<Vec<Managed
     Ok(files)
 }
 
-fn merged_hooks_contents(path: &Path, hooks: &[HookSpec]) -> Result<Vec<u8>> {
+fn merged_hooks_contents(path: &Path, hooks: &[ManagedHookSpec]) -> Result<Vec<u8>> {
     let mut root = if path.exists() {
         serde_json::from_slice::<Value>(
             &fs::read(path)
@@ -128,7 +128,7 @@ fn array_field<'a>(
     })
 }
 
-fn hook_entry(hook: &HookSpec) -> Value {
+fn hook_entry(hook: &ManagedHookSpec) -> Value {
     let hook_value = json!({
         "type": "command",
         "command": managed_hook_command(hook),
@@ -169,19 +169,20 @@ fn entry_is_managed(entry: &Value) -> bool {
         })
 }
 
-fn managed_hook_command(hook: &HookSpec) -> String {
+fn managed_hook_command(hook: &ManagedHookSpec) -> String {
     format!(
         r#"sh "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/{}""#,
         managed_script_relative_path(hook)
     )
 }
 
-fn managed_script_relative_path(hook: &HookSpec) -> String {
+fn managed_script_relative_path(hook: &ManagedHookSpec) -> String {
     format!(".codex/hooks/{}.sh", managed_script_stem(hook))
 }
 
-fn managed_script_stem(hook: &HookSpec) -> String {
+fn managed_script_stem(hook: &ManagedHookSpec) -> String {
     let sanitized = hook
+        .hook
         .id
         .chars()
         .map(|character| match character {
@@ -190,14 +191,30 @@ fn managed_script_stem(hook: &HookSpec) -> String {
             _ => '-',
         })
         .collect::<String>();
-    format!(
-        "nodus-hook-{sanitized}-{}",
-        &blake3_hex(hook.id.as_bytes())[..8]
-    )
+    if hook.emitted_from_root {
+        format!(
+            "nodus-hook-{sanitized}-{}",
+            &blake3_hex(hook.hook.id.as_bytes())[..8]
+        )
+    } else {
+        let package = hook
+            .package_alias
+            .chars()
+            .map(|character| match character {
+                'a'..='z' | '0'..='9' => character,
+                'A'..='Z' => character.to_ascii_lowercase(),
+                _ => '-',
+            })
+            .collect::<String>();
+        format!(
+            "nodus-hook-{package}-{sanitized}-{}",
+            &blake3_hex(format!("{}:{}", hook.package_alias, hook.hook.id).as_bytes())[..8]
+        )
+    }
 }
 
-fn event_name(hook: &HookSpec) -> &'static str {
-    match hook.event {
+fn event_name(hook: &ManagedHookSpec) -> &'static str {
+    match hook.hook.event {
         HookEvent::SessionStart => "SessionStart",
         HookEvent::PreToolUse => "PreToolUse",
         HookEvent::PostToolUse => "PostToolUse",
@@ -208,10 +225,11 @@ fn event_name(hook: &HookSpec) -> &'static str {
     }
 }
 
-fn matcher_string(hook: &HookSpec) -> Option<String> {
-    match hook.event {
+fn matcher_string(hook: &ManagedHookSpec) -> Option<String> {
+    match hook.hook.event {
         HookEvent::SessionStart => {
             let matcher = hook
+                .hook
                 .matcher
                 .as_ref()
                 .map(|matcher| matcher.sources.as_slice())
@@ -240,6 +258,7 @@ fn matcher_string(hook: &HookSpec) -> Option<String> {
         }
         HookEvent::PreToolUse | HookEvent::PostToolUse => {
             let matcher = hook
+                .hook
                 .matcher
                 .as_ref()
                 .map(|matcher| matcher.tool_names.as_slice())
@@ -265,9 +284,9 @@ fn matcher_string(hook: &HookSpec) -> Option<String> {
     }
 }
 
-fn hook_script_contents(hook: &HookSpec) -> Vec<u8> {
+fn hook_script_contents(hook: &ManagedHookSpec) -> Vec<u8> {
     debug_assert!(matches!(
-        hook.handler.handler_type,
+        hook.hook.handler.handler_type,
         HookHandlerType::Command
     ));
     format!(
@@ -290,22 +309,23 @@ if ! sh -lc {command}; then
   echo "nodus hook {hook_label} failed" >&2
 fi
 "#,
-        cwd = shell_quote(match hook.handler.cwd {
+        cwd = shell_quote(match hook.hook.handler.cwd {
             crate::manifest::HookWorkingDirectory::GitRoot => "git_root",
             crate::manifest::HookWorkingDirectory::Session => "session",
         }),
-        hook_id = shell_quote(&hook.id),
-        hook_event = shell_quote(hook.event.as_str()),
+        hook_id = shell_quote(&hook.hook.id),
+        hook_event = shell_quote(hook.hook.event.as_str()),
         timeout_export = hook
+            .hook
             .timeout_sec
             .map(|timeout_sec| format!(
                 "export NODUS_HOOK_TIMEOUT_SEC={}\n",
                 shell_quote(&timeout_sec.to_string())
             ))
             .unwrap_or_default(),
-        blocking = shell_quote(if hook.blocking { "true" } else { "false" }),
-        command = shell_quote(&hook.handler.command),
-        hook_label = hook.id,
+        blocking = shell_quote(if hook.hook.blocking { "true" } else { "false" }),
+        command = shell_quote(&hook.hook.handler.command),
+        hook_label = hook.hook.id,
     )
     .into_bytes()
 }

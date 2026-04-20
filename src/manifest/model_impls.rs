@@ -89,16 +89,18 @@ impl LoadedManifest {
                     self.manifest_path.is_some()
                         && (!self.manifest.dependencies.is_empty()
                             || !self.manifest.mcp_servers.is_empty()
-                            || !self.manifest.managed_exports.is_empty())
+                            || !self.manifest.managed_exports.is_empty()
+                            || !self.manifest.hooks.is_empty())
                 }
             }
         };
         if self.discovered.is_empty()
             && self.manifest.mcp_servers.is_empty()
+            && self.manifest.hooks.is_empty()
             && !allow_empty_package
         {
             bail!(
-                "package at {} must contain at least one of `agents/`, `commands/`, `rules/`, or `skills/`, declare `managed_exports`, declare `mcp_servers`, or declare dependencies in nodus.toml",
+                "package at {} must contain at least one of `agents/`, `commands/`, `rules/`, or `skills/`, declare `hooks`, declare `managed_exports`, declare `mcp_servers`, or declare dependencies in nodus.toml",
                 self.root.display()
             );
         }
@@ -527,12 +529,9 @@ impl Manifest {
     }
 }
 
-fn validate_hooks(hooks: &[HookSpec], role: PackageRole) -> Result<()> {
+fn validate_hooks(hooks: &[HookSpec], _role: PackageRole) -> Result<()> {
     if hooks.is_empty() {
         return Ok(());
-    }
-    if !matches!(role, PackageRole::Root) {
-        bail!("manifest field `hooks` is only supported in root project manifests");
     }
 
     let mut ids = HashSet::new();

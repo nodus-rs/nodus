@@ -5,7 +5,7 @@ use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
 use crate::lockfile::LockedPackage;
-use crate::manifest::DependencyComponent;
+use crate::manifest::{DependencyComponent, HookSpec};
 use crate::resolver::{PackageSource, ResolvedPackage};
 
 mod output;
@@ -23,6 +23,13 @@ pub(crate) use output::build_output_plan;
 pub struct ManagedFile {
     pub path: PathBuf,
     pub contents: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ManagedHookSpec {
+    pub package_alias: String,
+    pub emitted_from_root: bool,
+    pub hook: HookSpec,
 }
 
 #[derive(

@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use toml::Value as TomlValue;
 
-use super::{Adapter, Adapters, ArtifactKind, ManagedArtifactNames, ManagedFile};
+use super::{
+    Adapter, Adapters, ArtifactKind, ManagedArtifactNames, ManagedFile, ManagedHookSpec,
+};
 use crate::lockfile::{Lockfile, managed_mcp_server_name};
 use crate::manifest::{DependencyComponent, HookSpec, McpServerConfig};
 use crate::paths::{display_path, strip_path_prefix};
@@ -91,12 +93,44 @@ fn managed_nodus_args() -> Vec<String> {
     vec!["mcp".to_string(), "serve".to_string()]
 }
 
-fn root_hooks(packages: &[(ResolvedPackage, PathBuf)]) -> Vec<HookSpec> {
-    packages
+fn collected_hooks(packages: &[(ResolvedPackage, PathBuf)]) -> Vec<ManagedHookSpec> {
+    let mut hooks = packages
         .iter()
         .find(|(package, _)| matches!(package.source, PackageSource::Root))
-        .map(|(package, _)| package.manifest.manifest.effective_hooks())
-        .unwrap_or_default()
+        .map(|(package, _)| {
+            package
+                .manifest
+                .manifest
+                .effective_hooks()
+                .into_iter()
+                .map(|hook| ManagedHookSpec {
+                    package_alias: package.alias.clone(),
+                    emitted_from_root: true,
+                    hook,
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    hooks.extend(
+        packages
+            .iter()
+            .filter(|(package, _)| !matches!(package.source, PackageSource::Root))
+            .flat_map(|(package, _)| {
+                package
+                    .manifest
+                    .manifest
+                    .hooks
+                    .iter()
+                    .cloned()
+                    .map(|hook| ManagedHookSpec {
+                        package_alias: package.alias.clone(),
+                        emitted_from_root: false,
+                        hook,
+                    })
+                    .collect::<Vec<_>>()
+            }),
+    );
+    hooks
 }
 
 pub(crate) fn build_output_plan(
@@ -109,11 +143,11 @@ pub(crate) fn build_output_plan(
     let mut plan = OutputAccumulator::default();
     let managed_names =
         ManagedArtifactNames::from_resolved_packages(packages.iter().map(|(package, _)| package));
-    let root_hooks = root_hooks(packages);
+    let hooks = collected_hooks(packages);
     let emit_codex_hooks = selected_adapters.contains(Adapter::Codex)
-        && root_hooks
+        && hooks
             .iter()
-            .any(|hook| hook_targets_adapter(hook, selected_adapters, Adapter::Codex));
+            .any(|hook| hook_targets_adapter(&hook.hook, selected_adapters, Adapter::Codex));
 
     for (package, snapshot_root) in packages {
         if matches!(package.source, PackageSource::Root) && !package.manifest.manifest.publish_root
@@ -526,11 +560,11 @@ pub(crate) fn build_output_plan(
                 .is_empty()
         });
 
-    if !root_hooks.is_empty() || has_claude_plugin_hooks {
+    if !hooks.is_empty() || has_claude_plugin_hooks {
         for file in hook_files(
             project_root,
             packages,
-            &root_hooks,
+            &hooks,
             selected_adapters,
             merge_existing_mcp,
             &mut plan.warnings,
@@ -1217,7 +1251,7 @@ fn render_gitignore(explicit_lines: &[String], patterns: &BTreeSet<String>) -> S
 fn hook_files(
     project_root: &Path,
     packages: &[(ResolvedPackage, PathBuf)],
-    hooks: &[HookSpec],
+    hooks: &[ManagedHookSpec],
     selected_adapters: Adapters,
     merge_existing_mcp: bool,
     warnings: &mut Vec<String>,
@@ -1251,7 +1285,7 @@ fn hook_files(
     }
     if hooks
         .iter()
-        .any(|hook| hook_targets_adapter(hook, selected_adapters, Adapter::Agents))
+        .any(|hook| hook_targets_adapter(&hook.hook, selected_adapters, Adapter::Agents))
     {
         warnings.push(
             "hooks are not emitted for `agents`; no documented project hook surface is available"
@@ -1264,7 +1298,7 @@ fn hook_files(
     }
     if hooks
         .iter()
-        .any(|hook| hook_targets_adapter(hook, selected_adapters, Adapter::Copilot))
+        .any(|hook| hook_targets_adapter(&hook.hook, selected_adapters, Adapter::Copilot))
     {
         warnings.push(
             "hooks are not emitted for `copilot`; repo-scoped assets are supported, but no documented project hook surface is available".into(),
@@ -1272,7 +1306,7 @@ fn hook_files(
     }
     if hooks
         .iter()
-        .any(|hook| hook_targets_adapter(hook, selected_adapters, Adapter::Cursor))
+        .any(|hook| hook_targets_adapter(&hook.hook, selected_adapters, Adapter::Cursor))
     {
         warnings.push(
             "hooks are not emitted for `cursor`; project hooks exist, but no documented auto-start hook is available for repo-local config".into(),
@@ -1283,14 +1317,14 @@ fn hook_files(
 }
 
 fn hooks_for_adapter(
-    hooks: &[HookSpec],
+    hooks: &[ManagedHookSpec],
     selected_adapters: Adapters,
     adapter: Adapter,
-) -> Vec<HookSpec> {
+) -> Vec<ManagedHookSpec> {
     hooks
         .iter()
-        .filter(|hook| hook_targets_adapter(hook, selected_adapters, adapter))
-        .filter(|hook| hook_supported_by_adapter(hook, adapter))
+        .filter(|hook| hook_targets_adapter(&hook.hook, selected_adapters, adapter))
+        .filter(|hook| hook_supported_by_adapter(&hook.hook, adapter))
         .cloned()
         .collect()
 }
