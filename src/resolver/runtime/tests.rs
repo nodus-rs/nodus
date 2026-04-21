@@ -4972,6 +4972,31 @@ fn sync_persists_launch_hook_configuration() {
 }
 
 #[test]
+fn sync_migrates_legacy_launch_hook_config_to_hooks() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_skill(&temp.path().join("skills/review"), "Review");
+    write_manifest(
+        temp.path(),
+        r#"
+[adapters]
+enabled = ["codex"]
+
+[launch_hooks]
+sync_on_startup = true
+"#,
+    );
+
+    sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+
+    let manifest = fs::read_to_string(temp.path().join(MANIFEST_FILE)).unwrap();
+    assert!(!manifest.contains("[launch_hooks]"));
+    assert!(manifest.contains("[[hooks]]"));
+    assert!(manifest.contains("id = \"nodus.sync_on_startup\""));
+    assert!(manifest.contains("event = \"session_start\""));
+}
+
+#[test]
 fn sync_emits_startup_sync_files_for_supported_adapters() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();
@@ -5563,6 +5588,55 @@ enabled = ["claude"]
         .to_string();
 
     assert!(error.contains("`--frozen` requires an existing nodus.lock"));
+}
+
+#[test]
+fn sync_locked_rejects_legacy_launch_hook_config_migration() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_skill(&temp.path().join("skills/review"), "Review");
+    write_manifest(
+        temp.path(),
+        r#"
+[adapters]
+enabled = ["codex"]
+
+[launch_hooks]
+sync_on_startup = true
+"#,
+    );
+    sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+    write_manifest(
+        temp.path(),
+        r#"
+[adapters]
+enabled = ["codex"]
+
+[launch_hooks]
+sync_on_startup = true
+"#,
+    );
+
+    let error = super::sync_in_dir_with_adapters(
+        temp.path(),
+        cache.path(),
+        true,
+        false,
+        false,
+        &[],
+        false,
+        &Reporter::silent(),
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("launch_hooks.sync_on_startup"));
+    assert!(error.contains("rewrite `nodus.toml` with [[hooks]]"));
+    assert!(
+        fs::read_to_string(temp.path().join(MANIFEST_FILE))
+            .unwrap()
+            .contains("[launch_hooks]")
+    );
 }
 
 #[test]

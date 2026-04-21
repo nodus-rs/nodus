@@ -585,7 +585,20 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
         }
         root.manifest.set_sync_on_launch(true);
     }
-    if has_root_override || selection.should_persist || sync_on_launch {
+    let legacy_launch_hook_config = root.manifest.uses_legacy_launch_hook_config();
+    if legacy_launch_hook_config && sync_mode.checks_lockfile() {
+        bail!(
+            "legacy manifest field `launch_hooks.sync_on_startup` must be migrated before running {}; rerun plain `nodus sync` to rewrite `nodus.toml` with [[hooks]]",
+            sync_mode.flag(),
+        );
+    }
+    if legacy_launch_hook_config {
+        reporter.note(
+            "migrating legacy manifest field `launch_hooks.sync_on_startup` to `[[hooks]]`",
+        )?;
+    }
+    if has_root_override || selection.should_persist || sync_on_launch || legacy_launch_hook_config
+    {
         root = original_root.with_manifest(root.manifest.clone(), PackageRole::Root)?;
     }
 

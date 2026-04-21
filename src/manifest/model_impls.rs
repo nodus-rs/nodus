@@ -489,6 +489,10 @@ impl Manifest {
                 .is_some_and(|hooks| hooks.sync_on_startup)
     }
 
+    pub fn uses_legacy_launch_hook_config(&self) -> bool {
+        self.launch_hooks.is_some()
+    }
+
     pub fn set_sync_on_launch(&mut self, enabled: bool) {
         self.launch_hooks = None;
         self.hooks
