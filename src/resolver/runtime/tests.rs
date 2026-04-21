@@ -7456,6 +7456,50 @@ fn recover_runtime_owned_paths_from_disk_accepts_exact_single_file_outputs() {
 }
 
 #[test]
+fn recover_runtime_owned_paths_from_disk_accepts_exact_file_in_mixed_runtime_directory() {
+    let temp = TempDir::new().unwrap();
+    let project_root = temp.path();
+    let build_file = project_root.join(".claude/commands/build.md");
+    let review_file = project_root.join(".claude/commands/review.md");
+    let plan_file = project_root.join(".claude/commands/plan.md");
+    let desired_paths = [build_file.clone(), review_file.clone(), plan_file.clone()]
+        .into_iter()
+        .collect::<HashSet<_>>();
+    write_file(&build_file, "# Build\n");
+    write_file(&review_file, "# Review\n");
+    write_file(&plan_file, "user-authored plan\n");
+    write_file(
+        &project_root.join(".claude/commands/index.md"),
+        "user-owned index\n",
+    );
+
+    let planned_files = vec![
+        ManagedFile {
+            path: build_file.clone(),
+            contents: b"# Build\n".to_vec(),
+        },
+        ManagedFile {
+            path: review_file.clone(),
+            contents: b"# Review\n".to_vec(),
+        },
+        ManagedFile {
+            path: plan_file.clone(),
+            contents: b"# Plan\n".to_vec(),
+        },
+    ];
+
+    let recovered = super::support::recover_runtime_owned_paths_from_disk(
+        project_root,
+        &desired_paths,
+        &planned_files,
+    );
+
+    assert!(recovered.contains(&build_file));
+    assert!(recovered.contains(&review_file));
+    assert!(!recovered.contains(&plan_file));
+}
+
+#[test]
 fn prune_empty_parent_dirs_stops_at_github_root() {
     let temp = TempDir::new().unwrap();
     let skill_dir = temp.path().join(".github/skills/review_abc123");

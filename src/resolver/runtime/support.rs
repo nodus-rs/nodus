@@ -672,35 +672,12 @@ fn path_exactly_matches_planned_files(
         return planned_files
             .iter()
             .find(|file| file.path == path)
-            .is_some_and(|file| {
-                file_exactly_matches_planned_contents(project_root, file)
-                    && parent_directory_exactly_matches_when_multi_file(
-                        project_root,
-                        file,
-                        planned_files,
-                    )
-            });
+            .is_some_and(|file| file_exactly_matches_planned_contents(project_root, file));
     }
     if metadata.is_dir() {
         return directory_exactly_matches_planned_files(project_root, path, planned_files);
     }
     false
-}
-
-fn parent_directory_exactly_matches_when_multi_file(
-    project_root: &Path,
-    file: &ManagedFile,
-    planned_files: &[ManagedFile],
-) -> bool {
-    let Some(parent) = file.path.parent() else {
-        return true;
-    };
-    let sibling_count = planned_files
-        .iter()
-        .filter(|candidate| candidate.path.parent() == Some(parent))
-        .count();
-    sibling_count <= 1
-        || directory_exactly_matches_planned_files(project_root, parent, planned_files)
 }
 
 fn file_exactly_matches_planned_contents(project_root: &Path, file: &ManagedFile) -> bool {
