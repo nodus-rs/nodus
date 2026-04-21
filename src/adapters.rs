@@ -357,6 +357,15 @@ impl ManagedArtifactNames {
         )
     }
 
+    pub fn locked_managed_artifact_id(
+        &self,
+        package: &LockedPackage,
+        kind: ArtifactKind,
+        artifact_id: &str,
+    ) -> String {
+        self.artifact_id(kind, artifact_id, locked_package_short_id(package))
+    }
+
     pub fn locked_managed_file_name(
         &self,
         package: &LockedPackage,
@@ -458,6 +467,15 @@ pub fn managed_artifact_id(
     artifact_id: &str,
 ) -> String {
     names.managed_artifact_id(package, kind, artifact_id)
+}
+
+pub fn locked_managed_artifact_id(
+    names: &ManagedArtifactNames,
+    package: &LockedPackage,
+    kind: ArtifactKind,
+    artifact_id: &str,
+) -> String {
+    names.locked_managed_artifact_id(package, kind, artifact_id)
 }
 
 pub fn runtime_root(project_root: &Path, adapter: Adapter) -> PathBuf {

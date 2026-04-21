@@ -219,6 +219,15 @@ fn resolution_file_name(
     )
 }
 
+fn resolution_codex_command_skill_id(
+    resolution: &Resolution,
+    package: &ResolvedPackage,
+    command_id: &str,
+) -> String {
+    let names = ManagedArtifactNames::from_resolved_packages(resolution.packages.iter());
+    crate::adapters::codex::synthetic_command_skill_id(&names, package, command_id)
+}
+
 fn init_git_repo(path: &Path) {
     run_git(path, &["init"]);
     run_git(path, &["config", "user.email", "test@example.com"]);
@@ -3789,6 +3798,8 @@ shared = { path = "vendor/shared" }
         "build",
         "md",
     );
+    let managed_codex_command_skill =
+        resolution_codex_command_skill_id(&resolution, dependency, "build");
     let managed_claude_rule_file = namespaced_file_name(dependency, "default", "md");
     let managed_cursor_rule_file = namespaced_file_name(dependency, "default", "mdc");
 
@@ -3815,6 +3826,13 @@ shared = { path = "vendor/shared" }
     assert!(
         temp.path()
             .join(format!(".codex/skills/{managed_skill_id}/SKILL.md"))
+            .exists()
+    );
+    assert!(
+        temp.path()
+            .join(format!(
+                ".codex/skills/{managed_codex_command_skill}/SKILL.md"
+            ))
             .exists()
     );
     assert!(
@@ -4239,6 +4257,8 @@ shared = { path = "vendor/shared" }
         .unwrap();
     let managed_skill_id = namespaced_skill_id(dependency, "review");
     let managed_command_file = namespaced_file_name(dependency, "build", "md");
+    let managed_codex_command_skill =
+        resolution_codex_command_skill_id(&resolution, dependency, "build");
     let codex_gitignore = fs::read_to_string(temp.path().join(".codex/.gitignore")).unwrap();
     let agents_gitignore = fs::read_to_string(temp.path().join(".agents/.gitignore")).unwrap();
     let cursor_gitignore = fs::read_to_string(temp.path().join(".cursor/.gitignore")).unwrap();
@@ -4246,6 +4266,7 @@ shared = { path = "vendor/shared" }
     assert!(codex_gitignore.contains("# Managed by nodus"));
     assert!(codex_gitignore.contains(".gitignore"));
     assert!(codex_gitignore.contains(&format!("skills/{managed_skill_id}")));
+    assert!(codex_gitignore.contains(&format!("skills/{managed_codex_command_skill}")));
     assert!(agents_gitignore.contains("# Managed by nodus"));
     assert!(agents_gitignore.contains(".gitignore"));
     assert!(agents_gitignore.contains(&format!("skills/{managed_skill_id}")));
@@ -4255,6 +4276,58 @@ shared = { path = "vendor/shared" }
     assert!(cursor_gitignore.contains(&format!("skills/{managed_skill_id}")));
     assert!(cursor_gitignore.contains(&format!("commands/{managed_command_file}")));
     assert!(cursor_gitignore.contains("rules/default.mdc"));
+}
+
+#[test]
+fn sync_emits_codex_command_compatibility_skills_for_command_components() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[dependencies]
+shared = { path = "vendor/shared", components = ["commands"] }
+"#,
+    );
+    write_file(
+        &temp.path().join("vendor/shared/commands/build.txt"),
+        "cargo test\n",
+    );
+
+    let summary =
+        sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex])
+            .unwrap();
+
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let dependency = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .unwrap();
+    let managed_codex_command_skill =
+        resolution_codex_command_skill_id(&resolution, dependency, "build");
+
+    assert!(
+        temp.path()
+            .join(format!(
+                ".codex/skills/{managed_codex_command_skill}/SKILL.md"
+            ))
+            .exists()
+    );
+    assert_eq!(summary.managed_file_count, 4);
+
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    let shared = lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .unwrap();
+    assert_eq!(
+        shared.selected_components,
+        Some(vec![DependencyComponent::Commands])
+    );
+    assert_eq!(shared.commands, vec!["build"]);
+    assert!(lockfile.managed_files.contains(&".codex/skills".into()));
 }
 
 #[test]
@@ -8050,6 +8123,9 @@ other = { path = "vendor/other" }
         resolution_file_name(&resolution, shared, ArtifactKind::Command, "build", "md");
     let other_command_file =
         resolution_file_name(&resolution, other, ArtifactKind::Command, "build", "md");
+    let shared_codex_command_skill =
+        resolution_codex_command_skill_id(&resolution, shared, "build");
+    let other_codex_command_skill = resolution_codex_command_skill_id(&resolution, other, "build");
     let shared_claude_rule_file =
         resolution_file_name(&resolution, shared, ArtifactKind::Rule, "default", "md");
     let other_claude_rule_file =
@@ -8058,6 +8134,7 @@ other = { path = "vendor/other" }
     assert_ne!(shared_agent_file, other_agent_file);
     assert_ne!(shared_copilot_agent_file, other_copilot_agent_file);
     assert_ne!(shared_command_file, other_command_file);
+    assert_ne!(shared_codex_command_skill, other_codex_command_skill);
     assert_ne!(shared_claude_rule_file, other_claude_rule_file);
 
     assert!(
@@ -8128,6 +8205,20 @@ other = { path = "vendor/other" }
     assert!(
         temp.path()
             .join(format!(".opencode/rules/{other_claude_rule_file}"))
+            .exists()
+    );
+    assert!(
+        temp.path()
+            .join(format!(
+                ".codex/skills/{shared_codex_command_skill}/SKILL.md"
+            ))
+            .exists()
+    );
+    assert!(
+        temp.path()
+            .join(format!(
+                ".codex/skills/{other_codex_command_skill}/SKILL.md"
+            ))
             .exists()
     );
 }

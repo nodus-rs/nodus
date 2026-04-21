@@ -1442,6 +1442,16 @@ fn merge_skill_entries(
     discovered: Vec<SkillEntry>,
 ) -> Result<()> {
     for skill in discovered {
+        if skill
+            .id
+            .starts_with(crate::adapters::codex::SYNTHETIC_COMMAND_SKILL_PREFIX)
+        {
+            bail!(
+                "skill id `{}` uses reserved prefix `{}` for generated Codex command compatibility",
+                skill.id,
+                crate::adapters::codex::SYNTHETIC_COMMAND_SKILL_PREFIX
+            );
+        }
         if !ids.insert(skill.id.clone()) {
             if destination.iter().any(|existing| existing == &skill) {
                 continue;

@@ -399,12 +399,27 @@ fn expand_managed_root_with_names(
                 "skills" => packages
                     .iter()
                     .flat_map(|package| {
-                        package.skills.iter().map(|artifact_id| {
-                            project_root.join(format!(
-                                "{runtime}/skills/{}",
-                                names.locked_managed_skill_id(package, artifact_id)
-                            ))
-                        })
+                        let mut paths = package
+                            .skills
+                            .iter()
+                            .map(|artifact_id| {
+                                project_root.join(format!(
+                                    "{runtime}/skills/{}",
+                                    names.locked_managed_skill_id(package, artifact_id)
+                                ))
+                            })
+                            .collect::<Vec<_>>();
+                        if runtime == ".codex" {
+                            paths.extend(package.commands.iter().map(|command_id| {
+                                project_root.join(format!(
+                                    "{runtime}/skills/{}",
+                                    crate::adapters::codex::synthetic_locked_command_skill_id(
+                                        names, package, command_id,
+                                    )
+                                ))
+                            }));
+                        }
+                        paths
                     })
                     .collect::<Vec<_>>(),
                 "agents" if *runtime == ".github" => packages
@@ -482,17 +497,29 @@ fn expand_managed_root_with_names(
             let paths = match artifact_dir.as_str() {
                 "skills" => packages
                     .iter()
-                    .filter(|package| {
-                        package
+                    .filter_map(|package| {
+                        if package
                             .skills
                             .iter()
                             .any(|existing| existing == artifact_name)
-                    })
-                    .map(|package| {
-                        project_root.join(format!(
-                            "{runtime}/skills/{}",
-                            names.locked_managed_skill_id(package, artifact_name)
-                        ))
+                        {
+                            return Some(project_root.join(format!(
+                                "{runtime}/skills/{}",
+                                names.locked_managed_skill_id(package, artifact_name)
+                            )));
+                        }
+                        if runtime == ".codex"
+                            && package.commands.iter().any(|command_id| {
+                                crate::adapters::codex::synthetic_locked_command_skill_id(
+                                    names, package, command_id,
+                                ) == *artifact_name
+                            })
+                        {
+                            return Some(
+                                project_root.join(format!("{runtime}/skills/{artifact_name}")),
+                            );
+                        }
+                        None
                     })
                     .collect::<Vec<_>>(),
                 "agents" if runtime == ".github" => packages
@@ -735,6 +762,39 @@ managed_files = []
         assert!(managed_paths.contains(&PathBuf::from("/tmp/project/.github/skills/iframe-ad")));
         assert!(managed_paths.contains(&PathBuf::from("/tmp/project/.cursor/skills/iframe-ad")));
         assert!(managed_paths.contains(&PathBuf::from("/tmp/project/.opencode/skills/iframe-ad")));
+    }
+
+    #[test]
+    fn expands_codex_skill_roots_to_include_synthetic_command_skills() {
+        let lockfile = Lockfile::new(
+            vec![LockedPackage {
+                alias: "shared".into(),
+                name: "shared".into(),
+                version_tag: Some("v0.1.0".into()),
+                source: LockedSource {
+                    kind: "git".into(),
+                    path: None,
+                    url: Some("https://github.com/example/shared".into()),
+                    tag: Some("v0.1.0".into()),
+                    branch: None,
+                    rev: Some("01f556abcdef".into()),
+                },
+                digest: "sha256:abc".into(),
+                selected_components: Some(vec![DependencyComponent::Commands]),
+                skills: vec![],
+                agents: vec![],
+                rules: vec![],
+                commands: vec!["build".into()],
+                mcp_servers: vec![],
+                dependencies: vec![],
+                capabilities: vec![],
+            }],
+            vec![".codex/skills".into()],
+        );
+
+        let managed_paths = lockfile.managed_paths(Path::new("/tmp/project")).unwrap();
+
+        assert!(managed_paths.contains(&PathBuf::from("/tmp/project/.codex/skills/__cmd_build")));
     }
 
     #[test]

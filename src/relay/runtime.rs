@@ -79,6 +79,10 @@ enum RelayTransform {
         runtime_name: String,
         description: String,
     },
+    CodexCommandSkill {
+        managed_skill_id: String,
+        source_command_id: String,
+    },
     MarkdownAgentToml {
         adapter_name: &'static str,
     },
@@ -1075,6 +1079,20 @@ mod tests {
         );
     }
 
+    fn write_codex_command_skill(path: &Path, skill_id: &str, command_id: &str, body: &str) {
+        let contents = crate::adapters::codex::emitted_command_skill_markdown(
+            body.as_bytes(),
+            skill_id,
+            command_id,
+            "Codex command source",
+        )
+        .unwrap();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, contents).unwrap();
+    }
+
     fn append_file(path: &Path, suffix: &str) {
         let mut contents = fs::read_to_string(path).unwrap();
         contents.push_str(suffix);
@@ -1111,6 +1129,26 @@ mod tests {
             package,
             artifact_id,
         )
+    }
+
+    fn managed_codex_command_skill_path(
+        project_root: &Path,
+        package: &ResolvedPackage,
+        command_id: &str,
+    ) -> PathBuf {
+        let names = Lockfile::read(&project_root.join(LOCKFILE_NAME))
+            .map(|lockfile| ManagedArtifactNames::from_locked_packages(lockfile.packages.iter()))
+            .unwrap_or_else(|_| ManagedArtifactNames::from_resolved_packages([package]));
+        let skill_id =
+            crate::adapters::codex::synthetic_command_skill_id(&names, package, command_id);
+        crate::adapters::managed_skill_root(
+            &names,
+            project_root,
+            Adapter::Codex,
+            package,
+            &skill_id,
+        )
+        .join("SKILL.md")
     }
 
     fn relay_dependency_in_dir(
@@ -1456,6 +1494,10 @@ placement = "project"
                 command_suffix,
             );
         }
+        append_file(
+            &managed_codex_command_skill_path(project.path(), &package, "build"),
+            command_suffix,
+        );
 
         let summary = relay_dependency_in_dir(
             project.path(),
@@ -1648,6 +1690,45 @@ placement = "project"
     }
 
     #[test]
+    fn relay_writes_back_codex_command_skill_edits_to_source() {
+        let (_remote_root, remote_repo) = create_remote_dependency();
+        let linked = clone_linked_repo(&remote_repo);
+        let linked_repo = linked.path().join("linked");
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        install_dependency(
+            project.path(),
+            cache.path(),
+            &remote_repo,
+            &[Adapter::Codex],
+        );
+
+        let package = resolved_package(project.path(), cache.path(), &[Adapter::Codex]);
+        write_codex_command_skill(
+            &managed_codex_command_skill_path(project.path(), &package, "build"),
+            "__cmd_build",
+            "build",
+            "# Build\nUpdated from Codex.\n",
+        );
+
+        let summary = relay_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "playbook_ios",
+            Some(&linked_repo),
+            Some(Adapter::Codex),
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        assert_eq!(summary.updated_file_count, 1);
+        assert_eq!(
+            fs::read_to_string(linked_repo.join("commands/build.md")).unwrap(),
+            "# Build\nUpdated from Codex.\n"
+        );
+    }
+
+    #[test]
     fn relay_create_missing_is_opt_in() {
         let (_remote_root, remote_repo) = create_remote_dependency();
         let linked = clone_linked_repo(&remote_repo);
@@ -1777,6 +1858,44 @@ placement = "project"
         let relayed = fs::read_to_string(linked_repo.join("agents/auditor.toml")).unwrap();
         assert!(relayed.contains("name = \"auditor\""));
         assert!(relayed.contains("developer_instructions = \"Audit changes carefully.\""));
+    }
+
+    #[test]
+    fn relay_create_missing_copies_new_codex_command_skill_into_source() {
+        let (_remote_root, remote_repo) = create_remote_dependency();
+        let linked = clone_linked_repo(&remote_repo);
+        let linked_repo = linked.path().join("linked");
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        install_dependency(
+            project.path(),
+            cache.path(),
+            &remote_repo,
+            &[Adapter::Codex],
+        );
+
+        write_codex_command_skill(
+            &project.path().join(".codex/skills/__cmd_draft/SKILL.md"),
+            "__cmd_draft",
+            "draft",
+            "# Draft\nrelay me\n",
+        );
+
+        let summary = relay_dependency_in_dir_create_missing(
+            project.path(),
+            cache.path(),
+            "playbook_ios",
+            Some(&linked_repo),
+            Some(Adapter::Codex),
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        assert_eq!(summary.created_file_count, 1);
+        assert_eq!(
+            fs::read_to_string(linked_repo.join("commands/draft.md")).unwrap(),
+            "# Draft\nrelay me\n"
+        );
     }
 
     #[test]

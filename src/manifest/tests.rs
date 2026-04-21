@@ -84,6 +84,19 @@ fn write_workspace_member(root: &Path, skill_name: &str) {
     );
 }
 
+#[test]
+fn rejects_skills_using_reserved_codex_command_prefix() {
+    let temp = TempDir::new().unwrap();
+    write_file(
+        &temp.path().join("skills/__cmd_build/SKILL.md"),
+        "---\nname: __cmd_build\ndescription: Example skill.\n---\n# __cmd_build\n",
+    );
+
+    let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+
+    assert!(error.contains("reserved prefix `__cmd_`"));
+}
+
 fn write_workspace_root_with_codex_policy(root: &Path, installation: &str, authentication: &str) {
     write_workspace_member(&root.join("plugins/axiom"), "Axiom");
     write_file(

@@ -122,6 +122,27 @@ pub(super) fn build_mappings(
         if !package.selects_component(crate::manifest::DependencyComponent::Commands) {
             continue;
         }
+        if selected_adapters.contains(Adapter::Codex) {
+            let managed_skill_id =
+                crate::adapters::codex::synthetic_command_skill_id(names, package, &command.id);
+            mappings.push(file_mapping(
+                managed_skill_root(
+                    names,
+                    project_root,
+                    Adapter::Codex,
+                    package,
+                    &managed_skill_id,
+                )
+                .join("SKILL.md"),
+                Some(snapshot_root.join(&command.path)),
+                linked_repo.join(&command.path),
+                command.id.clone(),
+                RelayTransform::CodexCommandSkill {
+                    managed_skill_id,
+                    source_command_id: command.id.clone(),
+                },
+            ));
+        }
         for (adapter, kind) in [
             (Adapter::Agents, ArtifactKind::Command),
             (Adapter::Claude, ArtifactKind::Command),
@@ -264,14 +285,21 @@ fn build_missing_mappings_for_adapter(
     if dependency
         .package
         .selects_component(crate::manifest::DependencyComponent::Skills)
+        || (adapter == Adapter::Codex
+            && dependency
+                .package
+                .selects_component(crate::manifest::DependencyComponent::Commands))
     {
         let known_skill_roots = packages
             .iter()
             .filter(|package| {
                 package.selects_component(crate::manifest::DependencyComponent::Skills)
+                    || (adapter == Adapter::Codex
+                        && package
+                            .selects_component(crate::manifest::DependencyComponent::Commands))
             })
             .flat_map(|package| {
-                package
+                let mut roots = package
                     .manifest
                     .discovered
                     .skills
@@ -279,7 +307,20 @@ fn build_missing_mappings_for_adapter(
                     .map(|skill| {
                         managed_skill_root(names, project_root, adapter, package, &skill.id)
                     })
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<_>>();
+                if adapter == Adapter::Codex
+                    && package.selects_component(crate::manifest::DependencyComponent::Commands)
+                {
+                    roots.extend(package.manifest.discovered.commands.iter().map(|command| {
+                        let managed_skill_id = crate::adapters::codex::synthetic_command_skill_id(
+                            names,
+                            package,
+                            &command.id,
+                        );
+                        managed_skill_root(names, project_root, adapter, package, &managed_skill_id)
+                    }));
+                }
+                roots
             })
             .collect::<std::collections::BTreeSet<_>>();
         let skills_root = runtime_root.join("skills");
@@ -296,6 +337,45 @@ fn build_missing_mappings_for_adapter(
                     continue;
                 }
                 let skill_id = entry.file_name().to_string_lossy().into_owned();
+                if adapter == Adapter::Codex
+                    && skill_id.starts_with(crate::adapters::codex::SYNTHETIC_COMMAND_SKILL_PREFIX)
+                {
+                    if !dependency
+                        .package
+                        .selects_component(crate::manifest::DependencyComponent::Commands)
+                    {
+                        bail!(
+                            "Codex synthetic command skill `{skill_id}` requires the `commands` component"
+                        );
+                    }
+                    let command_id =
+                        crate::adapters::codex::source_command_id_from_synthetic_skill_id(
+                            &skill_id,
+                        )?;
+                    mappings.push(file_mapping(
+                        managed_root.join("SKILL.md"),
+                        None,
+                        linked_repo
+                            .join("commands")
+                            .join(format!("{command_id}.md")),
+                        command_id.to_string(),
+                        RelayTransform::CodexCommandSkill {
+                            managed_skill_id: skill_id.clone(),
+                            source_command_id: command_id.to_string(),
+                        },
+                    ));
+                    continue;
+                }
+                if adapter == Adapter::Codex
+                    && !dependency
+                        .package
+                        .selects_component(crate::manifest::DependencyComponent::Skills)
+                {
+                    bail!(
+                        "Codex managed skill `{skill_id}` requires the `skills` component or the reserved `{}` prefix",
+                        crate::adapters::codex::SYNTHETIC_COMMAND_SKILL_PREFIX
+                    );
+                }
                 mappings.extend(missing_skill_mappings(
                     names,
                     adapter,
@@ -539,6 +619,15 @@ impl RelayTransform {
                 description,
                 "Codex agent source",
             ),
+            Self::CodexCommandSkill {
+                managed_skill_id,
+                source_command_id,
+            } => crate::adapters::codex::emitted_command_skill_markdown(
+                source,
+                managed_skill_id,
+                source_command_id,
+                "Codex command source",
+            ),
             Self::MarkdownAgentToml { adapter_name } => {
                 markdown_from_codex_agent_toml(source, &format!("{adapter_name} agent source"))
             }
@@ -594,6 +683,13 @@ impl RelayTransform {
             Self::CodexAgentMarkdown { .. } => {
                 markdown_from_codex_agent_toml(managed, "Codex agent source")
             }
+            Self::CodexCommandSkill {
+                managed_skill_id, ..
+            } => crate::adapters::codex::command_body_from_synthetic_skill(
+                managed,
+                managed_skill_id,
+                "Codex command source",
+            ),
             Self::MarkdownAgentToml { adapter_name } => baseline_source
                 .map(|baseline_source| {
                     source_toml_from_managed_markdown(

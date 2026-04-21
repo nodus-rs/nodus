@@ -501,6 +501,23 @@ pub(crate) fn build_output_plan(
                     .insert(format!(".claude/commands/{}.md", command.id));
             }
 
+            if selected_adapters.contains(Adapter::Codex) {
+                let skill_id =
+                    super::codex::synthetic_command_skill_id(&managed_names, package, &command.id);
+                merge_file(
+                    &mut plan.files,
+                    super::codex::command_skill_file(
+                        &managed_names,
+                        project_root,
+                        package,
+                        snapshot_root,
+                        command,
+                    )?,
+                )?;
+                plan.managed_files
+                    .insert(format!(".codex/skills/{skill_id}"));
+            }
+
             if selected_adapters.contains(Adapter::Cursor)
                 && ArtifactKind::Command
                     .supported_adapters()
@@ -1248,6 +1265,13 @@ fn managed_artifact_gitignore_pattern(
     artifact_dir: &str,
     artifact_name: &str,
 ) -> String {
+    if artifact_dir == "skills"
+        && runtime == ".codex"
+        && artifact_name.starts_with(crate::adapters::codex::SYNTHETIC_COMMAND_SKILL_PREFIX)
+    {
+        return format!("skills/{artifact_name}");
+    }
+
     if artifact_dir == "skills"
         && matches!(
             runtime,

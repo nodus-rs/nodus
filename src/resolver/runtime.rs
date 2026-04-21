@@ -1266,6 +1266,23 @@ fn derivable_runtime_artifact_entries(
 
         if package.selects_component(DependencyComponent::Commands) {
             for command in &package.manifest.discovered.commands {
+                if selected_adapters.contains(Adapter::Codex) {
+                    let skill_id = crate::adapters::codex::synthetic_command_skill_id(
+                        &names,
+                        package,
+                        &command.id,
+                    );
+                    let path = crate::adapters::managed_skill_root(
+                        &names,
+                        runtime_root,
+                        Adapter::Codex,
+                        package,
+                        &skill_id,
+                    );
+                    entries.insert(display_path(
+                        path.strip_prefix(runtime_root).unwrap_or(&path),
+                    ));
+                }
                 for adapter in ArtifactKind::Command.supported_adapters().iter() {
                     if !selected_adapters.contains(adapter) {
                         continue;
