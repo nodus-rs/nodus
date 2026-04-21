@@ -13,7 +13,7 @@ use self::resolve::{ResolveProjectOptions, resolve_project};
 use self::support::{
     build_sync_execution_plan, enforce_capabilities, execute_sync_plan, find_managed_collision,
     find_unmanaged_collision, load_owned_paths, recover_runtime_owned_paths,
-    unmanaged_collision_guidance,
+    recover_runtime_owned_paths_from_disk, unmanaged_collision_guidance,
 };
 #[cfg(test)]
 use self::support::{prune_empty_parent_dirs, write_managed_files};
@@ -720,6 +720,11 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
                 &desired_paths,
             ));
         }
+        owned_paths.extend(recover_runtime_owned_paths_from_disk(
+            &install_paths.runtime_root,
+            &desired_paths,
+            &planned_files,
+        ));
         owned_paths.extend(adopted_owned_paths.iter().cloned());
 
         if sync_mode.checks_lockfile() {

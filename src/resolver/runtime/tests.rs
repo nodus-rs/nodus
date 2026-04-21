@@ -4111,6 +4111,61 @@ shared = { path = "vendor/shared" }
 }
 
 #[test]
+fn sync_adopts_exact_unmanaged_runtime_skill_output() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(temp.path(), "");
+    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
+
+    write_manifest(
+        temp.path(),
+        r#"
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+    );
+    write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let package_roots = resolution
+        .packages
+        .iter()
+        .map(|package| (package.clone(), package.root.clone()))
+        .collect::<Vec<_>>();
+    let output_plan =
+        build_output_plan(temp.path(), &package_roots, Adapters::CODEX, None, false).unwrap();
+    let dependency = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .unwrap();
+    let managed_skill_id = namespaced_skill_id(dependency, "review");
+    let managed_skill_path = temp
+        .path()
+        .join(format!(".codex/skills/{managed_skill_id}/SKILL.md"));
+    let managed_skill_contents = output_plan
+        .files
+        .iter()
+        .find(|file| file.path == managed_skill_path)
+        .unwrap()
+        .contents
+        .clone();
+    fs::create_dir_all(managed_skill_path.parent().unwrap()).unwrap();
+    fs::write(&managed_skill_path, managed_skill_contents).unwrap();
+
+    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
+
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    assert!(managed_skill_path.exists());
+    assert!(
+        lockfile
+            .managed_files
+            .iter()
+            .any(|path| path == ".codex/skills")
+    );
+}
+
+#[test]
 fn sync_dry_run_force_previews_without_overwriting_unmanaged_files() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();
