@@ -34,8 +34,17 @@ pub(crate) struct ManagedHookSpec {
 
 pub(crate) fn hook_event_supported_by_adapter(adapter: Adapter, event: HookEvent) -> bool {
     match adapter {
-        Adapter::Claude => true,
-        Adapter::Codex | Adapter::OpenCode => matches!(
+        Adapter::Claude => !matches!(event, HookEvent::PermissionRequest),
+        Adapter::Codex => matches!(
+            event,
+            HookEvent::SessionStart
+                | HookEvent::UserPromptSubmit
+                | HookEvent::PreToolUse
+                | HookEvent::PermissionRequest
+                | HookEvent::PostToolUse
+                | HookEvent::Stop
+        ),
+        Adapter::OpenCode => matches!(
             event,
             HookEvent::SessionStart
                 | HookEvent::PreToolUse

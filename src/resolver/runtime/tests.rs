@@ -5986,6 +5986,120 @@ command = "./scripts/preflight.sh"
 }
 
 #[test]
+fn sync_emits_codex_user_prompt_submit_hook() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_skill(&temp.path().join("skills/review"), "Review");
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[adapters]
+enabled = ["codex"]
+
+[[hooks]]
+id = "prompt-logger"
+event = "user_prompt_submit"
+
+[hooks.handler]
+type = "command"
+command = "./scripts/log-prompt.sh"
+"#,
+    );
+
+    sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+
+    let codex_hooks: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(temp.path().join(".codex/hooks.json")).unwrap())
+            .unwrap();
+    let user_prompt = codex_hooks["hooks"]["UserPromptSubmit"].as_array().unwrap();
+    assert_eq!(user_prompt.len(), 1);
+    assert!(user_prompt[0].get("matcher").is_none());
+    assert!(
+        user_prompt[0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("/.codex/hooks/nodus-hook-")
+    );
+}
+
+#[test]
+fn sync_emits_codex_permission_request_hook() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_skill(&temp.path().join("skills/review"), "Review");
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[adapters]
+enabled = ["codex"]
+
+[[hooks]]
+id = "bash-approval"
+event = "permission_request"
+
+[hooks.matcher]
+tool_names = ["bash"]
+
+[hooks.handler]
+type = "command"
+command = "./scripts/approve.sh"
+"#,
+    );
+
+    sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+
+    let codex_hooks: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(temp.path().join(".codex/hooks.json")).unwrap())
+            .unwrap();
+    let permission = codex_hooks["hooks"]["PermissionRequest"].as_array().unwrap();
+    assert_eq!(permission.len(), 1);
+    assert_eq!(permission[0]["matcher"].as_str(), Some("Bash"));
+    assert!(
+        permission[0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("/.codex/hooks/nodus-hook-")
+    );
+}
+
+#[test]
+fn sync_rejects_claude_only_declaration_of_codex_permission_request() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_skill(&temp.path().join("skills/review"), "Review");
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[adapters]
+enabled = ["claude"]
+
+[[hooks]]
+id = "bash-approval"
+event = "permission_request"
+adapters = ["claude"]
+
+[hooks.matcher]
+tool_names = ["bash"]
+
+[hooks.handler]
+type = "command"
+command = "./scripts/approve.sh"
+"#,
+    );
+
+    sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+
+    let claude_settings_path = temp.path().join(".claude/settings.json");
+    if claude_settings_path.exists() {
+        let settings = fs::read_to_string(&claude_settings_path).unwrap();
+        assert!(
+            !settings.contains("PermissionRequest"),
+            "PermissionRequest must not leak into Claude settings"
+        );
+    }
+}
+
+#[test]
 fn sync_emits_claude_native_lifecycle_hooks_without_leaking_to_other_adapters() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();

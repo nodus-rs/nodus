@@ -394,12 +394,12 @@ fn managed_script_stem(hook: &ManagedHookSpec) -> String {
 fn event_name(hook: &ManagedHookSpec) -> &'static str {
     match hook.hook.event {
         HookEvent::SessionStart => "SessionStart",
+        HookEvent::UserPromptSubmit => "UserPromptSubmit",
         HookEvent::PreToolUse => "PreToolUse",
+        HookEvent::PermissionRequest => "PermissionRequest",
         HookEvent::PostToolUse => "PostToolUse",
         HookEvent::Stop => "Stop",
-        HookEvent::UserPromptSubmit | HookEvent::SessionEnd => {
-            unreachable!("unsupported hook event for Codex")
-        }
+        HookEvent::SessionEnd => unreachable!("unsupported hook event for Codex"),
     }
 }
 
@@ -434,7 +434,7 @@ fn matcher_string(hook: &ManagedHookSpec) -> Option<String> {
                     .join("|")
             })
         }
-        HookEvent::PreToolUse | HookEvent::PostToolUse => {
+        HookEvent::PreToolUse | HookEvent::PermissionRequest | HookEvent::PostToolUse => {
             let matcher = hook
                 .hook
                 .matcher
@@ -455,10 +455,8 @@ fn matcher_string(hook: &ManagedHookSpec) -> Option<String> {
                 )
             }
         }
-        HookEvent::Stop => None,
-        HookEvent::UserPromptSubmit | HookEvent::SessionEnd => {
-            unreachable!("unsupported hook event for Codex")
-        }
+        HookEvent::UserPromptSubmit | HookEvent::Stop => None,
+        HookEvent::SessionEnd => unreachable!("unsupported hook event for Codex"),
     }
 }
 

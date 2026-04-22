@@ -1264,7 +1264,12 @@ command = "fuli integration claude hook session-end"
                 .iter()
                 .map(|event| event.event.as_str())
                 .collect::<Vec<_>>(),
-            vec!["session_start", "post_tool_use", "stop"]
+            vec![
+                "session_start",
+                "user_prompt_submit",
+                "post_tool_use",
+                "stop"
+            ]
         );
         assert_eq!(
             codex.supported_events[0].session_start_sources,
@@ -1300,7 +1305,9 @@ command = "fuli integration claude hook session-end"
         assert!(output.contains("claude   = session_start(startup,resume,clear,compact)"));
         assert!(output.contains("user_prompt_submit"));
         assert!(output.contains("session_end"));
-        assert!(output.contains("codex    = session_start(startup,resume), post_tool_use, stop"));
+        assert!(output.contains(
+            "codex    = session_start(startup,resume), user_prompt_submit, post_tool_use, stop"
+        ));
         assert!(output.contains("opencode = session_start(startup), post_tool_use, stop"));
         assert!(output.contains("agents   = none"));
     }
