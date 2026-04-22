@@ -478,24 +478,33 @@ fn agent_transform(
             runtime_name: managed_artifact_id(names, package, ArtifactKind::Agent, &agent.id),
             description: default_codex_agent_description(&agent.id),
         },
-        Adapter::Claude => agent
-            .is_toml()
-            .then_some(RelayTransform::MarkdownAgentToml {
-                adapter_name: "Claude",
-            })
-            .unwrap_or(RelayTransform::None),
-        Adapter::Copilot => agent
-            .is_toml()
-            .then_some(RelayTransform::MarkdownAgentToml {
-                adapter_name: "GitHub Copilot",
-            })
-            .unwrap_or(RelayTransform::None),
-        Adapter::OpenCode => agent
-            .is_toml()
-            .then_some(RelayTransform::MarkdownAgentToml {
-                adapter_name: "OpenCode",
-            })
-            .unwrap_or(RelayTransform::None),
+        Adapter::Claude => {
+            if agent.is_toml() {
+                RelayTransform::MarkdownAgentToml {
+                    adapter_name: "Claude",
+                }
+            } else {
+                RelayTransform::None
+            }
+        }
+        Adapter::Copilot => {
+            if agent.is_toml() {
+                RelayTransform::MarkdownAgentToml {
+                    adapter_name: "GitHub Copilot",
+                }
+            } else {
+                RelayTransform::None
+            }
+        }
+        Adapter::OpenCode => {
+            if agent.is_toml() {
+                RelayTransform::MarkdownAgentToml {
+                    adapter_name: "OpenCode",
+                }
+            } else {
+                RelayTransform::None
+            }
+        }
         Adapter::Agents | Adapter::Cursor => RelayTransform::None,
     }
 }

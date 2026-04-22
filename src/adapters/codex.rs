@@ -205,7 +205,7 @@ pub fn command_body_from_synthetic_skill(
     } else {
         bail!("{source_label} must place `{SYNTHETIC_COMMAND_BODY_MARKER}` on its own line");
     };
-    Ok(after_marker[body_start..].as_bytes().to_vec())
+    Ok(after_marker.as_bytes()[body_start..].to_vec())
 }
 
 fn copy_directory(
@@ -345,42 +345,6 @@ fn entry_is_managed(entry: &Value) -> bool {
                         .is_some_and(|command| command.contains("/.codex/hooks/nodus-hook-"))
             })
         })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn synthetic_command_skill_round_trips_command_body() {
-        let managed = emitted_command_skill_markdown(
-            b"# Build\ncargo test\n",
-            "__cmd_build",
-            "build",
-            "Codex command source",
-        )
-        .unwrap();
-
-        assert_eq!(
-            command_body_from_synthetic_skill(&managed, "__cmd_build", "Codex command source")
-                .unwrap(),
-            b"# Build\ncargo test\n"
-        );
-    }
-
-    #[test]
-    fn synthetic_command_skill_requires_reserved_prefix() {
-        let error = emitted_command_skill_markdown(
-            b"cargo test\n",
-            "build",
-            "build",
-            "Codex command source",
-        )
-        .unwrap_err()
-        .to_string();
-
-        assert!(error.contains(SYNTHETIC_COMMAND_SKILL_PREFIX));
-    }
 }
 
 fn managed_hook_command(hook: &ManagedHookSpec) -> String {
@@ -546,4 +510,40 @@ fi
 
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r#"'"'"'"#))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn synthetic_command_skill_round_trips_command_body() {
+        let managed = emitted_command_skill_markdown(
+            b"# Build\ncargo test\n",
+            "__cmd_build",
+            "build",
+            "Codex command source",
+        )
+        .unwrap();
+
+        assert_eq!(
+            command_body_from_synthetic_skill(&managed, "__cmd_build", "Codex command source")
+                .unwrap(),
+            b"# Build\ncargo test\n"
+        );
+    }
+
+    #[test]
+    fn synthetic_command_skill_requires_reserved_prefix() {
+        let error = emitted_command_skill_markdown(
+            b"cargo test\n",
+            "build",
+            "build",
+            "Codex command source",
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains(SYNTHETIC_COMMAND_SKILL_PREFIX));
+    }
 }
