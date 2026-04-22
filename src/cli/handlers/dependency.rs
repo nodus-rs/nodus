@@ -51,7 +51,7 @@ pub(crate) fn handle_add(context: &CommandContext<'_>, command: AddCommand) -> a
     let sync_on_launch = if global {
         false
     } else {
-        sync_on_launch || !no_sync_on_launch
+        sync_on_launch && !no_sync_on_launch
     };
     let install_paths = if global {
         InstallPaths::global(context.cache_root)?

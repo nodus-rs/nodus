@@ -27,7 +27,7 @@ pub(super) const ADD_LONG_ABOUT: &str = r#"Install one package into this repo an
 Most common use:
   nodus add nodus-rs/nodus --adapter codex
 
-Project-scoped installs persist startup sync hooks by default when the selected adapter supports them. Pass `--no-sync-on-launch` when you do not want that behavior.
+Project-scoped installs do not add the startup sync hook by default. Pass `--sync-on-launch` when you want supported tools to run `nodus sync` when they open this repository.
 
 By default Nodus installs the whole package. Wrapper packages that expose multiple child packages are added with no child packages enabled until you select `members` manually or pass `--accept-all-dependencies`.
 
@@ -40,7 +40,7 @@ Run `nodus doctor` next to verify the repo is healthy."#;
 
 pub(super) const ADD_AFTER_LONG_HELP: &str = r#"Examples:
   nodus add nodus-rs/nodus --adapter codex
-  nodus add nodus-rs/nodus --adapter codex --no-sync-on-launch
+  nodus add nodus-rs/nodus --adapter codex --sync-on-launch
   nodus add ./vendor/playbook --adapter claude
   nodus add owner/repo --tag v1.2.3 --adapter codex
   nodus add owner/marketplace --accept-all-dependencies --adapter codex
@@ -183,7 +183,7 @@ pub(super) const SYNC_LONG_ABOUT: &str = r#"Resolve the dependencies already dec
 
 Use this when you want to rebuild from what this repo already declares.
 
-Plain `nodus sync` persists startup sync hooks by default. Pass `--no-sync-on-launch` when you want to rebuild outputs without changing launch hook configuration.
+Plain `nodus sync` does not add the startup sync hook by default. Pass `--sync-on-launch` when you want Nodus to persist `nodus.sync_on_startup` into `nodus.toml`.
 
 Plain `nodus sync` also reuses the last locked cached revision when a Git dependency cannot be refreshed. Pass `--strict` when that situation should fail the sync instead.
 
@@ -195,7 +195,7 @@ pub(super) const SYNC_ABOUT: &str = "Resolve dependencies and write managed runt
 
 pub(super) const SYNC_AFTER_LONG_HELP: &str = r#"Common options:
   nodus sync
-  nodus sync --no-sync-on-launch
+  nodus sync --sync-on-launch
   nodus sync --locked
   nodus sync --frozen
   nodus sync --strict
@@ -203,7 +203,7 @@ pub(super) const SYNC_AFTER_LONG_HELP: &str = r#"Common options:
 
 Examples:
   nodus sync
-  nodus sync --no-sync-on-launch
+  nodus sync --sync-on-launch
   nodus sync --locked
   nodus sync --frozen
   nodus sync --strict

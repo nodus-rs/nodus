@@ -181,7 +181,7 @@ pub(crate) fn handle_sync(
     let sync_on_launch = if locked || frozen {
         sync_on_launch
     } else {
-        sync_on_launch || !no_sync_on_launch
+        sync_on_launch && !no_sync_on_launch
     };
     let summary = if frozen {
         if dry_run {

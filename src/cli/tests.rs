@@ -791,9 +791,9 @@ fn add_help_leads_with_safe_example_and_next_step() {
     assert!(help.contains("Select one or more adapters to persist for this install target"));
     assert!(help.contains("Select which dependency components to install from the package"));
     assert!(help.contains("Persist project startup hooks"));
-    assert!(help.contains("Skip persisting project startup hooks for this install"));
+    assert!(help.contains("Do not persist project startup hooks for this install"));
     assert!(help.contains("Enable every child package exposed by a workspace or marketplace wrapper instead of leaving multi-package wrappers disabled by default"));
-    assert!(help.contains("Project-scoped installs persist startup sync hooks by default"));
+    assert!(help.contains("Project-scoped installs do not add the startup sync hook by default"));
     assert!(help.contains("By default Nodus installs the whole package"));
     assert!(help.contains("Most common use"));
     assert!(help.contains("<PACKAGE>"));
@@ -897,6 +897,7 @@ fn sync_help_describes_force() {
     assert!(help.contains("--force"));
     assert!(help.contains("Overwrite unmanaged files"));
     assert!(help.contains("--no-sync-on-launch"));
+    assert!(help.contains("--sync-on-launch"));
     assert!(help.contains("--strict"));
     assert!(help.contains("nodus sync --locked"));
     assert!(help.contains("Use `--locked` when the lockfile must stay unchanged"));
@@ -914,10 +915,72 @@ fn sync_help_explains_when_to_use_sync_and_what_to_run_next() {
     assert!(
         help.contains("Use this when you want to rebuild from what this repo already declares")
     );
-    assert!(help.contains("Plain `nodus sync` persists startup sync hooks by default"));
+    assert!(help.contains("Plain `nodus sync` does not add the startup sync hook by default"));
     assert!(help.contains("reuses the last locked cached revision"));
     assert!(help.contains("Run `nodus doctor` next"));
     assert!(help.contains("Common options"));
+}
+
+#[test]
+fn add_does_not_persist_launch_hook_by_default() {
+    let temp = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    let (_repo, url) = create_git_dependency();
+
+    run_command_in_dir(
+        Command::Add {
+            url,
+            global: false,
+            dev: false,
+            tag: Some("v0.1.0".into()),
+            branch: None,
+            version: None,
+            revision: None,
+            adapter: vec![Adapter::Codex],
+            component: vec![],
+            sync_on_launch: false,
+            no_sync_on_launch: false,
+            accept_all_dependencies: false,
+            dry_run: false,
+        },
+        temp.path(),
+        cache.path(),
+        &Reporter::silent(),
+    )
+    .unwrap();
+
+    let manifest = crate::manifest::load_root_from_dir(temp.path()).unwrap();
+    assert!(!manifest.manifest.sync_on_launch_enabled());
+    assert!(!temp.path().join(".codex/hooks.json").exists());
+}
+
+#[test]
+fn sync_does_not_persist_launch_hook_by_default() {
+    let temp = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    write_skill(&temp.path().join("skills/review"), "Review");
+
+    run_command_in_dir(
+        Command::Sync {
+            locked: false,
+            frozen: false,
+            allow_high_sensitivity: false,
+            strict: false,
+            force: false,
+            adapter: vec![Adapter::Codex],
+            sync_on_launch: false,
+            no_sync_on_launch: false,
+            dry_run: false,
+        },
+        temp.path(),
+        cache.path(),
+        &Reporter::silent(),
+    )
+    .unwrap();
+
+    let manifest = crate::manifest::load_root_from_dir(temp.path()).unwrap();
+    assert!(!manifest.manifest.sync_on_launch_enabled());
+    assert!(!temp.path().join(".codex/hooks.json").exists());
 }
 
 #[test]

@@ -111,7 +111,7 @@ pub(super) enum Command {
         #[arg(
             long = "no-sync-on-launch",
             conflicts_with = "sync_on_launch",
-            help = "Skip persisting project startup hooks for this install even though project-scoped installs enable them by default"
+            help = "Do not persist project startup hooks for this install"
         )]
         no_sync_on_launch: bool,
         #[arg(
@@ -355,7 +355,7 @@ pub(super) enum Command {
         #[arg(
             long = "no-sync-on-launch",
             conflicts_with = "sync_on_launch",
-            help = "Skip persisting project startup hooks for this sync even though plain project sync enables them by default"
+            help = "Do not persist project startup hooks for this sync"
         )]
         no_sync_on_launch: bool,
         #[arg(
