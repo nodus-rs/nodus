@@ -1909,7 +1909,7 @@ fn validate_agent_entry(path: &Path, agent: &AgentEntry) -> Result<()> {
 
     let contents = fs::read(path)
         .with_context(|| format!("failed to read agent source {}", path.display()))?;
-    parse_codex_agent_config(&contents, &format!("agent `{}`", agent.path.display()))?;
+    parse_codex_agent_config(&contents, &format!("agent `{}`", display_path(&agent.path)))?;
     Ok(())
 }
 
