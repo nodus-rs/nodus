@@ -609,9 +609,7 @@ fn validate_hooks(hooks: &[HookSpec], _role: PackageRole) -> Result<()> {
                         );
                     }
                 }
-                HookEvent::PreToolUse
-                | HookEvent::PermissionRequest
-                | HookEvent::PostToolUse => {
+                HookEvent::PreToolUse | HookEvent::PermissionRequest | HookEvent::PostToolUse => {
                     if !matcher.sources.is_empty() {
                         bail!(
                             "manifest hook `{}` field `matcher.sources` is not supported for tool hook events",

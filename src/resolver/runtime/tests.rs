@@ -6051,7 +6051,9 @@ command = "./scripts/approve.sh"
     let codex_hooks: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(temp.path().join(".codex/hooks.json")).unwrap())
             .unwrap();
-    let permission = codex_hooks["hooks"]["PermissionRequest"].as_array().unwrap();
+    let permission = codex_hooks["hooks"]["PermissionRequest"]
+        .as_array()
+        .unwrap();
     assert_eq!(permission.len(), 1);
     assert_eq!(permission[0]["matcher"].as_str(), Some("Bash"));
     assert!(
