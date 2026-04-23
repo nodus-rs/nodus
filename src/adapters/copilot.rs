@@ -150,6 +150,7 @@ fn event_name(hook: &ManagedHookSpec) -> &'static str {
         HookEvent::PreToolUse => "preToolUse",
         HookEvent::PostToolUse => "postToolUse",
         HookEvent::Stop => "agentStop",
+        HookEvent::SubagentStop => "subagentStop",
         HookEvent::SessionEnd => "sessionEnd",
         HookEvent::PermissionRequest => unreachable!("unsupported hook event for GitHub Copilot"),
     }

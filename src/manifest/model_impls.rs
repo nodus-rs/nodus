@@ -617,7 +617,7 @@ fn validate_hooks(hooks: &[HookSpec], _role: PackageRole) -> Result<()> {
                         );
                     }
                 }
-                HookEvent::UserPromptSubmit | HookEvent::SessionEnd => {
+                HookEvent::UserPromptSubmit | HookEvent::SubagentStop | HookEvent::SessionEnd => {
                     if !matcher.sources.is_empty() || !matcher.tool_names.is_empty() {
                         bail!(
                             "manifest hook `{}` field `matcher` is not supported for `{}`",

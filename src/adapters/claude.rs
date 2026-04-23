@@ -616,6 +616,7 @@ fn event_name(hook: &ManagedHookSpec) -> &'static str {
         HookEvent::PreToolUse => "PreToolUse",
         HookEvent::PostToolUse => "PostToolUse",
         HookEvent::Stop => "Stop",
+        HookEvent::SubagentStop => "SubagentStop",
         HookEvent::SessionEnd => "SessionEnd",
         HookEvent::PermissionRequest => unreachable!("unsupported hook event for Claude"),
     }
@@ -664,7 +665,10 @@ fn matcher_string(hook: &ManagedHookSpec) -> Option<String> {
                 )
             }
         }
-        HookEvent::UserPromptSubmit | HookEvent::Stop | HookEvent::SessionEnd => None,
+        HookEvent::UserPromptSubmit
+        | HookEvent::Stop
+        | HookEvent::SubagentStop
+        | HookEvent::SessionEnd => None,
         HookEvent::PermissionRequest => unreachable!("unsupported hook event for Claude"),
     }
 }

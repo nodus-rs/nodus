@@ -406,7 +406,9 @@ fn event_name(hook: &ManagedHookSpec) -> &'static str {
         HookEvent::PermissionRequest => "PermissionRequest",
         HookEvent::PostToolUse => "PostToolUse",
         HookEvent::Stop => "Stop",
-        HookEvent::SessionEnd => unreachable!("unsupported hook event for Codex"),
+        HookEvent::SubagentStop | HookEvent::SessionEnd => {
+            unreachable!("unsupported hook event for Codex")
+        }
     }
 }
 
@@ -463,7 +465,9 @@ fn matcher_string(hook: &ManagedHookSpec) -> Option<String> {
             }
         }
         HookEvent::UserPromptSubmit | HookEvent::Stop => None,
-        HookEvent::SessionEnd => unreachable!("unsupported hook event for Codex"),
+        HookEvent::SubagentStop | HookEvent::SessionEnd => {
+            unreachable!("unsupported hook event for Codex")
+        }
     }
 }
 

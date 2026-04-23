@@ -6121,6 +6121,14 @@ event = "session_end"
 [hooks.handler]
 type = "command"
 command = "./scripts/session-end.sh"
+
+[[hooks]]
+id = "subagent-finished"
+event = "subagent_stop"
+
+[hooks.handler]
+type = "command"
+command = "./scripts/subagent-finished.sh"
 "#,
     );
 
@@ -6158,6 +6166,13 @@ command = "./scripts/session-end.sh"
     );
     assert_eq!(
         hooks_json["hooks"]["sessionEnd"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        hooks_json["hooks"]["subagentStop"]
+            .as_array()
+            .unwrap()
+            .len(),
         1
     );
 
@@ -6298,6 +6313,15 @@ adapters = ["claude"]
 [hooks.handler]
 type = "command"
 command = "./scripts/finish.sh"
+
+[[hooks]]
+id = "subagent-finish"
+event = "subagent_stop"
+adapters = ["claude"]
+
+[hooks.handler]
+type = "command"
+command = "./scripts/subagent-finish.sh"
 "#,
     );
 
@@ -6315,6 +6339,11 @@ command = "./scripts/finish.sh"
     );
     assert!(
         claude_settings["hooks"]["SessionEnd"][0]["hooks"][0]["command"]
+            .as_str()
+            .is_some_and(|command| command.contains("./.claude/hooks/nodus-hook-"))
+    );
+    assert!(
+        claude_settings["hooks"]["SubagentStop"][0]["hooks"][0]["command"]
             .as_str()
             .is_some_and(|command| command.contains("./.claude/hooks/nodus-hook-"))
     );

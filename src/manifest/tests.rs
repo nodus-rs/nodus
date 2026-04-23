@@ -479,16 +479,27 @@ adapters = ["claude"]
 [hooks.handler]
 type = "command"
 command = "./scripts/finish.sh"
+
+[[hooks]]
+id = "subagent-finish"
+event = "subagent_stop"
+adapters = ["claude"]
+
+[hooks.handler]
+type = "command"
+command = "./scripts/subagent-finish.sh"
 "#,
     );
 
     let loaded = load_root_from_dir(temp.path()).unwrap();
 
-    assert_eq!(loaded.manifest.hooks.len(), 2);
+    assert_eq!(loaded.manifest.hooks.len(), 3);
     assert_eq!(loaded.manifest.hooks[0].event, HookEvent::UserPromptSubmit);
     assert_eq!(loaded.manifest.hooks[1].event, HookEvent::SessionEnd);
+    assert_eq!(loaded.manifest.hooks[2].event, HookEvent::SubagentStop);
     assert_eq!(loaded.manifest.hooks[0].adapters, vec![Adapter::Claude]);
     assert_eq!(loaded.manifest.hooks[1].adapters, vec![Adapter::Claude]);
+    assert_eq!(loaded.manifest.hooks[2].adapters, vec![Adapter::Claude]);
 }
 
 #[test]
@@ -2979,6 +2990,19 @@ fn serializes_claude_native_lifecycle_hooks() {
                 timeout_sec: None,
                 blocking: false,
             },
+            HookSpec {
+                id: "subagent-finish".into(),
+                event: HookEvent::SubagentStop,
+                adapters: vec![Adapter::Claude],
+                matcher: None,
+                handler: HookHandler {
+                    handler_type: HookHandlerType::Command,
+                    command: "./scripts/subagent-finish.sh".into(),
+                    cwd: HookWorkingDirectory::GitRoot,
+                },
+                timeout_sec: None,
+                blocking: false,
+            },
         ],
         ..Manifest::default()
     };
@@ -2987,6 +3011,7 @@ fn serializes_claude_native_lifecycle_hooks() {
 
     assert!(encoded.contains("event = \"user_prompt_submit\""));
     assert!(encoded.contains("event = \"session_end\""));
+    assert!(encoded.contains("event = \"subagent_stop\""));
     assert!(!encoded.contains("[hooks.matcher]"));
 }
 

@@ -1223,6 +1223,14 @@ type = "command"
 command = "fuli integration claude hook stop"
 
 [[hooks]]
+id = "fuli.claude.subagent-stop"
+event = "subagent_stop"
+
+[hooks.handler]
+type = "command"
+command = "fuli integration claude hook subagent-stop"
+
+[[hooks]]
 id = "fuli.claude.session-end"
 event = "session_end"
 
@@ -1247,7 +1255,7 @@ command = "fuli integration claude hook session-end"
             .iter()
             .find(|entry| entry.adapter == Adapter::Claude)
             .unwrap();
-        assert_eq!(claude.supported_events.len(), 5);
+        assert_eq!(claude.supported_events.len(), 6);
         assert_eq!(
             claude.supported_events[0].session_start_sources,
             vec!["startup", "resume", "clear", "compact"]
@@ -1310,6 +1318,7 @@ command = "fuli integration claude hook session-end"
                 "user_prompt_submit",
                 "post_tool_use",
                 "stop",
+                "subagent_stop",
                 "session_end"
             ]
         );
@@ -1329,13 +1338,14 @@ command = "fuli integration claude hook session-end"
         assert!(output.contains("claude   = session_start(startup,resume,clear,compact)"));
         assert!(output.contains("user_prompt_submit"));
         assert!(output.contains("session_end"));
+        assert!(output.contains("subagent_stop"));
         assert!(output.contains(
             "codex    = session_start(startup,resume), user_prompt_submit, post_tool_use, stop"
         ));
         assert!(output.contains("opencode = session_start(startup), post_tool_use, stop"));
         assert!(output.contains("agents   = none"));
         assert!(output.contains(
-            "copilot  = session_start(startup,resume), user_prompt_submit, post_tool_use, stop, session_end"
+            "copilot  = session_start(startup,resume), user_prompt_submit, post_tool_use, stop, subagent_stop, session_end"
         ));
     }
 

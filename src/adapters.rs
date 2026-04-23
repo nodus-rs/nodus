@@ -58,6 +58,7 @@ pub(crate) fn hook_event_supported_by_adapter(adapter: Adapter, event: HookEvent
                 | HookEvent::PreToolUse
                 | HookEvent::PostToolUse
                 | HookEvent::Stop
+                | HookEvent::SubagentStop
                 | HookEvent::SessionEnd
         ),
         Adapter::Agents | Adapter::Cursor => false,

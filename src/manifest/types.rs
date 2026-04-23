@@ -91,6 +91,7 @@ pub enum HookEvent {
     PermissionRequest,
     PostToolUse,
     Stop,
+    SubagentStop,
     SessionEnd,
 }
 
@@ -103,6 +104,7 @@ impl HookEvent {
             Self::PermissionRequest => "permission_request",
             Self::PostToolUse => "post_tool_use",
             Self::Stop => "stop",
+            Self::SubagentStop => "subagent_stop",
             Self::SessionEnd => "session_end",
         }
     }
