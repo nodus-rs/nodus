@@ -2,15 +2,16 @@
 
 Nodus lets a package declare portable hook intents in `nodus.toml`, then emits
 adapter-specific wiring (Claude `settings.json`, Codex `config.toml`, OpenCode
-`plugins/nodus-hooks.js`) during `nodus sync`. Hooks that an adapter cannot
-express are silently filtered out — the manifest stays portable and the
-generated output stays valid.
+`plugins/nodus-hooks.js`, GitHub Copilot `.github/hooks/nodus-hooks.json`)
+during `nodus sync`. Hooks that an adapter cannot express are silently
+filtered out — the manifest stays portable and the generated output stays
+valid.
 
 This page is the source of truth for what each adapter supports today.
 
 ## Event catalog
 
-These are the seven events the nodus manifest recognizes. The value on the
+These are the eight events the nodus manifest recognizes. The value on the
 left is what you write in `event = "..."`.
 
 | `event`                 | Purpose                                                         |
@@ -21,6 +22,7 @@ left is what you write in `event = "..."`.
 | `permission_request`    | Fired when the agent asks the user for permission               |
 | `post_tool_use`         | Fired after a tool call                                         |
 | `stop`                  | The agent turn ended                                            |
+| `subagent_stop`         | A subagent turn ended                                           |
 | `session_end`           | The session is closing                                          |
 
 ## Adapter support matrix
@@ -28,26 +30,34 @@ left is what you write in `event = "..."`.
 A hook only reaches an adapter's generated config if the adapter supports
 that event. Consumers never have to strip these manually.
 
-| Adapter    | Supported events                                                                                      | `session_start` sources             |
-|------------|-------------------------------------------------------------------------------------------------------|-------------------------------------|
-| `claude`   | `session_start`, `user_prompt_submit`, `pre_tool_use`, `post_tool_use`, `stop`, `session_end`         | `startup`, `resume`, `clear`, `compact` |
-| `codex`    | `session_start`, `user_prompt_submit`, `pre_tool_use`, `permission_request`, `post_tool_use`, `stop`  | `startup`, `resume`                 |
-| `opencode` | `session_start`, `pre_tool_use`, `post_tool_use`, `stop`                                              | `startup`                           |
-| `agents`   | none                                                                                                  | —                                   |
-| `copilot`  | none                                                                                                  | —                                   |
-| `cursor`   | none                                                                                                  | —                                   |
+| Adapter    | Supported events                                                                                                       | `session_start` sources                 |
+|------------|------------------------------------------------------------------------------------------------------------------------|-----------------------------------------|
+| `claude`   | `session_start`, `user_prompt_submit`, `pre_tool_use`, `post_tool_use`, `stop`, `subagent_stop`, `session_end`         | `startup`, `resume`, `clear`, `compact` |
+| `codex`    | `session_start`, `user_prompt_submit`, `pre_tool_use`, `permission_request`, `post_tool_use`, `stop`                   | `startup`, `resume`                     |
+| `opencode` | `session_start`, `pre_tool_use`, `post_tool_use`, `stop`                                                               | `startup`                               |
+| `agents`   | none                                                                                                                   | —                                       |
+| `copilot`  | `session_start`, `user_prompt_submit`, `pre_tool_use`, `post_tool_use`, `stop`, `subagent_stop`, `session_end`         | `startup`, `resume`                     |
+| `cursor`   | none                                                                                                                   | —                                       |
 
 Notes:
 - `permission_request` is Codex-only. Claude does not expose a comparable
   event; declaring a hook that targets only Claude with this event fails
   manifest validation.
-- `user_prompt_submit` and `session_end` have no native equivalent in
-  OpenCode's plugin API today and are dropped for that adapter.
+- `subagent_stop` is emitted for Claude and Copilot. It is not emitted for
+  Codex until Codex exposes a distinct subagent hook.
+- `user_prompt_submit`, `subagent_stop`, and `session_end` have no native
+  equivalent in OpenCode's portable wrapper today and are dropped for that
+  adapter.
+- Copilot does not expose Nodus-style matcher groups, so generated wrappers
+  filter `session_start` sources and tool names at runtime. Copilot native
+  `new` and `startup` sources are normalized to Nodus `startup`; `resume`
+  remains `resume`.
 - OpenCode currently only wires four events of its native plugin surface
   (`session.created`, `session.idle`, `tool.execute.before`,
   `tool.execute.after`). Other OpenCode events (`permission.*`, `file.*`,
   `message.*`, `todo.*`, etc.) are not routed by nodus — if you need them,
-  ship a Claude-or-OpenCode-specific plugin instead of declaring `[[hooks]]`.
+  ship an OpenCode plugin through `opencode_plugin_hooks` instead of declaring
+  portable `[[hooks]]`.
 
 ## Matcher semantics
 
@@ -61,13 +71,29 @@ Notes:
 | `post_tool_use`                  | rejected             | allowed              |
 | `user_prompt_submit`             | rejected             | rejected             |
 | `stop`                           | rejected             | rejected             |
+| `subagent_stop`                  | rejected             | rejected             |
 | `session_end`                    | rejected             | rejected             |
 
 Values:
 - `sources`: any of `startup`, `resume`, `clear`, `compact`. Nodus drops
   sources the target adapter doesn't support; if none remain after filtering,
   the hook is skipped for that adapter.
-- `tool_names`: currently only `bash` is recognized.
+- `tool_names`: any of `bash`, `read`, `edit`, `write`, `multi_edit`,
+  `apply_patch`, `glob`, `grep`, `web_fetch`, `web_search`, `task`. Omit
+  `tool_names` to match all tools that the target adapter can emit.
+
+Tool matchers are strongly typed in the manifest and filtered by adapter:
+
+| Adapter    | Supported `tool_names` values                                                                 |
+|------------|------------------------------------------------------------------------------------------------|
+| `claude`   | `bash`, `read`, `edit`, `write`, `multi_edit`, `glob`, `grep`, `web_fetch`, `web_search`, `task` |
+| `codex`    | `bash`                                                                                         |
+| `opencode` | `bash`, `read`, `edit`, `write`, `multi_edit`, `apply_patch`, `glob`, `grep`, `web_fetch`, `web_search`, `task` |
+| `copilot`  | `bash`, `read`, `edit`, `write`, `glob`, `grep`, `web_fetch`, `task`                            |
+
+If a hook names only tools unsupported by an adapter, that hook is skipped for
+that adapter. Otherwise, unsupported names are dropped and the remaining names
+are emitted using the adapter's native spelling.
 
 Duplicates inside `sources` or `tool_names` are rejected by the validator.
 
@@ -96,7 +122,7 @@ Top-level fields on `[[hooks]]`:
 | `adapters`    | array of strings | `[]`    | Restricts which adapters may emit this hook. Empty = any supported adapter.             |
 | `matcher`     | table            | —       | See [Matcher semantics](#matcher-semantics).                                            |
 | `handler`     | table            | —       | Required.                                                                               |
-| `timeout_sec` | integer          | —       | Exposed to the script as `NODUS_HOOK_TIMEOUT_SEC`. Does not enforce a kill timer.       |
+| `timeout_sec` | integer          | —       | Exposed to the script as `NODUS_HOOK_TIMEOUT_SEC`; Copilot also receives native `timeoutSec`. |
 | `blocking`    | bool             | `false` | If `true`, the adapter should fail the event when the script fails.                     |
 
 ## Runtime environment
@@ -110,6 +136,9 @@ command:
 
 Everything else (the event payload, tool inputs/outputs) is delivered via
 stdin by the adapter, in the shape that adapter already uses.
+
+`timeout_sec` is advisory for Nodus wrappers except where the adapter has its
+own timeout behavior. Copilot receives `timeoutSec` in the generated hook JSON.
 
 ## Deduplication
 
@@ -131,6 +160,21 @@ The contents are passed through verbatim under the Claude-specific plugin
 root. They only affect the Claude adapter and are not portable across Codex or
 OpenCode.
 
+## `opencode_plugin_hooks` (OpenCode escape hatch)
+
+For OpenCode packages that need the full native plugin event surface, declare
+raw plugin files at the manifest top level instead of translating those events
+to portable `[[hooks]]`:
+
+```toml
+opencode_plugin_hooks = ["hooks/nodus-plugin.ts"]
+```
+
+When the OpenCode adapter is selected, Nodus copies the package files under
+`.nodus/packages/<alias>/opencode-plugin/` and generates JavaScript import
+wrappers in `.opencode/plugins/nodus-<alias>-<name>-<hash>.js`. These files are
+not emitted for other adapters, and they do not affect portable `[[hooks]]`.
+
 ## Minimal example
 
 ```toml
@@ -146,9 +190,9 @@ type    = "command"
 command = "nodus sync"
 ```
 
-This fires on Claude (both `startup` and `resume`), on Codex (both sources),
-and on OpenCode (`startup` only — `resume` is filtered). It is dropped for
-`agents`, `copilot`, and `cursor`.
+This fires on Claude, Codex, and Copilot for both `startup` and `resume`, and
+on OpenCode for `startup` only (`resume` is filtered). It is dropped for
+`agents` and `cursor`.
 
 ## Pre-tool example
 
@@ -165,8 +209,8 @@ type    = "command"
 command = "mypkg audit-bash"
 ```
 
-Emitted for Claude, Codex, and OpenCode. The adapters filter further by tool
-name at runtime.
+Emitted for Claude, Codex, OpenCode, and Copilot. The adapters filter further
+by tool name at runtime when their native config does not carry matcher groups.
 
 ## Inspecting what a package will emit
 

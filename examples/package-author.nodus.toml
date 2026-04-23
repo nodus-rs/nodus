@@ -27,6 +27,11 @@ publish_root = true
 # a `hooks/` folder instead of portable native `[[hooks]]`.
 # claude_plugin_hooks = ["hooks/hooks.json"]
 
+# Optional OpenCode-specific plugin hook import.
+# Use this when the package needs OpenCode's full native plugin event surface
+# instead of portable native `[[hooks]]`.
+# opencode_plugin_hooks = ["hooks/nodus-plugin.ts"]
+
 # Optional additive package roots relative to the repo root.
 # Nodus always scans the repo root itself, then each configured content root.
 # content_roots = ["packages/shared"]

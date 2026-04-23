@@ -128,17 +128,18 @@ When a package publishes `[[hooks]]`, Nodus filters those hook intents by what e
 
 | Adapter | Native hook events | `session_start` sources |
 |---------|--------------------|-------------------------|
-| `claude` | `session_start`, `user_prompt_submit`, `pre_tool_use`, `post_tool_use`, `stop`, `session_end` | `startup`, `resume`, `clear`, `compact` |
+| `claude` | `session_start`, `user_prompt_submit`, `pre_tool_use`, `post_tool_use`, `stop`, `subagent_stop`, `session_end` | `startup`, `resume`, `clear`, `compact` |
 | `codex` | `session_start`, `user_prompt_submit`, `pre_tool_use`, `permission_request`, `post_tool_use`, `stop` | `startup`, `resume` |
 | `opencode` | `session_start`, `pre_tool_use`, `post_tool_use`, `stop` | `startup` |
 | `agents` | none | none |
-| `copilot` | none | none |
+| `copilot` | `session_start`, `user_prompt_submit`, `pre_tool_use`, `post_tool_use`, `stop`, `subagent_stop`, `session_end` | `startup`, `resume` |
 | `cursor` | none | none |
 
 See [docs/hooks.md](docs/hooks.md) for the full hook reference: matcher
 rules per event, handler configuration, runtime environment, `nodus info`
 inspection, and the `claude_plugin_hooks` escape hatch for Claude plugin
-packages that ship a pre-built `hooks/hooks.json`.
+packages that ship a pre-built `hooks/hooks.json`, plus `opencode_plugin_hooks`
+for raw OpenCode plugin files.
 
 ## CLI Help
 
