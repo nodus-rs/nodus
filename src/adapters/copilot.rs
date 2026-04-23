@@ -253,7 +253,7 @@ fn tool_filter_script(hook: &ManagedHookSpec) -> String {
         return String::new();
     }
 
-    let values = tool_names.iter().copied().collect::<Vec<_>>().join(" ");
+    let values = tool_names.join(" ");
 
     format!(
         r#"tool_name="$(json_string_field toolName | tr '[:upper:]' '[:lower:]')"
