@@ -6477,6 +6477,58 @@ command = "./scripts/session-memory.sh"
 }
 
 #[test]
+fn sync_emits_opencode_plugin_hook_import_wrappers() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+name = "root"
+opencode_plugin_hooks = ["hooks/nodus-hooks.ts"]
+
+[adapters]
+enabled = ["opencode"]
+"#,
+    );
+    write_file(
+        &temp.path().join("hooks/nodus-hooks.ts"),
+        "export default function plugin() { return {}; }\n",
+    );
+    write_file(
+        &temp.path().join("hooks/helper.ts"),
+        "export const value = 1;\n",
+    );
+
+    sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+
+    assert!(
+        temp.path()
+            .join(".nodus/packages/root/opencode-plugin/hooks/nodus-hooks.ts")
+            .exists()
+    );
+    assert!(
+        temp.path()
+            .join(".nodus/packages/root/opencode-plugin/hooks/helper.ts")
+            .exists()
+    );
+    let wrappers = fs::read_dir(temp.path().join(".opencode/plugins"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("nodus-root-nodus-hooks-")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(wrappers.len(), 1);
+    let wrapper = fs::read_to_string(&wrappers[0]).unwrap();
+    assert!(wrapper.contains("../../.nodus/packages/root/opencode-plugin/hooks/nodus-hooks.ts"));
+    assert!(!temp.path().join(".claude/settings.json").exists());
+    assert!(!temp.path().join(".codex/hooks.json").exists());
+}
+
+#[test]
 fn sync_warns_when_launch_hooks_are_unsupported_for_selected_adapters() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();

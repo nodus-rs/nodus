@@ -603,8 +603,12 @@ pub(crate) fn build_output_plan(
                 .claude_plugin_hook_compat_sources()
                 .is_empty()
         });
+    let has_opencode_plugin_hooks = selected_adapters.contains(Adapter::OpenCode)
+        && packages
+            .iter()
+            .any(|(package, _)| !package.manifest.manifest.opencode_plugin_hooks.is_empty());
 
-    if !hooks.is_empty() || has_claude_plugin_hooks {
+    if !hooks.is_empty() || has_claude_plugin_hooks || has_opencode_plugin_hooks {
         for file in hook_files(
             project_root,
             packages,
@@ -1350,8 +1354,23 @@ fn hook_files(
         warnings.extend(claude_warnings);
     }
     let opencode_hooks = hooks_for_adapter(hooks, selected_adapters, Adapter::OpenCode);
+    let opencode_plugin_packages = if selected_adapters.contains(Adapter::OpenCode) {
+        packages
+            .iter()
+            .filter(|(package, _)| !package.manifest.manifest.opencode_plugin_hooks.is_empty())
+            .map(|(package, snapshot_root)| (package, snapshot_root.as_path()))
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     if !opencode_hooks.is_empty() {
         files.extend(super::opencode::hook_files(project_root, &opencode_hooks));
+    }
+    if !opencode_plugin_packages.is_empty() {
+        files.extend(super::opencode::plugin_hook_files(
+            project_root,
+            &opencode_plugin_packages,
+        )?);
     }
     if hooks
         .iter()

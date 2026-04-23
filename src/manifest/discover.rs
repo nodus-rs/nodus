@@ -1262,6 +1262,35 @@ pub(super) fn import_codex_plugin_metadata(loaded: &mut LoadedManifest) -> Resul
     Ok(())
 }
 
+pub(super) fn import_opencode_plugin_hooks(loaded: &mut LoadedManifest) -> Result<()> {
+    let hooks = loaded.manifest.normalized_opencode_plugin_hooks()?;
+    if hooks.is_empty() {
+        return Ok(());
+    }
+
+    loaded.allows_empty_dependency_wrapper = true;
+    let mut files = Vec::new();
+    for hook in hooks {
+        let resolved = loaded.resolve_existing_path(&hook).with_context(|| {
+            format!(
+                "manifest field `opencode_plugin_hooks` entry `{}` is invalid",
+                display_path(&hook)
+            )
+        })?;
+        files.push(resolved);
+        if let Some(parent) = hook.parent()
+            && parent != Path::new("")
+        {
+            collect_existing_path_files(&loaded.root, parent, &mut files)?;
+        }
+    }
+
+    loaded.extra_package_files.extend(files);
+    loaded.extra_package_files.sort();
+    loaded.extra_package_files.dedup();
+    Ok(())
+}
+
 fn insert_mcp_servers(
     manifest: &mut Manifest,
     servers: BTreeMap<String, McpServerConfig>,
@@ -2056,6 +2085,7 @@ pub(super) fn collect_ignored_field_warnings(table: &Table) -> Vec<String> {
         "adapters",
         "hooks",
         "claude_plugin_hooks",
+        "opencode_plugin_hooks",
         "launch_hooks",
         "workspace",
         "dependencies",

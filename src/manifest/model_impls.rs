@@ -90,17 +90,19 @@ impl LoadedManifest {
                         && (!self.manifest.dependencies.is_empty()
                             || !self.manifest.mcp_servers.is_empty()
                             || !self.manifest.managed_exports.is_empty()
-                            || !self.manifest.hooks.is_empty())
+                            || !self.manifest.hooks.is_empty()
+                            || !self.manifest.opencode_plugin_hooks.is_empty())
                 }
             }
         };
         if self.discovered.is_empty()
             && self.manifest.mcp_servers.is_empty()
             && self.manifest.hooks.is_empty()
+            && self.manifest.opencode_plugin_hooks.is_empty()
             && !allow_empty_package
         {
             bail!(
-                "package at {} must contain at least one of `agents/`, `commands/`, `rules/`, or `skills/`, declare `hooks`, declare `managed_exports`, declare `mcp_servers`, or declare dependencies in nodus.toml",
+                "package at {} must contain at least one of `agents/`, `commands/`, `rules/`, or `skills/`, declare `hooks`, declare `opencode_plugin_hooks`, declare `managed_exports`, declare `mcp_servers`, or declare dependencies in nodus.toml",
                 self.root.display()
             );
         }
@@ -460,6 +462,22 @@ impl Manifest {
             )?;
             if !seen.insert(normalized.clone()) {
                 bail!("manifest field `claude_plugin_hooks` must not contain duplicate paths");
+            }
+            normalized_paths.push(normalized);
+        }
+        Ok(normalized_paths)
+    }
+
+    pub fn normalized_opencode_plugin_hooks(&self) -> Result<Vec<PathBuf>> {
+        let mut normalized_paths = Vec::with_capacity(self.opencode_plugin_hooks.len());
+        let mut seen = HashSet::new();
+        for path in &self.opencode_plugin_hooks {
+            let normalized = normalize_manifest_relative_path(
+                path,
+                "manifest field `opencode_plugin_hooks` entry",
+            )?;
+            if !seen.insert(normalized.clone()) {
+                bail!("manifest field `opencode_plugin_hooks` must not contain duplicate paths");
             }
             normalized_paths.push(normalized);
         }

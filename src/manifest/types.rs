@@ -36,6 +36,8 @@ pub struct Manifest {
     pub hooks: Vec<HookSpec>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub claude_plugin_hooks: Vec<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub opencode_plugin_hooks: Vec<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<WorkspaceConfig>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

@@ -147,6 +147,61 @@ pub fn hook_files(project_root: &Path, hooks: &[ManagedHookSpec]) -> Vec<Managed
     files
 }
 
+pub fn plugin_hook_files(
+    project_root: &Path,
+    plugin_packages: &[(&ResolvedPackage, &Path)],
+) -> Result<Vec<ManagedFile>> {
+    let mut files = Vec::new();
+
+    for (package, snapshot_root) in plugin_packages {
+        if package.manifest.manifest.opencode_plugin_hooks.is_empty() {
+            continue;
+        }
+
+        files.extend(copy_package_files(
+            plugin_install_root(project_root, package),
+            package,
+            snapshot_root,
+        )?);
+
+        for path in package
+            .manifest
+            .manifest
+            .normalized_opencode_plugin_hooks()?
+        {
+            files.push(ManagedFile {
+                path: project_root.join(plugin_wrapper_relative_path(package, &path)),
+                contents: plugin_wrapper_contents(package, &path),
+            });
+        }
+    }
+
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(files)
+}
+
+fn copy_package_files(
+    target_root: impl AsRef<Path>,
+    package: &ResolvedPackage,
+    source_root: impl AsRef<Path>,
+) -> Result<Vec<ManagedFile>> {
+    let target_root = target_root.as_ref();
+    let source_root = source_root.as_ref();
+    let mut files = Vec::new();
+
+    for path in package.package_files()? {
+        let relative = strip_path_prefix(&path, &package.manifest.root)
+            .with_context(|| format!("failed to make {} relative", path.display()))?;
+        files.push(copy_file(
+            target_root.join(relative),
+            source_root.join(relative),
+        )?);
+    }
+
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(files)
+}
+
 fn copy_file(target_path: impl AsRef<Path>, source_path: impl AsRef<Path>) -> Result<ManagedFile> {
     let target_path = target_path.as_ref();
     let source_path = source_path.as_ref();
@@ -155,6 +210,47 @@ fn copy_file(target_path: impl AsRef<Path>, source_path: impl AsRef<Path>) -> Re
         contents: fs::read(source_path)
             .with_context(|| format!("failed to read snapshot file {}", source_path.display()))?,
     })
+}
+
+fn plugin_install_root(project_root: &Path, package: &ResolvedPackage) -> std::path::PathBuf {
+    project_root.join(plugin_install_root_relative(package))
+}
+
+fn plugin_install_root_relative(package: &ResolvedPackage) -> String {
+    format!(".nodus/packages/{}/opencode-plugin", package.alias)
+}
+
+fn plugin_wrapper_relative_path(package: &ResolvedPackage, path: &Path) -> String {
+    let name = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("plugin")
+        .chars()
+        .map(|character| match character {
+            'a'..='z' | '0'..='9' => character,
+            'A'..='Z' => character.to_ascii_lowercase(),
+            _ => '-',
+        })
+        .collect::<String>();
+    let digest = blake3_hex(format!("{}:{}", package.alias, display_path_js(path)).as_bytes());
+    format!(
+        ".opencode/plugins/nodus-{}-{name}-{}.js",
+        package.alias,
+        &digest[..8]
+    )
+}
+
+fn plugin_wrapper_contents(package: &ResolvedPackage, path: &Path) -> Vec<u8> {
+    let import_path = format!(
+        "../../{}/{}",
+        plugin_install_root_relative(package),
+        display_path_js(path)
+    );
+    format!("export {{ default }} from {};\n", js_string(&import_path)).into_bytes()
+}
+
+fn display_path_js(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 pub(crate) fn rewrite_skill_name(contents: &[u8], skill_id: &str) -> Result<Vec<u8>> {

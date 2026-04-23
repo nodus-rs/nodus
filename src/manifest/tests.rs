@@ -2021,6 +2021,39 @@ fn accepts_dependency_repo_with_manifest_declared_claude_plugin_hooks() {
 }
 
 #[test]
+fn accepts_dependency_repo_with_manifest_declared_opencode_plugin_hooks() {
+    let temp = TempDir::new().unwrap();
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        "opencode_plugin_hooks = [\"hooks/nodus-hooks.ts\"]\n",
+    );
+    write_file(
+        &temp.path().join("hooks/nodus-hooks.ts"),
+        "export default function plugin() { return {}; }\n",
+    );
+    write_file(
+        &temp.path().join("hooks/helper.ts"),
+        "export const value = 1;\n",
+    );
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    assert_eq!(
+        loaded.manifest.opencode_plugin_hooks,
+        vec![PathBuf::from("hooks/nodus-hooks.ts")]
+    );
+    let package_files = loaded.package_files().unwrap();
+    assert!(package_files.contains(&canonicalize_path(&temp.path().join(MANIFEST_FILE)).unwrap()));
+    assert!(
+        package_files
+            .contains(&canonicalize_path(&temp.path().join("hooks/nodus-hooks.ts")).unwrap())
+    );
+    assert!(
+        package_files.contains(&canonicalize_path(&temp.path().join("hooks/helper.ts")).unwrap())
+    );
+}
+
+#[test]
 fn accepts_marketplace_with_hook_only_claude_plugin_source() {
     let temp = TempDir::new().unwrap();
     write_marketplace(
@@ -2982,6 +3015,32 @@ fn serializes_claude_plugin_hooks() {
     let encoded = serialize_manifest(&manifest).unwrap();
 
     assert!(encoded.contains("claude_plugin_hooks = [\"hooks/hooks.json\"]"));
+}
+
+#[test]
+fn serializes_opencode_plugin_hooks() {
+    let manifest = Manifest {
+        opencode_plugin_hooks: vec![PathBuf::from("hooks/nodus-hooks.ts")],
+        hooks: vec![HookSpec {
+            id: "prompt".into(),
+            event: HookEvent::UserPromptSubmit,
+            adapters: Vec::new(),
+            matcher: None,
+            handler: HookHandler {
+                handler_type: HookHandlerType::Command,
+                command: "./hooks/prompt.sh".into(),
+                cwd: HookWorkingDirectory::GitRoot,
+            },
+            timeout_sec: None,
+            blocking: false,
+        }],
+        ..Manifest::default()
+    };
+
+    let encoded = serialize_manifest(&manifest).unwrap();
+
+    assert!(encoded.contains("opencode_plugin_hooks = [\"hooks/nodus-hooks.ts\"]"));
+    assert!(encoded.find("opencode_plugin_hooks").unwrap() < encoded.find("[[hooks]]").unwrap());
 }
 
 #[test]

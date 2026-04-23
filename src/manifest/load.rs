@@ -5,8 +5,9 @@ use anyhow::{Context, Result};
 
 use super::discover::{
     canonicalize_existing_path, discover_package_contents, import_claude_plugin_metadata,
-    import_codex_plugin_metadata, load_claude_marketplace_wrapper, load_claude_plugin_version,
-    load_codex_marketplace_wrapper, load_manifest_str, quote, should_try_plugin_wrapper_fallback,
+    import_codex_plugin_metadata, import_opencode_plugin_hooks, load_claude_marketplace_wrapper,
+    load_claude_plugin_version, load_codex_marketplace_wrapper, load_manifest_str, quote,
+    should_try_plugin_wrapper_fallback,
 };
 use super::{DependencyKind, LoadedManifest, MANIFEST_FILE, Manifest, PackageRole};
 use crate::paths::display_path;
@@ -85,6 +86,7 @@ pub fn load_from_dir(root: &Path, role: PackageRole) -> Result<LoadedManifest> {
 
     import_claude_plugin_metadata(&mut loaded)?;
     import_codex_plugin_metadata(&mut loaded)?;
+    import_opencode_plugin_hooks(&mut loaded)?;
     loaded.discovered = discover_package_contents(
         &loaded.root,
         &loaded.manifest,
@@ -130,6 +132,24 @@ pub fn serialize_manifest(manifest: &Manifest) -> Result<String> {
     }
     if manifest.publish_root {
         output.push_str("publish_root = true\n");
+    }
+    let claude_plugin_hooks = manifest.normalized_claude_plugin_hooks()?;
+    if !claude_plugin_hooks.is_empty() {
+        let encoded = claude_plugin_hooks
+            .iter()
+            .map(|path| quote(&display_path(path)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        output.push_str(&format!("claude_plugin_hooks = [{encoded}]\n"));
+    }
+    let opencode_plugin_hooks = manifest.normalized_opencode_plugin_hooks()?;
+    if !opencode_plugin_hooks.is_empty() {
+        let encoded = opencode_plugin_hooks
+            .iter()
+            .map(|path| quote(&display_path(path)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        output.push_str(&format!("opencode_plugin_hooks = [{encoded}]\n"));
     }
     if !manifest.managed_exports.is_empty() {
         if !output.is_empty() && !output.ends_with('\n') {
@@ -307,19 +327,6 @@ pub fn serialize_manifest(manifest: &Manifest) -> Result<String> {
             }
             output.push('\n');
         }
-    }
-
-    let claude_plugin_hooks = manifest.normalized_claude_plugin_hooks()?;
-    if !claude_plugin_hooks.is_empty() {
-        if !output.is_empty() && !output.ends_with('\n') {
-            output.push('\n');
-        }
-        let encoded = claude_plugin_hooks
-            .iter()
-            .map(|path| quote(&display_path(path)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        output.push_str(&format!("claude_plugin_hooks = [{encoded}]\n"));
     }
 
     if let Some(workspace) = &manifest.workspace {
