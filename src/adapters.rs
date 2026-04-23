@@ -51,7 +51,16 @@ pub(crate) fn hook_event_supported_by_adapter(adapter: Adapter, event: HookEvent
                 | HookEvent::PostToolUse
                 | HookEvent::Stop
         ),
-        Adapter::Agents | Adapter::Copilot | Adapter::Cursor => false,
+        Adapter::Copilot => matches!(
+            event,
+            HookEvent::SessionStart
+                | HookEvent::UserPromptSubmit
+                | HookEvent::PreToolUse
+                | HookEvent::PostToolUse
+                | HookEvent::Stop
+                | HookEvent::SessionEnd
+        ),
+        Adapter::Agents | Adapter::Cursor => false,
     }
 }
 
@@ -66,7 +75,11 @@ pub(crate) fn session_start_source_supported_by_adapter(
             HookSessionSource::Startup | HookSessionSource::Resume
         ),
         Adapter::OpenCode => matches!(source, HookSessionSource::Startup),
-        Adapter::Agents | Adapter::Copilot | Adapter::Cursor => false,
+        Adapter::Copilot => matches!(
+            source,
+            HookSessionSource::Startup | HookSessionSource::Resume
+        ),
+        Adapter::Agents | Adapter::Cursor => false,
     }
 }
 

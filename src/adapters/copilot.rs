@@ -2,13 +2,16 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
+use serde_json::{Map, Value, json};
 
 use crate::adapters::{
-    ArtifactKind, ManagedArtifactNames, ManagedFile, managed_artifact_path, managed_skill_id,
-    managed_skill_root,
+    ArtifactKind, ManagedArtifactNames, ManagedFile, ManagedHookSpec,
+    effective_session_start_sources, managed_artifact_path, managed_skill_id, managed_skill_root,
 };
 use crate::agent_format::markdown_from_codex_agent_toml;
-use crate::manifest::{AgentEntry, SkillEntry};
+use crate::hashing::blake3_hex;
+use crate::manifest::SkillEntry;
+use crate::manifest::{AgentEntry, HookEvent, HookHandlerType, HookTool};
 use crate::paths::strip_path_prefix;
 use crate::resolver::ResolvedPackage;
 
@@ -86,6 +89,227 @@ pub fn agent_file(
         path: target_path,
         contents,
     })
+}
+
+pub fn hook_files(project_root: &Path, hooks: &[ManagedHookSpec]) -> Result<Vec<ManagedFile>> {
+    let hooks_path = project_root.join(".github/hooks/nodus-hooks.json");
+    let mut files = hooks
+        .iter()
+        .map(|hook| ManagedFile {
+            path: project_root.join(managed_script_relative_path(hook)),
+            contents: hook_script_contents(hook),
+        })
+        .collect::<Vec<_>>();
+    files.push(ManagedFile {
+        path: hooks_path,
+        contents: hooks_config_contents(hooks)?,
+    });
+    Ok(files)
+}
+
+fn hooks_config_contents(hooks: &[ManagedHookSpec]) -> Result<Vec<u8>> {
+    let mut hooks_object = Map::new();
+    for hook in hooks {
+        let event = event_name(hook);
+        hooks_object
+            .entry(event.to_string())
+            .or_insert_with(|| Value::Array(Vec::new()))
+            .as_array_mut()
+            .expect("hook event entry is always an array")
+            .push(hook_entry(hook));
+    }
+
+    let mut root = Map::new();
+    root.insert("version".into(), json!(1));
+    root.insert("hooks".into(), Value::Object(hooks_object));
+
+    let mut contents = serde_json::to_vec_pretty(&Value::Object(root))
+        .context("failed to serialize GitHub Copilot hooks")?;
+    contents.push(b'\n');
+    Ok(contents)
+}
+
+fn hook_entry(hook: &ManagedHookSpec) -> Value {
+    let mut entry = Map::new();
+    entry.insert("type".into(), Value::String("command".into()));
+    entry.insert(
+        "bash".into(),
+        Value::String(format!("./{}", managed_script_relative_path(hook))),
+    );
+    entry.insert("cwd".into(), Value::String(".".into()));
+    if let Some(timeout_sec) = hook.hook.timeout_sec {
+        entry.insert("timeoutSec".into(), Value::Number(timeout_sec.into()));
+    }
+    Value::Object(entry)
+}
+
+fn event_name(hook: &ManagedHookSpec) -> &'static str {
+    match hook.hook.event {
+        HookEvent::SessionStart => "sessionStart",
+        HookEvent::UserPromptSubmit => "userPromptSubmitted",
+        HookEvent::PreToolUse => "preToolUse",
+        HookEvent::PostToolUse => "postToolUse",
+        HookEvent::Stop => "agentStop",
+        HookEvent::SessionEnd => "sessionEnd",
+        HookEvent::PermissionRequest => unreachable!("unsupported hook event for GitHub Copilot"),
+    }
+}
+
+fn hook_script_contents(hook: &ManagedHookSpec) -> Vec<u8> {
+    debug_assert!(matches!(
+        hook.hook.handler.handler_type,
+        HookHandlerType::Command
+    ));
+    format!(
+        r#"#!/bin/sh
+set -eu
+
+input="$(cat)"
+
+json_string_field() {{
+  printf '%s' "$input" | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -n 1
+}}
+
+if [ {hook_event} = "session_start" ]; then
+  source="$(json_string_field source)"
+  case "$source" in
+    new|startup) nodus_source="startup" ;;
+    resume) nodus_source="resume" ;;
+    *) exit 0 ;;
+  esac
+  case {session_sources} in
+    *" $nodus_source "*) ;;
+    *) exit 0 ;;
+  esac
+fi
+
+{tool_filter}
+project_root="$(json_string_field cwd)"
+if [ -z "$project_root" ]; then
+  project_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+fi
+if [ {cwd} = "git_root" ]; then
+  cd "$project_root"
+fi
+
+export NODUS_HOOK_ID={hook_id}
+export NODUS_HOOK_EVENT={hook_event}
+{timeout_export}
+run_nodus_hook() {{
+  printf '%s' "$input" | sh -lc {command}
+}}
+
+if [ {blocking} = "true" ]; then
+  run_nodus_hook
+  exit $?
+fi
+
+if ! run_nodus_hook; then
+  echo "nodus hook {hook_label} failed" >&2
+fi
+"#,
+        hook_event = shell_quote(hook.hook.event.as_str()),
+        session_sources = shell_quote(&format!(
+            " {} ",
+            effective_session_start_sources(&hook.hook, crate::adapters::Adapter::Copilot)
+                .into_iter()
+                .map(|source| source.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        )),
+        tool_filter = tool_filter_script(hook),
+        cwd = shell_quote(match hook.hook.handler.cwd {
+            crate::manifest::HookWorkingDirectory::GitRoot => "git_root",
+            crate::manifest::HookWorkingDirectory::Session => "session",
+        }),
+        hook_id = shell_quote(&hook.hook.id),
+        timeout_export = hook
+            .hook
+            .timeout_sec
+            .map(|timeout_sec| format!(
+                "export NODUS_HOOK_TIMEOUT_SEC={}\n",
+                shell_quote(&timeout_sec.to_string())
+            ))
+            .unwrap_or_default(),
+        blocking = shell_quote(if hook.hook.blocking { "true" } else { "false" }),
+        command = shell_quote(&hook.hook.handler.command),
+        hook_label = hook.hook.id,
+    )
+    .into_bytes()
+}
+
+fn tool_filter_script(hook: &ManagedHookSpec) -> String {
+    if !matches!(
+        hook.hook.event,
+        HookEvent::PreToolUse | HookEvent::PostToolUse
+    ) {
+        return String::new();
+    }
+
+    let tool_names = hook
+        .hook
+        .matcher
+        .as_ref()
+        .map(|matcher| matcher.tool_names.as_slice())
+        .unwrap_or_default();
+    if tool_names.is_empty() {
+        return String::new();
+    }
+
+    let values = tool_names
+        .iter()
+        .map(|tool_name| match tool_name {
+            HookTool::Bash => "bash",
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    format!(
+        r#"tool_name="$(json_string_field toolName | tr '[:upper:]' '[:lower:]')"
+case {values} in
+  *" $tool_name "*) ;;
+  *) exit 0 ;;
+esac
+"#,
+        values = shell_quote(&format!(" {values} ")),
+    )
+}
+
+fn managed_script_relative_path(hook: &ManagedHookSpec) -> String {
+    format!(".github/hooks/{}.sh", managed_script_stem(hook))
+}
+
+fn managed_script_stem(hook: &ManagedHookSpec) -> String {
+    let sanitized = hook
+        .hook
+        .id
+        .chars()
+        .map(|character| match character {
+            'a'..='z' | '0'..='9' => character,
+            'A'..='Z' => character.to_ascii_lowercase(),
+            _ => '-',
+        })
+        .collect::<String>();
+    if hook.emitted_from_root {
+        format!(
+            "nodus-hook-{sanitized}-{}",
+            &blake3_hex(hook.hook.id.as_bytes())[..8]
+        )
+    } else {
+        let package = hook
+            .package_alias
+            .chars()
+            .map(|character| match character {
+                'a'..='z' | '0'..='9' => character,
+                'A'..='Z' => character.to_ascii_lowercase(),
+                _ => '-',
+            })
+            .collect::<String>();
+        format!(
+            "nodus-hook-{package}-{sanitized}-{}",
+            &blake3_hex(format!("{}:{}", hook.package_alias, hook.hook.id).as_bytes())[..8]
+        )
+    }
 }
 
 pub(crate) fn rewrite_skill_name(contents: &[u8], skill_id: &str) -> Result<Vec<u8>> {
@@ -181,6 +405,10 @@ fn rewrite_frontmatter_name_line(line: &str, name: &str) -> String {
     };
 
     format!("{leading}name: {name}{newline}")
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r#"'"'"'"#))
 }
 
 #[cfg(test)]

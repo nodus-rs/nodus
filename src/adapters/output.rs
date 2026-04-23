@@ -1366,13 +1366,9 @@ fn hook_files(
     if !codex_hooks.is_empty() {
         files.extend(super::codex::hook_files(project_root, &codex_hooks)?);
     }
-    if hooks
-        .iter()
-        .any(|hook| hook_targets_adapter(&hook.hook, selected_adapters, Adapter::Copilot))
-    {
-        warnings.push(
-            "hooks are not emitted for `copilot`; repo-scoped assets are supported, but no documented project hook surface is available".into(),
-        );
+    let copilot_hooks = hooks_for_adapter(hooks, selected_adapters, Adapter::Copilot);
+    if !copilot_hooks.is_empty() {
+        files.extend(super::copilot::hook_files(project_root, &copilot_hooks)?);
     }
     if hooks
         .iter()

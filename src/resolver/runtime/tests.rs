@@ -6065,6 +6065,121 @@ command = "./scripts/approve.sh"
 }
 
 #[test]
+fn sync_emits_copilot_hooks_for_supported_events() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_skill(&temp.path().join("skills/review"), "Review");
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[adapters]
+enabled = ["copilot"]
+
+[[hooks]]
+id = "session-memory"
+event = "session_start"
+timeout_sec = 45
+
+[hooks.matcher]
+sources = ["startup", "resume"]
+
+[hooks.handler]
+type = "command"
+command = "./scripts/session-memory.sh"
+
+[[hooks]]
+id = "prompt-logger"
+event = "user_prompt_submit"
+
+[hooks.handler]
+type = "command"
+command = "./scripts/log-prompt.sh"
+
+[[hooks]]
+id = "bash-preflight"
+event = "pre_tool_use"
+
+[hooks.matcher]
+tool_names = ["bash"]
+
+[hooks.handler]
+type = "command"
+command = "./scripts/preflight.sh"
+
+[[hooks]]
+id = "turn-finished"
+event = "stop"
+
+[hooks.handler]
+type = "command"
+command = "./scripts/turn-finished.sh"
+
+[[hooks]]
+id = "session-end"
+event = "session_end"
+
+[hooks.handler]
+type = "command"
+command = "./scripts/session-end.sh"
+"#,
+    );
+
+    sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+
+    let hooks_path = temp.path().join(".github/hooks/nodus-hooks.json");
+    let hooks_json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&hooks_path).unwrap()).unwrap();
+    assert_eq!(hooks_json["version"].as_i64(), Some(1));
+    assert_eq!(
+        hooks_json["hooks"]["sessionStart"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        hooks_json["hooks"]["sessionStart"][0]["timeoutSec"].as_i64(),
+        Some(45)
+    );
+    assert_eq!(
+        hooks_json["hooks"]["userPromptSubmitted"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        hooks_json["hooks"]["preToolUse"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        hooks_json["hooks"]["agentStop"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        hooks_json["hooks"]["sessionEnd"].as_array().unwrap().len(),
+        1
+    );
+
+    let pre_tool_script = hooks_json["hooks"]["preToolUse"][0]["bash"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches("./");
+    let script = fs::read_to_string(temp.path().join(pre_tool_script)).unwrap();
+    assert!(script.contains("json_string_field toolName"));
+    assert!(script.contains(" bash "));
+
+    let session_script = hooks_json["hooks"]["sessionStart"][0]["bash"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches("./");
+    let script = fs::read_to_string(temp.path().join(session_script)).unwrap();
+    assert!(script.contains("new|startup"));
+    assert!(script.contains(" resume "));
+    assert!(script.contains("NODUS_HOOK_TIMEOUT_SEC='45'"));
+}
+
+#[test]
 fn sync_deduplicates_managed_codex_user_prompt_and_permission_request_hooks() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();

@@ -1294,6 +1294,30 @@ command = "fuli integration claude hook session-end"
             vec!["startup"]
         );
 
+        let copilot = info
+            .hook_adapter_support
+            .iter()
+            .find(|entry| entry.adapter == Adapter::Copilot)
+            .unwrap();
+        assert_eq!(
+            copilot
+                .supported_events
+                .iter()
+                .map(|event| event.event.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "session_start",
+                "user_prompt_submit",
+                "post_tool_use",
+                "stop",
+                "session_end"
+            ]
+        );
+        assert_eq!(
+            copilot.supported_events[0].session_start_sources,
+            vec!["startup", "resume"]
+        );
+
         let output = capture_info_output(
             package.path(),
             cache.path(),
@@ -1310,6 +1334,9 @@ command = "fuli integration claude hook session-end"
         ));
         assert!(output.contains("opencode = session_start(startup), post_tool_use, stop"));
         assert!(output.contains("agents   = none"));
+        assert!(output.contains(
+            "copilot  = session_start(startup,resume), user_prompt_submit, post_tool_use, stop, session_end"
+        ));
     }
 
     #[test]
