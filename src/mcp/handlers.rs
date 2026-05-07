@@ -80,7 +80,11 @@ fn handle_add(args: &JsonValue, cwd: &Path, cache_root: &Path) -> Result<String>
     let version_req = version.map(semver::VersionReq::parse).transpose()?;
 
     let adapters = parse_string_array::<Adapter>(args, "adapter")?;
-    let components = parse_string_array::<DependencyComponent>(args, "component")?;
+    let components = DependencyComponent::selected_with_exclusions(
+        &parse_string_array::<DependencyComponent>(args, "component")?,
+        &parse_string_array::<DependencyComponent>(args, "exclude_component")?,
+    )
+    .map_err(anyhow::Error::msg)?;
 
     capture_output(|reporter| {
         add_dependency_in_dir_with_adapters(

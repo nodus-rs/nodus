@@ -326,6 +326,8 @@ pub enum DependencyComponent {
     Rules,
     #[value(name = "commands")]
     Commands,
+    #[value(name = "mcp")]
+    Mcp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -363,7 +365,13 @@ pub struct DependencyEntry<'a> {
 }
 
 impl DependencyComponent {
-    pub const ALL: [Self; 4] = [Self::Skills, Self::Agents, Self::Rules, Self::Commands];
+    pub const ALL: [Self; 5] = [
+        Self::Skills,
+        Self::Agents,
+        Self::Rules,
+        Self::Commands,
+        Self::Mcp,
+    ];
 
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -371,8 +379,39 @@ impl DependencyComponent {
             Self::Agents => "agents",
             Self::Rules => "rules",
             Self::Commands => "commands",
+            Self::Mcp => "mcp",
         }
     }
+
+    pub fn selected_with_exclusions(
+        included: &[Self],
+        excluded: &[Self],
+    ) -> std::result::Result<Vec<Self>, String> {
+        if included.is_empty() && excluded.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut selected = if included.is_empty() {
+            Self::ALL.to_vec()
+        } else {
+            sorted_unique(included)
+        };
+        let excluded = sorted_unique(excluded);
+        selected.retain(|component| !excluded.contains(component));
+
+        if selected.is_empty() {
+            return Err("component selection must leave at least one component enabled".into());
+        }
+
+        Ok(selected)
+    }
+}
+
+fn sorted_unique(components: &[DependencyComponent]) -> Vec<DependencyComponent> {
+    let mut components = components.to_vec();
+    components.sort();
+    components.dedup();
+    components
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

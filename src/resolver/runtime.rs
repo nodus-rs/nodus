@@ -1097,7 +1097,11 @@ impl Resolution {
                         .iter()
                         .map(|item| &item.id),
                 ),
-                mcp_servers: sorted_ids(package.manifest.manifest.mcp_servers.keys()),
+                mcp_servers: emitted_artifact_ids(
+                    package,
+                    DependencyComponent::Mcp,
+                    package.manifest.manifest.mcp_servers.keys(),
+                ),
                 dependencies,
                 capabilities: package.manifest.manifest.capabilities.clone(),
             });

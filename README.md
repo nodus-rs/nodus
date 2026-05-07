@@ -112,6 +112,12 @@ If the package publishes `mcp_servers`, Nodus now carries that MCP config into t
 runtime outputs as well. Today that includes the legacy project `.mcp.json`, Codex
 `.codex/config.toml`, and OpenCode `opencode.json`.
 
+If you want the package without MCP wiring, exclude that component:
+
+```bash
+nodus add owner/repo --adapter codex --exclude-component mcp
+```
+
 If the package is a wrapper that exposes multiple child packages, `nodus add` now records the
 wrapper itself and leaves child packages disabled until you either edit `members` in
 `nodus.toml` or opt in up front with `--accept-all-dependencies`.

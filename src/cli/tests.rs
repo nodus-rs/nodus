@@ -15,6 +15,7 @@ use super::output::should_auto_check_for_updates;
 use super::router::run_command_in_dir;
 use crate::adapters::Adapter;
 use crate::lockfile::Lockfile;
+use crate::manifest::{DependencyComponent, MANIFEST_FILE};
 use crate::report::{ColorMode, Reporter};
 use crate::resolver;
 
@@ -790,6 +791,7 @@ fn add_help_leads_with_safe_example_and_next_step() {
     assert!(help.contains("Pin a specific Git commit revision"));
     assert!(help.contains("Select one or more adapters to persist for this install target"));
     assert!(help.contains("Select which dependency components to install from the package"));
+    assert!(help.contains("Exclude one or more dependency components from the package"));
     assert!(help.contains("Persist project startup hooks"));
     assert!(help.contains("Do not persist project startup hooks for this install"));
     assert!(help.contains("Enable every child package exposed by a workspace or marketplace wrapper instead of leaving multi-package wrappers disabled by default"));
@@ -798,6 +800,7 @@ fn add_help_leads_with_safe_example_and_next_step() {
     assert!(help.contains("Most common use"));
     assert!(help.contains("<PACKAGE>"));
     assert!(help.contains("nodus add nodus-rs/nodus --adapter codex"));
+    assert!(help.contains("nodus add owner/repo --adapter codex --exclude-component mcp"));
     assert!(help.contains("What this changes"));
     assert!(help.contains("Run `nodus doctor` next"));
     assert!(help.contains(
@@ -938,6 +941,7 @@ fn add_does_not_persist_launch_hook_by_default() {
             revision: None,
             adapter: vec![Adapter::Codex],
             component: vec![],
+            exclude_component: vec![],
             sync_on_launch: false,
             no_sync_on_launch: false,
             accept_all_dependencies: false,
@@ -952,6 +956,39 @@ fn add_does_not_persist_launch_hook_by_default() {
     let manifest = crate::manifest::load_root_from_dir(temp.path()).unwrap();
     assert!(!manifest.manifest.sync_on_launch_enabled());
     assert!(!temp.path().join(".codex/hooks.json").exists());
+}
+
+#[test]
+fn add_exclude_component_writes_remaining_components_to_manifest() {
+    let temp = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    let (_repo, url) = create_git_dependency();
+
+    run_command_in_dir(
+        Command::Add {
+            url,
+            global: false,
+            dev: false,
+            tag: Some("v0.1.0".into()),
+            branch: None,
+            version: None,
+            revision: None,
+            adapter: vec![Adapter::Codex],
+            component: vec![],
+            exclude_component: vec![DependencyComponent::Mcp],
+            sync_on_launch: false,
+            no_sync_on_launch: false,
+            accept_all_dependencies: false,
+            dry_run: false,
+        },
+        temp.path(),
+        cache.path(),
+        &Reporter::silent(),
+    )
+    .unwrap();
+
+    let manifest = fs::read_to_string(temp.path().join(MANIFEST_FILE)).unwrap();
+    assert!(manifest.contains("components = [\"skills\", \"agents\", \"rules\", \"commands\"]"));
 }
 
 #[test]
@@ -1183,6 +1220,7 @@ fn list_command_emits_json_with_locked_metadata() {
             revision: None,
             adapter: vec![Adapter::Codex],
             component: vec![],
+            exclude_component: vec![],
             sync_on_launch: false,
             no_sync_on_launch: false,
             accept_all_dependencies: false,
@@ -1315,6 +1353,7 @@ fn list_command_emits_version_requested_ref_for_semver_dependencies() {
             revision: None,
             adapter: vec![Adapter::Codex],
             component: vec![],
+            exclude_component: vec![],
             sync_on_launch: false,
             no_sync_on_launch: false,
             accept_all_dependencies: false,
@@ -1558,6 +1597,24 @@ fn parses_repeatable_add_component_flags() {
 }
 
 #[test]
+fn parses_repeatable_add_exclude_component_flags() {
+    let cli = Cli::try_parse_from(["nodus", "add", "example/repo", "--exclude-component", "mcp"])
+        .unwrap();
+
+    match cli.command {
+        Command::Add {
+            exclude_component, ..
+        } => {
+            assert_eq!(
+                exclude_component,
+                vec![crate::manifest::DependencyComponent::Mcp]
+            );
+        }
+        other => panic!("expected add command, got {other:?}"),
+    }
+}
+
+#[test]
 fn init_command_emits_creating_and_finished_lines() {
     let temp = TempDir::new().unwrap();
     let cache = TempDir::new().unwrap();
@@ -1705,6 +1762,7 @@ fn add_command_emits_resolving_and_adding_lines() {
             revision: None,
             adapter: vec![Adapter::Claude],
             component: vec![],
+            exclude_component: vec![],
             sync_on_launch: false,
             no_sync_on_launch: false,
             accept_all_dependencies: false,
@@ -1749,6 +1807,7 @@ fn info_command_renders_version_requirement_for_semver_dependencies() {
             revision: None,
             adapter: vec![Adapter::Claude],
             component: vec![],
+            exclude_component: vec![],
             sync_on_launch: false,
             no_sync_on_launch: false,
             accept_all_dependencies: false,
@@ -1800,6 +1859,7 @@ fn add_dry_run_previews_without_writing_project_files() {
             revision: None,
             adapter: vec![Adapter::Claude],
             component: vec![],
+            exclude_component: vec![],
             sync_on_launch: false,
             no_sync_on_launch: false,
             accept_all_dependencies: false,
@@ -1833,6 +1893,7 @@ fn add_dry_run_previews_dependency_members_and_config() {
             revision: None,
             adapter: vec![Adapter::Claude],
             component: vec![],
+            exclude_component: vec![],
             sync_on_launch: false,
             no_sync_on_launch: false,
             accept_all_dependencies: false,
@@ -1867,6 +1928,7 @@ fn add_dry_run_warns_and_disables_invalid_workspace_members() {
             revision: None,
             adapter: vec![Adapter::Claude],
             component: vec![],
+            exclude_component: vec![],
             sync_on_launch: false,
             no_sync_on_launch: false,
             accept_all_dependencies: false,
@@ -1900,6 +1962,7 @@ fn members_list_and_enable_update_workspace_dependency_selection() {
             revision: None,
             adapter: vec![Adapter::Claude],
             component: vec![],
+            exclude_component: vec![],
             sync_on_launch: false,
             no_sync_on_launch: false,
             accept_all_dependencies: false,
@@ -1964,6 +2027,7 @@ fn members_set_empty_clears_workspace_dependency_selection() {
             revision: None,
             adapter: vec![Adapter::Claude],
             component: vec![],
+            exclude_component: vec![],
             sync_on_launch: false,
             no_sync_on_launch: false,
             accept_all_dependencies: false,
@@ -2030,6 +2094,7 @@ fn members_enable_dry_run_previews_workspace_selection_without_writing() {
             revision: None,
             adapter: vec![Adapter::Claude],
             component: vec![],
+            exclude_component: vec![],
             sync_on_launch: false,
             no_sync_on_launch: false,
             accept_all_dependencies: false,
@@ -2084,6 +2149,7 @@ fn members_command_rejects_unknown_workspace_member_before_mutating_manifest() {
             revision: None,
             adapter: vec![Adapter::Claude],
             component: vec![],
+            exclude_component: vec![],
             sync_on_launch: false,
             no_sync_on_launch: false,
             accept_all_dependencies: false,
@@ -2140,6 +2206,7 @@ fn members_enable_and_disable_manage_wrapper_child_packages() {
             revision: None,
             adapter: vec![Adapter::Claude],
             component: vec![],
+            exclude_component: vec![],
             sync_on_launch: false,
             no_sync_on_launch: false,
             accept_all_dependencies: false,
@@ -2494,6 +2561,7 @@ fn outdated_command_emits_json_without_status_lines() {
             revision: None,
             adapter: vec![Adapter::Codex],
             component: vec![],
+            exclude_component: vec![],
             sync_on_launch: false,
             no_sync_on_launch: false,
             accept_all_dependencies: false,
@@ -2541,6 +2609,7 @@ fn clean_command_removes_project_scoped_cache_entries_only() {
             revision: None,
             adapter: vec![Adapter::Codex],
             component: vec![],
+            exclude_component: vec![],
             sync_on_launch: false,
             no_sync_on_launch: false,
             accept_all_dependencies: false,
@@ -2598,6 +2667,7 @@ fn clean_command_dry_run_previews_cache_removals_without_deleting() {
             revision: None,
             adapter: vec![Adapter::Codex],
             component: vec![],
+            exclude_component: vec![],
             sync_on_launch: false,
             no_sync_on_launch: false,
             accept_all_dependencies: false,
@@ -2645,6 +2715,7 @@ fn sync_recreates_cache_after_clean_command() {
             revision: None,
             adapter: vec![Adapter::Codex],
             component: vec![],
+            exclude_component: vec![],
             sync_on_launch: false,
             no_sync_on_launch: false,
             accept_all_dependencies: false,
@@ -2772,6 +2843,7 @@ fn update_command_emits_updating_and_finished_lines() {
             revision: None,
             adapter: vec![Adapter::Codex],
             component: vec![],
+            exclude_component: vec![],
             sync_on_launch: false,
             no_sync_on_launch: false,
             accept_all_dependencies: false,
@@ -2814,6 +2886,7 @@ fn remove_dry_run_keeps_manifest_and_lockfile_unchanged() {
             revision: None,
             adapter: vec![Adapter::Claude],
             component: vec![],
+            exclude_component: vec![],
             sync_on_launch: false,
             no_sync_on_launch: false,
             accept_all_dependencies: false,
@@ -2874,6 +2947,7 @@ fn update_dry_run_keeps_manifest_and_lockfile_unchanged() {
             revision: None,
             adapter: vec![Adapter::Codex],
             component: vec![],
+            exclude_component: vec![],
             sync_on_launch: false,
             no_sync_on_launch: false,
             accept_all_dependencies: false,
@@ -2936,6 +3010,7 @@ fn sync_dry_run_locked_and_frozen_modes_leave_state_unchanged() {
             revision: None,
             adapter: vec![Adapter::Claude],
             component: vec![],
+            exclude_component: vec![],
             sync_on_launch: false,
             no_sync_on_launch: false,
             accept_all_dependencies: false,
@@ -3021,6 +3096,7 @@ fn relay_dry_run_does_not_persist_local_config_or_repo_edits() {
             revision: None,
             adapter: vec![Adapter::Claude],
             component: vec![],
+            exclude_component: vec![],
             sync_on_launch: false,
             no_sync_on_launch: false,
             accept_all_dependencies: false,
@@ -3097,6 +3173,7 @@ fn relay_dry_run_previews_state_only_local_config_changes() {
             revision: None,
             adapter: vec![Adapter::Claude],
             component: vec![],
+            exclude_component: vec![],
             sync_on_launch: false,
             no_sync_on_launch: false,
             accept_all_dependencies: false,
@@ -3246,6 +3323,7 @@ fn relay_supports_multiple_dependencies_in_one_command() {
             revision: None,
             adapter: vec![Adapter::Claude],
             component: vec![],
+            exclude_component: vec![],
             sync_on_launch: false,
             no_sync_on_launch: false,
             accept_all_dependencies: false,
@@ -3275,6 +3353,7 @@ fn relay_supports_multiple_dependencies_in_one_command() {
             revision: None,
             adapter: vec![Adapter::Claude],
             component: vec![],
+            exclude_component: vec![],
             sync_on_launch: false,
             no_sync_on_launch: false,
             accept_all_dependencies: false,
@@ -3393,7 +3472,7 @@ fn sync_auto_registers_nodus_mcp_server_in_mcp_json() {
         &temp.path().join("nodus.toml"),
         r#"
 [dependencies]
-local_playbook = { path = "vendor/playbook", components = ["skills"] }
+local_playbook = { path = "vendor/playbook" }
 "#,
     );
     write_skill(&temp.path().join("vendor/playbook/skills/review"), "Review");

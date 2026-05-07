@@ -3317,7 +3317,7 @@ fn parses_dependency_components() {
         &temp.path().join(MANIFEST_FILE),
         r#"
 [dependencies]
-playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.1.0", components = ["skills", "agents"] }
+playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.1.0", components = ["skills", "agents", "mcp"] }
 "#,
     );
 
@@ -3325,7 +3325,11 @@ playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.1.0", compone
     let dependency = loaded.manifest.dependencies.get("playbook_ios").unwrap();
     assert_eq!(
         dependency.explicit_components_sorted().unwrap(),
-        vec![DependencyComponent::Skills, DependencyComponent::Agents]
+        vec![
+            DependencyComponent::Skills,
+            DependencyComponent::Agents,
+            DependencyComponent::Mcp
+        ]
     );
 }
 

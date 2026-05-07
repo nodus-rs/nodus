@@ -104,6 +104,12 @@ pub(super) enum Command {
         )]
         component: Vec<DependencyComponent>,
         #[arg(
+            long = "exclude-component",
+            value_enum,
+            help = "Exclude one or more dependency components from the package"
+        )]
+        exclude_component: Vec<DependencyComponent>,
+        #[arg(
             long = "sync-on-launch",
             help = "Persist project startup hooks so supported tools run `nodus sync` when they open this repository"
         )]

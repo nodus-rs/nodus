@@ -15,6 +15,7 @@ pub(crate) struct AddCommand {
     pub(crate) revision: Option<String>,
     pub(crate) adapter: Vec<Adapter>,
     pub(crate) component: Vec<DependencyComponent>,
+    pub(crate) exclude_component: Vec<DependencyComponent>,
     pub(crate) sync_on_launch: bool,
     pub(crate) no_sync_on_launch: bool,
     pub(crate) accept_all_dependencies: bool,
@@ -40,6 +41,7 @@ pub(crate) fn handle_add(context: &CommandContext<'_>, command: AddCommand) -> a
         revision,
         adapter,
         component,
+        exclude_component,
         sync_on_launch,
         no_sync_on_launch,
         accept_all_dependencies,
@@ -58,6 +60,8 @@ pub(crate) fn handle_add(context: &CommandContext<'_>, command: AddCommand) -> a
     } else {
         InstallPaths::project(context.cwd)
     };
+    let components = DependencyComponent::selected_with_exclusions(&component, &exclude_component)
+        .map_err(anyhow::Error::msg)?;
     let options = crate::git::AddDependencyOptions {
         git_ref: requested_git_ref(tag.as_deref(), branch.as_deref(), revision.as_deref())?,
         version_req: version
@@ -70,7 +74,7 @@ pub(crate) fn handle_add(context: &CommandContext<'_>, command: AddCommand) -> a
             DependencyKind::Dependency
         },
         adapters: &adapter,
-        components: &component,
+        components: &components,
         sync_on_launch,
         accept_all_dependencies,
     };

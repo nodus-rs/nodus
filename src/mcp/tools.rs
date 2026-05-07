@@ -66,7 +66,12 @@ pub fn add_input_schema() -> JsonValue {
             "component": {
                 "type": "array",
                 "items": { "type": "string" },
-                "description": "Components to install (skills, agents, rules, commands)"
+                "description": "Components to install (skills, agents, rules, commands, mcp)"
+            },
+            "exclude_component": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Components to exclude (skills, agents, rules, commands, mcp)"
             }
         },
         "required": ["package"]

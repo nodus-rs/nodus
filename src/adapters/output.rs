@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -761,13 +761,10 @@ fn mcp_config_file(
     merge_existing_mcp: bool,
 ) -> Result<Option<ManagedFile>> {
     let path = project_root.join(".mcp.json");
-    let previously_managed = existing_lockfile
-        .map(Lockfile::managed_mcp_server_names)
-        .unwrap_or_default();
+    let previously_managed = previously_managed_mcp_servers(existing_lockfile, ".mcp.json");
     let mut desired_servers = BTreeMap::new();
     for (package, _) in packages {
-        if matches!(package.source, PackageSource::Root) && !package.manifest.manifest.publish_root
-        {
+        if !package_selects_mcp(package) {
             continue;
         }
 
@@ -782,21 +779,22 @@ fn mcp_config_file(
         }
     }
 
-    // Auto-register the nodus CLI itself as an MCP server.
-    let nodus_command = managed_nodus_command();
-    let nodus_args = managed_nodus_args();
-    desired_servers.insert(
-        "nodus".to_string(),
-        EmittedMcpServerConfig {
-            transport_type: None,
-            command: Some(nodus_command),
-            url: None,
-            args: nodus_args,
-            env: BTreeMap::new(),
-            headers: BTreeMap::new(),
-            cwd: None,
-        },
-    );
+    if should_auto_register_nodus_mcp(packages) {
+        let nodus_command = managed_nodus_command();
+        let nodus_args = managed_nodus_args();
+        desired_servers.insert(
+            "nodus".to_string(),
+            EmittedMcpServerConfig {
+                transport_type: None,
+                command: Some(nodus_command),
+                url: None,
+                args: nodus_args,
+                env: BTreeMap::new(),
+                headers: BTreeMap::new(),
+                cwd: None,
+            },
+        );
+    }
 
     if desired_servers.is_empty() && previously_managed.is_empty() {
         return Ok(None);
@@ -838,13 +836,11 @@ fn codex_mcp_config_file(
     emit_launch_sync: bool,
 ) -> Result<Option<ManagedFile>> {
     let path = project_root.join(".codex/config.toml");
-    let previously_managed = existing_lockfile
-        .map(Lockfile::managed_mcp_server_names)
-        .unwrap_or_default();
+    let previously_managed =
+        previously_managed_mcp_servers(existing_lockfile, ".codex/config.toml");
     let mut desired_servers = BTreeMap::new();
     for (package, _) in packages {
-        if matches!(package.source, PackageSource::Root) && !package.manifest.manifest.publish_root
-        {
+        if !package_selects_mcp(package) {
             continue;
         }
 
@@ -859,8 +855,7 @@ fn codex_mcp_config_file(
         }
     }
 
-    // Auto-register the nodus CLI itself as an MCP server.
-    {
+    if should_auto_register_nodus_mcp(packages) {
         let nodus_command = managed_nodus_command();
         let mut table = toml::map::Map::new();
         table.insert("command".into(), TomlValue::String(nodus_command));
@@ -1014,13 +1009,10 @@ fn opencode_mcp_config_file(
     warnings: &mut Vec<String>,
 ) -> Result<Option<ManagedFile>> {
     let path = project_root.join("opencode.json");
-    let previously_managed = existing_lockfile
-        .map(Lockfile::managed_mcp_server_names)
-        .unwrap_or_default();
+    let previously_managed = previously_managed_mcp_servers(existing_lockfile, "opencode.json");
     let mut desired_servers = BTreeMap::new();
     for (package, _) in packages {
-        if matches!(package.source, PackageSource::Root) && !package.manifest.manifest.publish_root
-        {
+        if !package_selects_mcp(package) {
             continue;
         }
 
@@ -1038,8 +1030,7 @@ fn opencode_mcp_config_file(
         }
     }
 
-    // Auto-register the nodus CLI itself as an MCP server.
-    {
+    if should_auto_register_nodus_mcp(packages) {
         let nodus_command = managed_nodus_command();
         let mut object = JsonMap::new();
         object.insert("type".into(), JsonValue::String("local".into()));
@@ -1085,6 +1076,34 @@ fn read_project_opencode_config(path: &Path) -> Result<ProjectOpenCodeConfig> {
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     serde_json::from_str(&contents)
         .with_context(|| format!("failed to parse OpenCode config {}", path.display()))
+}
+
+fn should_auto_register_nodus_mcp(packages: &[(ResolvedPackage, PathBuf)]) -> bool {
+    packages
+        .iter()
+        .any(|(package, _)| package_selects_mcp(package))
+}
+
+fn package_selects_mcp(package: &ResolvedPackage) -> bool {
+    package.emits_runtime_outputs() && package.selects_component(DependencyComponent::Mcp)
+}
+
+fn previously_managed_mcp_servers(
+    existing_lockfile: Option<&Lockfile>,
+    config_path: &str,
+) -> HashSet<String> {
+    let mut names = existing_lockfile
+        .map(Lockfile::managed_mcp_server_names)
+        .unwrap_or_default();
+    if existing_lockfile.is_some_and(|lockfile| {
+        lockfile
+            .managed_files
+            .iter()
+            .any(|managed_file| managed_file == config_path)
+    }) {
+        names.insert("nodus".to_string());
+    }
+    names
 }
 
 fn emitted_opencode_mcp_server(

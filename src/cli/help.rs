@@ -41,6 +41,7 @@ Run `nodus doctor` next to verify the repo is healthy."#;
 pub(super) const ADD_AFTER_LONG_HELP: &str = r#"Examples:
   nodus add nodus-rs/nodus --adapter codex
   nodus add nodus-rs/nodus --adapter codex --sync-on-launch
+  nodus add owner/repo --adapter codex --exclude-component mcp
   nodus add ./vendor/playbook --adapter claude
   nodus add owner/repo --tag v1.2.3 --adapter codex
   nodus add owner/marketplace --accept-all-dependencies --adapter codex

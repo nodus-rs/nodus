@@ -4314,7 +4314,7 @@ shared = { path = "vendor/shared", components = ["commands"] }
             ))
             .exists()
     );
-    assert_eq!(summary.managed_file_count, 4);
+    assert_eq!(summary.managed_file_count, 2);
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     let shared = lockfile
@@ -4707,6 +4707,56 @@ IS_FIREBASE_MCP = "true"
 }
 
 #[test]
+fn sync_omits_mcp_outputs_when_mcp_component_is_not_selected() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[dependencies.firebase]
+path = "vendor/firebase"
+components = ["skills", "agents", "rules", "commands"]
+"#,
+    );
+    write_file(
+        &temp.path().join("vendor/firebase/nodus.toml"),
+        r#"
+[mcp_servers.firebase]
+command = "npx"
+args = ["-y", "firebase-tools", "mcp", "--dir", "."]
+"#,
+    );
+
+    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
+
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    let firebase_package = lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == "firebase")
+        .unwrap();
+
+    assert_eq!(firebase_package.mcp_servers, Vec::<String>::new());
+    assert_eq!(
+        firebase_package.selected_components,
+        Some(vec![
+            DependencyComponent::Skills,
+            DependencyComponent::Agents,
+            DependencyComponent::Rules,
+            DependencyComponent::Commands
+        ])
+    );
+    assert!(!lockfile.managed_files.contains(&String::from(".mcp.json")));
+    assert!(
+        !lockfile
+            .managed_files
+            .contains(&String::from(".codex/config.toml"))
+    );
+    assert!(!temp.path().join(".mcp.json").exists());
+    assert!(!temp.path().join(".codex/config.toml").exists());
+}
+
+#[test]
 fn sync_emits_codex_config_toml_from_dependency_manifests() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();
@@ -5025,6 +5075,10 @@ command = "npx"
     "firebase__firebase": {
       "command": "npx"
     },
+    "nodus": {
+      "command": "nodus",
+      "args": ["mcp", "serve"]
+    },
     "local": {
       "command": "node"
     }
@@ -5046,11 +5100,8 @@ command = "npx"
         json["mcpServers"]["local"]["command"].as_str(),
         Some("node")
     );
-    assert!(
-        json["mcpServers"].get("nodus").is_some(),
-        "nodus server should be auto-registered"
-    );
-    assert!(lockfile.managed_files.contains(&String::from(".mcp.json")));
+    assert!(json["mcpServers"].get("nodus").is_none());
+    assert!(!lockfile.managed_files.contains(&String::from(".mcp.json")));
 }
 
 #[test]
@@ -7105,9 +7156,8 @@ shared = { path = "vendor/shared", components = ["agents"] }
     let summary =
         sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex])
             .unwrap();
-    // nodus auto-registers itself as an MCP server, generating .mcp.json,
-    // .codex/config.toml, .codex/.gitignore, and the selected Codex agent output
-    assert_eq!(summary.managed_file_count, 4);
+    // The package selects only agents, so MCP config is not emitted.
+    assert_eq!(summary.managed_file_count, 2);
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     let shared = lockfile
@@ -7119,9 +7169,10 @@ shared = { path = "vendor/shared", components = ["agents"] }
         shared.selected_components,
         Some(vec![DependencyComponent::Agents])
     );
-    assert_eq!(lockfile.managed_files.len(), 4);
-    assert!(lockfile.managed_files.contains(&String::from(".mcp.json")));
+    assert_eq!(lockfile.managed_files.len(), 2);
+    assert!(!lockfile.managed_files.contains(&String::from(".mcp.json")));
     assert!(temp.path().join(".codex/agents/shared.toml").exists());
+    assert!(!temp.path().join(".mcp.json").exists());
 }
 
 #[test]
