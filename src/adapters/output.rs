@@ -885,10 +885,11 @@ fn codex_mcp_config_file(
         !previously_managed.contains(server_name) && !desired_servers.contains_key(server_name)
     });
     config.mcp_servers.extend(desired_servers);
+    config.features.remove("codex_hooks");
     if emit_launch_sync {
         config
             .features
-            .insert("codex_hooks".into(), TomlValue::Boolean(true));
+            .insert("hooks".into(), TomlValue::Boolean(true));
     }
 
     if config.mcp_servers.is_empty() && config.features.is_empty() && config.extra.is_empty() {

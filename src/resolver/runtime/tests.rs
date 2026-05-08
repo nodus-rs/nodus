@@ -5469,13 +5469,12 @@ sync_on_startup = true
             .unwrap();
     let opencode_plugin =
         fs::read_to_string(temp.path().join(".opencode/plugins/nodus-hooks.js")).unwrap();
+    let codex_features = codex_config["features"].as_table().unwrap();
 
     assert!(claude_settings.contains("\"SessionStart\""));
     assert!(claude_settings.contains("\"startup|resume\""));
-    assert_eq!(
-        codex_config["features"]["codex_hooks"].as_bool(),
-        Some(true)
-    );
+    assert_eq!(codex_config["features"]["hooks"].as_bool(), Some(true));
+    assert!(!codex_features.contains_key("codex_hooks"));
     assert_eq!(
         codex_hooks["hooks"]["SessionStart"][0]["matcher"].as_str(),
         Some("startup|resume")
@@ -5495,6 +5494,44 @@ sync_on_startup = true
             .contains("/.codex/hooks/nodus-hook-")
     );
     assert!(opencode_plugin.contains(".opencode/scripts/nodus-hook-"));
+}
+
+#[test]
+fn sync_replaces_deprecated_codex_hooks_feature_when_emitting_hooks() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_skill(&temp.path().join("skills/review"), "Review");
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[adapters]
+enabled = ["codex"]
+
+[launch_hooks]
+sync_on_startup = true
+"#,
+    );
+    write_file(
+        &temp.path().join(".codex/config.toml"),
+        r#"
+[features]
+codex_hooks = true
+preserved_feature = true
+"#,
+    );
+
+    sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+
+    let codex_config: toml::Value =
+        toml::from_str(&fs::read_to_string(temp.path().join(".codex/config.toml")).unwrap())
+            .unwrap();
+    let codex_features = codex_config["features"].as_table().unwrap();
+    assert_eq!(
+        codex_config["features"]["preserved_feature"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(codex_config["features"]["hooks"].as_bool(), Some(true));
+    assert!(!codex_features.contains_key("codex_hooks"));
 }
 
 #[test]
