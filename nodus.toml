@@ -6,7 +6,7 @@ command = "nodus"
 args = ["mcp", "serve"]
 
 [adapters]
-enabled = ["codex", "claude"]
+enabled = ["claude", "codex"]
 [[hooks]]
 id = "nodus.sync_on_startup"
 event = "session_start"
@@ -17,4 +17,5 @@ type = "command"
 command = "nodus sync"
 
 [dev-dependencies]
+ena = { github = "oops-rs/ena", branch = "main" }
 fuli = { github = "oops-rs/fuli", branch = "main" }
