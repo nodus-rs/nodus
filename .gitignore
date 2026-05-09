@@ -2,5 +2,7 @@
 nodus.lock
 .mcp.json
 opencode.json
+.claude
+.codex
 
 .fuli
