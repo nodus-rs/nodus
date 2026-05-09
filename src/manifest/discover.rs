@@ -717,7 +717,7 @@ fn collect_claude_plugin_runtime_files(
     }
     for hook in &extras.hook_compat_sources {
         if let ClaudePluginHookCompatSource::Path(path) = hook {
-            collect_existing_path_files(root, path, &mut files)?;
+            collect_hook_compat_source_files(root, path, &mut files)?;
         }
     }
     for source in &extras.mcp_servers {
@@ -729,6 +729,58 @@ fn collect_claude_plugin_runtime_files(
     files.sort();
     files.dedup();
     Ok(files)
+}
+
+// When a claude plugin hook source points at a single config file, also copy
+// sibling files from its containing directory. `${CLAUDE_PLUGIN_ROOT}` commands
+// in the config typically reference scripts placed next to the JSON, and
+// `collect_existing_path_files` would otherwise only copy the file itself —
+// leaving the referenced scripts missing at runtime. The walk is scoped to the
+// config's parent so the top-level `.claude`/`.opencode`/etc. exclusions in
+// `collect_existing_path_files` still protect unrelated areas.
+fn collect_hook_compat_source_files(
+    root: &Path,
+    relative: &Path,
+    files: &mut Vec<PathBuf>,
+) -> Result<()> {
+    let resolved = root.join(relative);
+    if !resolved.exists() {
+        return Ok(());
+    }
+    if resolved.is_dir() {
+        return collect_existing_path_files(root, relative, files);
+    }
+    if !resolved.is_file() {
+        return Ok(());
+    }
+
+    let canonical = canonicalize_existing_path(&resolved)?;
+    files.push(canonical.clone());
+
+    let Some(parent) = canonical.parent() else {
+        return Ok(());
+    };
+    let canonical_root = canonicalize_existing_path(root)?;
+    if parent == canonical_root || !parent.starts_with(&canonical_root) {
+        // Refuse to vacuum the entire package when the config sits at the root.
+        return Ok(());
+    }
+
+    for candidate in collect_files(parent)? {
+        let skip = candidate
+            .strip_prefix(parent)
+            .ok()
+            .and_then(|suffix| suffix.components().next())
+            .is_some_and(|component| {
+                let name = component.as_os_str();
+                name == ".git" || name == ".nodus"
+            });
+        if skip {
+            continue;
+        }
+        files.push(candidate);
+    }
+    Ok(())
 }
 
 fn collect_existing_path_files(

@@ -2021,6 +2021,72 @@ fn accepts_dependency_repo_with_manifest_declared_claude_plugin_hooks() {
 }
 
 #[test]
+fn claude_plugin_hook_under_dotclaude_copies_sibling_scripts() {
+    // Regression: packages that ship hooks.json under `.claude/hooks/` (instead
+    // of the conventional top-level `hooks/`) used to have their sibling
+    // scripts dropped by the installer, because the package root `.claude`
+    // exclusion in `collect_existing_path_files` filtered them out and the
+    // single-file hook entry copied only the JSON itself.
+    let temp = TempDir::new().unwrap();
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        "claude_plugin_hooks = [\".claude/hooks/hooks.json\"]\n",
+    );
+    write_file(
+        &temp.path().join(".claude/hooks/hooks.json"),
+        "{\n  \"hooks\": {\n    \"Stop\": []\n  }\n}\n",
+    );
+    write_file(
+        &temp.path().join(".claude/hooks/hook-stop.sh"),
+        "#!/usr/bin/env bash\n",
+    );
+    write_file(
+        &temp.path().join(".claude/hooks/metrics_hook.py"),
+        "print('hello')\n",
+    );
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    let package_files = loaded.package_files().unwrap();
+    assert!(package_files.contains(
+        &canonicalize_path(&temp.path().join(".claude/hooks/hooks.json")).unwrap()
+    ));
+    assert!(package_files.contains(
+        &canonicalize_path(&temp.path().join(".claude/hooks/hook-stop.sh")).unwrap()
+    ));
+    assert!(package_files.contains(
+        &canonicalize_path(&temp.path().join(".claude/hooks/metrics_hook.py")).unwrap()
+    ));
+}
+
+#[test]
+fn claude_plugin_hook_at_package_root_does_not_vacuum_root() {
+    // If the hook config sits at the package root, we must not walk the whole
+    // package — only the declared file gets copied.
+    let temp = TempDir::new().unwrap();
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        "claude_plugin_hooks = [\"hooks.json\"]\n",
+    );
+    write_file(
+        &temp.path().join("hooks.json"),
+        "{\n  \"hooks\": {\n    \"Stop\": []\n  }\n}\n",
+    );
+    write_file(&temp.path().join("unrelated.txt"), "do not copy me\n");
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    let package_files = loaded.package_files().unwrap();
+    assert!(
+        package_files.contains(&canonicalize_path(&temp.path().join("hooks.json")).unwrap())
+    );
+    assert!(
+        !package_files
+            .contains(&canonicalize_path(&temp.path().join("unrelated.txt")).unwrap())
+    );
+}
+
+#[test]
 fn accepts_dependency_repo_with_manifest_declared_opencode_plugin_hooks() {
     let temp = TempDir::new().unwrap();
     write_file(
