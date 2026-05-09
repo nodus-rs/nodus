@@ -9,6 +9,7 @@ use crate::manifest::{DependencyComponent, HookEvent, HookSessionSource, HookSpe
 use crate::resolver::{PackageSource, ResolvedPackage};
 
 mod output;
+mod profile;
 
 pub mod agents;
 pub mod claude;
@@ -18,6 +19,7 @@ pub mod cursor;
 pub mod opencode;
 
 pub(crate) use output::build_output_plan;
+pub(crate) use profile::artifact_supported;
 
 #[derive(Debug, Clone)]
 pub struct ManagedFile {
@@ -33,55 +35,14 @@ pub(crate) struct ManagedHookSpec {
 }
 
 pub(crate) fn hook_event_supported_by_adapter(adapter: Adapter, event: HookEvent) -> bool {
-    match adapter {
-        Adapter::Claude => !matches!(event, HookEvent::PermissionRequest),
-        Adapter::Codex => matches!(
-            event,
-            HookEvent::SessionStart
-                | HookEvent::UserPromptSubmit
-                | HookEvent::PreToolUse
-                | HookEvent::PermissionRequest
-                | HookEvent::PostToolUse
-                | HookEvent::Stop
-        ),
-        Adapter::OpenCode => matches!(
-            event,
-            HookEvent::SessionStart
-                | HookEvent::PreToolUse
-                | HookEvent::PostToolUse
-                | HookEvent::Stop
-        ),
-        Adapter::Copilot => matches!(
-            event,
-            HookEvent::SessionStart
-                | HookEvent::UserPromptSubmit
-                | HookEvent::PreToolUse
-                | HookEvent::PostToolUse
-                | HookEvent::Stop
-                | HookEvent::SubagentStop
-                | HookEvent::SessionEnd
-        ),
-        Adapter::Agents | Adapter::Cursor => false,
-    }
+    profile::hook_event_supported(adapter, event)
 }
 
 pub(crate) fn session_start_source_supported_by_adapter(
     adapter: Adapter,
     source: HookSessionSource,
 ) -> bool {
-    match adapter {
-        Adapter::Claude => true,
-        Adapter::Codex => matches!(
-            source,
-            HookSessionSource::Startup | HookSessionSource::Resume
-        ),
-        Adapter::OpenCode => matches!(source, HookSessionSource::Startup),
-        Adapter::Copilot => matches!(
-            source,
-            HookSessionSource::Startup | HookSessionSource::Resume
-        ),
-        Adapter::Agents | Adapter::Cursor => false,
-    }
+    profile::session_start_source_supported(adapter, source)
 }
 
 pub(crate) fn hook_supported_by_adapter(hook: &HookSpec, adapter: Adapter) -> bool {
@@ -169,50 +130,7 @@ pub(crate) fn hook_tool_matcher_for_adapter(
     adapter: Adapter,
     tool: HookTool,
 ) -> Option<&'static str> {
-    match adapter {
-        Adapter::Claude => match tool {
-            HookTool::Bash => Some("Bash"),
-            HookTool::Read => Some("Read"),
-            HookTool::Edit => Some("Edit"),
-            HookTool::Write => Some("Write"),
-            HookTool::MultiEdit => Some("MultiEdit"),
-            HookTool::Glob => Some("Glob"),
-            HookTool::Grep => Some("Grep"),
-            HookTool::WebFetch => Some("WebFetch"),
-            HookTool::WebSearch => Some("WebSearch"),
-            HookTool::Task => Some("Task"),
-            HookTool::ApplyPatch => None,
-        },
-        Adapter::Codex => match tool {
-            HookTool::Bash => Some("Bash"),
-            _ => None,
-        },
-        Adapter::OpenCode => match tool {
-            HookTool::ApplyPatch => Some("apply_patch"),
-            HookTool::Bash => Some("bash"),
-            HookTool::Edit => Some("edit"),
-            HookTool::Glob => Some("glob"),
-            HookTool::Grep => Some("grep"),
-            HookTool::MultiEdit => Some("multi_edit"),
-            HookTool::Read => Some("read"),
-            HookTool::Task => Some("task"),
-            HookTool::WebFetch => Some("web_fetch"),
-            HookTool::WebSearch => Some("web_search"),
-            HookTool::Write => Some("write"),
-        },
-        Adapter::Copilot => match tool {
-            HookTool::Bash => Some("bash"),
-            HookTool::Read => Some("view"),
-            HookTool::Edit => Some("edit"),
-            HookTool::Write => Some("create"),
-            HookTool::Glob => Some("glob"),
-            HookTool::Grep => Some("grep"),
-            HookTool::WebFetch => Some("web_fetch"),
-            HookTool::Task => Some("task"),
-            HookTool::ApplyPatch | HookTool::MultiEdit | HookTool::WebSearch => None,
-        },
-        Adapter::Agents | Adapter::Cursor => None,
-    }
+    profile::hook_tool_matcher(adapter, tool)
 }
 
 #[derive(
@@ -510,26 +428,8 @@ impl ManagedArtifactNames {
 }
 
 impl ArtifactKind {
-    pub const fn supported_adapters(self) -> Adapters {
-        match self {
-            Self::Skill => Adapters::AGENTS
-                .union(Adapters::CLAUDE)
-                .union(Adapters::CODEX)
-                .union(Adapters::COPILOT)
-                .union(Adapters::CURSOR)
-                .union(Adapters::OPENCODE),
-            Self::Agent => Adapters::CLAUDE
-                .union(Adapters::CODEX)
-                .union(Adapters::COPILOT)
-                .union(Adapters::OPENCODE),
-            Self::Rule => Adapters::CLAUDE
-                .union(Adapters::CURSOR)
-                .union(Adapters::OPENCODE),
-            Self::Command => Adapters::AGENTS
-                .union(Adapters::CLAUDE)
-                .union(Adapters::CURSOR)
-                .union(Adapters::OPENCODE),
-        }
+    pub fn supported_adapters(self) -> Adapters {
+        profile::supported_adapters(self)
     }
 
     pub const fn plural_name(self) -> &'static str {
@@ -585,14 +485,7 @@ pub fn locked_managed_artifact_id(
 }
 
 pub fn runtime_root(project_root: &Path, adapter: Adapter) -> PathBuf {
-    project_root.join(match adapter {
-        Adapter::Agents => ".agents",
-        Adapter::Claude => ".claude",
-        Adapter::Codex => ".codex",
-        Adapter::Copilot => ".github",
-        Adapter::Cursor => ".cursor",
-        Adapter::OpenCode => ".opencode",
-    })
+    project_root.join(profile::runtime_root_name(adapter))
 }
 
 pub fn managed_skill_root(

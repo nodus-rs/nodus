@@ -9,7 +9,7 @@ use toml::Value as TomlValue;
 
 use super::{
     Adapter, Adapters, ArtifactKind, ManagedArtifactNames, ManagedFile, ManagedHookSpec,
-    hook_supported_by_adapter,
+    artifact_supported, hook_supported_by_adapter,
 };
 use crate::lockfile::{Lockfile, managed_mcp_server_name};
 use crate::manifest::{DependencyComponent, HookSpec, McpServerConfig};
@@ -182,9 +182,7 @@ pub(crate) fn build_output_plan(
             }
 
             if selected_adapters.contains(Adapter::Agents)
-                && ArtifactKind::Skill
-                    .supported_adapters()
-                    .contains(Adapter::Agents)
+                && artifact_supported(Adapter::Agents, ArtifactKind::Skill)
             {
                 merge_files(
                     &mut plan.files,
@@ -201,9 +199,7 @@ pub(crate) fn build_output_plan(
             }
 
             if selected_adapters.contains(Adapter::Claude)
-                && ArtifactKind::Skill
-                    .supported_adapters()
-                    .contains(Adapter::Claude)
+                && artifact_supported(Adapter::Claude, ArtifactKind::Skill)
             {
                 merge_files(
                     &mut plan.files,
@@ -220,9 +216,7 @@ pub(crate) fn build_output_plan(
             }
 
             if selected_adapters.contains(Adapter::Codex)
-                && ArtifactKind::Skill
-                    .supported_adapters()
-                    .contains(Adapter::Codex)
+                && artifact_supported(Adapter::Codex, ArtifactKind::Skill)
             {
                 merge_files(
                     &mut plan.files,
@@ -239,9 +233,7 @@ pub(crate) fn build_output_plan(
             }
 
             if selected_adapters.contains(Adapter::Copilot)
-                && ArtifactKind::Skill
-                    .supported_adapters()
-                    .contains(Adapter::Copilot)
+                && artifact_supported(Adapter::Copilot, ArtifactKind::Skill)
             {
                 merge_files(
                     &mut plan.files,
@@ -258,9 +250,7 @@ pub(crate) fn build_output_plan(
             }
 
             if selected_adapters.contains(Adapter::Cursor)
-                && ArtifactKind::Skill
-                    .supported_adapters()
-                    .contains(Adapter::Cursor)
+                && artifact_supported(Adapter::Cursor, ArtifactKind::Skill)
             {
                 merge_files(
                     &mut plan.files,
@@ -277,9 +267,7 @@ pub(crate) fn build_output_plan(
             }
 
             if selected_adapters.contains(Adapter::OpenCode)
-                && ArtifactKind::Skill
-                    .supported_adapters()
-                    .contains(Adapter::OpenCode)
+                && artifact_supported(Adapter::OpenCode, ArtifactKind::Skill)
             {
                 merge_files(
                     &mut plan.files,
@@ -298,9 +286,7 @@ pub(crate) fn build_output_plan(
 
         if package.selects_component(DependencyComponent::Agents) {
             if selected_adapters.contains(Adapter::Claude)
-                && ArtifactKind::Agent
-                    .supported_adapters()
-                    .contains(Adapter::Claude)
+                && artifact_supported(Adapter::Claude, ArtifactKind::Agent)
             {
                 for agent in package.manifest.discovered.selected_agents(Adapter::Claude) {
                     merge_file(
@@ -319,9 +305,7 @@ pub(crate) fn build_output_plan(
             }
 
             if selected_adapters.contains(Adapter::Codex)
-                && ArtifactKind::Agent
-                    .supported_adapters()
-                    .contains(Adapter::Codex)
+                && artifact_supported(Adapter::Codex, ArtifactKind::Agent)
             {
                 for agent in package.manifest.discovered.selected_agents(Adapter::Codex) {
                     merge_file(
@@ -340,9 +324,7 @@ pub(crate) fn build_output_plan(
             }
 
             if selected_adapters.contains(Adapter::Copilot)
-                && ArtifactKind::Agent
-                    .supported_adapters()
-                    .contains(Adapter::Copilot)
+                && artifact_supported(Adapter::Copilot, ArtifactKind::Agent)
             {
                 for agent in package
                     .manifest
@@ -365,9 +347,7 @@ pub(crate) fn build_output_plan(
             }
 
             if selected_adapters.contains(Adapter::OpenCode)
-                && ArtifactKind::Agent
-                    .supported_adapters()
-                    .contains(Adapter::OpenCode)
+                && artifact_supported(Adapter::OpenCode, ArtifactKind::Agent)
             {
                 for agent in package
                     .manifest
@@ -396,9 +376,7 @@ pub(crate) fn build_output_plan(
             }
 
             if selected_adapters.contains(Adapter::Claude)
-                && ArtifactKind::Rule
-                    .supported_adapters()
-                    .contains(Adapter::Claude)
+                && artifact_supported(Adapter::Claude, ArtifactKind::Rule)
             {
                 merge_file(
                     &mut plan.files,
@@ -415,9 +393,7 @@ pub(crate) fn build_output_plan(
             }
 
             if selected_adapters.contains(Adapter::OpenCode)
-                && ArtifactKind::Rule
-                    .supported_adapters()
-                    .contains(Adapter::OpenCode)
+                && artifact_supported(Adapter::OpenCode, ArtifactKind::Rule)
             {
                 merge_file(
                     &mut plan.files,
@@ -434,9 +410,7 @@ pub(crate) fn build_output_plan(
             }
 
             if selected_adapters.contains(Adapter::Cursor)
-                && ArtifactKind::Rule
-                    .supported_adapters()
-                    .contains(Adapter::Cursor)
+                && artifact_supported(Adapter::Cursor, ArtifactKind::Rule)
             {
                 merge_file(
                     &mut plan.files,
@@ -459,9 +433,7 @@ pub(crate) fn build_output_plan(
             }
 
             if selected_adapters.contains(Adapter::Agents)
-                && ArtifactKind::Command
-                    .supported_adapters()
-                    .contains(Adapter::Agents)
+                && artifact_supported(Adapter::Agents, ArtifactKind::Command)
             {
                 merge_file(
                     &mut plan.files,
@@ -478,9 +450,7 @@ pub(crate) fn build_output_plan(
             }
 
             if selected_adapters.contains(Adapter::Claude)
-                && ArtifactKind::Command
-                    .supported_adapters()
-                    .contains(Adapter::Claude)
+                && artifact_supported(Adapter::Claude, ArtifactKind::Command)
             {
                 merge_file(
                     &mut plan.files,
@@ -514,9 +484,7 @@ pub(crate) fn build_output_plan(
             }
 
             if selected_adapters.contains(Adapter::Cursor)
-                && ArtifactKind::Command
-                    .supported_adapters()
-                    .contains(Adapter::Cursor)
+                && artifact_supported(Adapter::Cursor, ArtifactKind::Command)
             {
                 merge_file(
                     &mut plan.files,
@@ -533,9 +501,7 @@ pub(crate) fn build_output_plan(
             }
 
             if selected_adapters.contains(Adapter::OpenCode)
-                && ArtifactKind::Command
-                    .supported_adapters()
-                    .contains(Adapter::OpenCode)
+                && artifact_supported(Adapter::OpenCode, ArtifactKind::Command)
             {
                 merge_file(
                     &mut plan.files,
