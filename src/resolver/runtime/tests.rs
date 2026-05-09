@@ -5283,6 +5283,7 @@ shared = { path = "vendor/shared" }
         version: 8,
         packages: current_lockfile.packages,
         managed_files: current_lockfile.managed_files,
+        managed_outputs: current_lockfile.managed_outputs,
     }
     .write(&temp.path().join(LOCKFILE_NAME))
     .unwrap();
