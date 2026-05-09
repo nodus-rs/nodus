@@ -7,7 +7,7 @@ use semver::{Version, VersionReq};
 
 use super::discover::{
     canonicalize_existing_directory_path, canonicalize_existing_path, collect_files,
-    default_package_name, normalize_manifest_relative_path, quote,
+    collect_root_skill_files, default_package_name, normalize_manifest_relative_path, quote,
     validate_dependency_managed_specs, validate_managed_export_specs,
 };
 use super::*;
@@ -1214,7 +1214,12 @@ impl PackageContents {
         for skill in &self.skills {
             let logical_root = package.root.join(&skill.path);
             let resolved_root = package.resolve_existing_directory(&skill.path)?;
-            for file in collect_files(&resolved_root)? {
+            let skill_files = if skill.path.as_os_str().is_empty() {
+                collect_root_skill_files(&resolved_root)?
+            } else {
+                collect_files(&resolved_root)?
+            };
+            for file in skill_files {
                 let relative = strip_path_prefix(&file, &resolved_root).with_context(|| {
                     format!(
                         "failed to make {} relative to {}",

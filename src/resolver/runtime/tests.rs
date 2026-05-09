@@ -796,6 +796,33 @@ shared = { path = "vendor/shared" }
 }
 
 #[test]
+fn sync_installs_root_skill_dependency() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    let package = temp.path().join("vendor/root-skill-pack");
+    write_skill(&package, "Root Skill");
+    write_file(&package.join("assets/reference.md"), "asset notes\n");
+    write_file(&package.join(".git/config"), "private git metadata\n");
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[dependencies]
+root_skill_pack = { path = "vendor/root-skill-pack" }
+"#,
+    );
+
+    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Claude]).unwrap();
+
+    let emitted_skill = temp.path().join(".claude/skills/root-skill-pack");
+    assert!(emitted_skill.join("SKILL.md").exists());
+    assert_eq!(
+        fs::read_to_string(emitted_skill.join("assets/reference.md")).unwrap(),
+        "asset notes\n"
+    );
+    assert!(!emitted_skill.join(".git/config").exists());
+}
+
+#[test]
 fn resolves_local_path_dependencies_with_configured_content_roots() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();

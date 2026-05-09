@@ -2433,6 +2433,67 @@ fn accepts_skill_frontmatter_without_name_by_falling_back_to_folder_name() {
 }
 
 #[test]
+fn discovers_root_skill_without_manifest() {
+    let temp = TempDir::new().unwrap();
+    let package = temp.path().join("Root Skill Pack");
+    write_skill(&package, "Root Skill");
+    write_file(&package.join("assets/reference.md"), "asset notes\n");
+    write_file(&package.join(".git/config"), "private git metadata\n");
+
+    let loaded = load_dependency_from_dir(&package).unwrap();
+
+    assert_eq!(loaded.discovered.skills.len(), 1);
+    assert_eq!(loaded.discovered.skills[0].id, "root-skill-pack");
+    assert_eq!(loaded.discovered.skills[0].path, PathBuf::new());
+
+    let package_files = loaded.package_files().unwrap();
+    assert!(package_files.contains(&canonicalize_path(&package.join("SKILL.md")).unwrap()));
+    assert!(
+        package_files.contains(&canonicalize_path(&package.join("assets/reference.md")).unwrap())
+    );
+    assert!(
+        !package_files
+            .iter()
+            .any(|path| path.ends_with(Path::new(".git/config")))
+    );
+}
+
+#[test]
+fn root_skill_does_not_override_explicit_manifest() {
+    let temp = TempDir::new().unwrap();
+    write_skill(temp.path(), "Root Skill");
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[mcp_servers.firebase]
+command = "npx"
+args = ["-y", "firebase-tools", "mcp", "--dir", "."]
+"#,
+    );
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    assert!(loaded.discovered.skills.is_empty());
+    assert!(loaded.manifest.mcp_servers.contains_key("firebase"));
+}
+
+#[test]
+fn root_skill_does_not_create_extra_skill_when_standard_skills_exist() {
+    let temp = TempDir::new().unwrap();
+    write_skill(temp.path(), "Root Skill");
+    write_valid_skill(temp.path());
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    assert_eq!(loaded.discovered.skills.len(), 1);
+    assert_eq!(loaded.discovered.skills[0].id, "review");
+    assert_eq!(
+        loaded.discovered.skills[0].path,
+        PathBuf::from("skills/review")
+    );
+}
+
+#[test]
 fn discovers_nested_skills_under_category_directories() {
     let temp = TempDir::new().unwrap();
     write_file(&temp.path().join("skills/operations/.gitkeep"), "");

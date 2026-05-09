@@ -61,7 +61,8 @@ pub fn load_from_dir(root: &Path, role: PackageRole) -> Result<LoadedManifest> {
         (Manifest::default(), Vec::new(), None)
     };
 
-    let discovered = discover_package_contents(&root, &manifest, None)?;
+    let mut infer_root_skill = manifest_path.is_none();
+    let discovered = discover_package_contents(&root, &manifest, None, infer_root_skill)?;
 
     let mut loaded = LoadedManifest {
         root: root.clone(),
@@ -79,8 +80,10 @@ pub fn load_from_dir(root: &Path, role: PackageRole) -> Result<LoadedManifest> {
     if should_try_plugin_wrapper_fallback(&loaded) {
         if let Some(marketplace_loaded) = load_claude_marketplace_wrapper(&loaded)? {
             loaded = marketplace_loaded;
+            infer_root_skill = false;
         } else if let Some(marketplace_loaded) = load_codex_marketplace_wrapper(&loaded)? {
             loaded = marketplace_loaded;
+            infer_root_skill = false;
         }
     }
 
@@ -91,6 +94,7 @@ pub fn load_from_dir(root: &Path, role: PackageRole) -> Result<LoadedManifest> {
         &loaded.root,
         &loaded.manifest,
         loaded.claude_plugin.as_ref(),
+        infer_root_skill,
     )?;
 
     if loaded.manifest.version.is_none() {

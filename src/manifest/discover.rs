@@ -55,6 +55,10 @@ fn local_source_contains_nodus_manageable_content(root: &Path) -> Result<bool> {
         return Ok(true);
     }
 
+    if root.join("SKILL.md").is_file() && !has_native_content_directory(root) {
+        return Ok(true);
+    }
+
     Ok([
         root.join(".mcp.json"),
         root.join(".claude-plugin").join("marketplace.json"),
@@ -1423,6 +1427,7 @@ pub(super) fn discover_package_contents(
     root: &Path,
     manifest: &Manifest,
     claude_plugin: Option<&ClaudePluginExtras>,
+    infer_root_skill: bool,
 ) -> Result<PackageContents> {
     let mut skills = Vec::new();
     let mut skill_ids = HashSet::new();
@@ -1456,6 +1461,10 @@ pub(super) fn discover_package_contents(
             "command",
             discover_files(root, &discovery_root, "commands", false, true)?,
         )?;
+    }
+
+    if infer_root_skill {
+        merge_skill_entries(&mut skills, &mut skill_ids, discover_root_skill(root)?)?;
     }
 
     if let Some(claude_plugin) = claude_plugin {
@@ -1515,6 +1524,33 @@ fn discovery_roots(root: &Path, manifest: &Manifest) -> Result<Vec<PathBuf>> {
         roots.push(content_root);
     }
     Ok(roots)
+}
+
+fn discover_root_skill(root: &Path) -> Result<Vec<SkillEntry>> {
+    let skill_file = root.join("SKILL.md");
+    if !skill_file.is_file() || has_native_content_directory(root) {
+        return Ok(Vec::new());
+    }
+
+    let id = default_package_name(root);
+    if id.is_empty() {
+        bail!(
+            "failed to derive root skill id from package root {}",
+            root.display()
+        );
+    }
+
+    validate_skill_directory(root, &id).with_context(|| format!("root skill `{id}` is invalid"))?;
+    Ok(vec![SkillEntry {
+        id,
+        path: PathBuf::new(),
+    }])
+}
+
+fn has_native_content_directory(root: &Path) -> bool {
+    ["agents", "commands", "rules", "skills"]
+        .iter()
+        .any(|directory| path_points_to_directory(&root.join(directory)))
 }
 
 fn merge_skill_entries(
@@ -2237,6 +2273,30 @@ pub(super) fn collect_files(root: &Path) -> Result<Vec<PathBuf>> {
             files.push(canonicalize_existing_path(entry.path())?);
         }
     }
+    files.sort();
+    Ok(files)
+}
+
+pub(super) fn collect_root_skill_files(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    let walker = walkdir::WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| {
+            entry.depth() == 0
+                || entry
+                    .file_name()
+                    .to_str()
+                    .is_none_or(|name| !name.starts_with('.'))
+        });
+
+    for entry in walker {
+        let entry = entry?;
+        if entry.file_type().is_file() {
+            files.push(canonicalize_existing_path(entry.path())?);
+        }
+    }
+
     files.sort();
     Ok(files)
 }
