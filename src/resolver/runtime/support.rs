@@ -1181,7 +1181,11 @@ mod managed_mode_tests {
         .unwrap();
 
         let mode = fs::metadata(&plugin_file).unwrap().permissions().mode();
-        assert_eq!(mode & 0o111, 0, "no exec bits should be set for non-scripts");
+        assert_eq!(
+            mode & 0o111,
+            0,
+            "no exec bits should be set for non-scripts"
+        );
     }
 
     #[cfg(unix)]

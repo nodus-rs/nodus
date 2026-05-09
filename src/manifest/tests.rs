@@ -2048,15 +2048,19 @@ fn claude_plugin_hook_under_dotclaude_copies_sibling_scripts() {
     let loaded = load_dependency_from_dir(temp.path()).unwrap();
 
     let package_files = loaded.package_files().unwrap();
-    assert!(package_files.contains(
-        &canonicalize_path(&temp.path().join(".claude/hooks/hooks.json")).unwrap()
-    ));
-    assert!(package_files.contains(
-        &canonicalize_path(&temp.path().join(".claude/hooks/hook-stop.sh")).unwrap()
-    ));
-    assert!(package_files.contains(
-        &canonicalize_path(&temp.path().join(".claude/hooks/metrics_hook.py")).unwrap()
-    ));
+    assert!(
+        package_files
+            .contains(&canonicalize_path(&temp.path().join(".claude/hooks/hooks.json")).unwrap())
+    );
+    assert!(
+        package_files
+            .contains(&canonicalize_path(&temp.path().join(".claude/hooks/hook-stop.sh")).unwrap())
+    );
+    assert!(
+        package_files.contains(
+            &canonicalize_path(&temp.path().join(".claude/hooks/metrics_hook.py")).unwrap()
+        )
+    );
 }
 
 #[test]
@@ -2077,12 +2081,9 @@ fn claude_plugin_hook_at_package_root_does_not_vacuum_root() {
     let loaded = load_dependency_from_dir(temp.path()).unwrap();
 
     let package_files = loaded.package_files().unwrap();
+    assert!(package_files.contains(&canonicalize_path(&temp.path().join("hooks.json")).unwrap()));
     assert!(
-        package_files.contains(&canonicalize_path(&temp.path().join("hooks.json")).unwrap())
-    );
-    assert!(
-        !package_files
-            .contains(&canonicalize_path(&temp.path().join("unrelated.txt")).unwrap())
+        !package_files.contains(&canonicalize_path(&temp.path().join("unrelated.txt")).unwrap())
     );
 }
 
