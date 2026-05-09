@@ -565,11 +565,77 @@ pub(super) fn write_managed_files(planned_files: &[ManagedFile]) -> Result<()> {
         .par_iter()
         .map(|file| {
             write_atomic(&file.path, &file.contents)
-                .with_context(|| format!("failed to write managed file {}", file.path.display()))
+                .with_context(|| format!("failed to write managed file {}", file.path.display()))?;
+            apply_managed_file_mode(file)?;
+            Ok(())
         })
         .collect::<Vec<_>>()
         .into_iter()
         .collect()
+}
+
+/// Mark claude-plugin runtime scripts executable when their contents start with
+/// a shebang. User-supplied `hooks.json` configs invoke these scripts via
+/// `${CLAUDE_PLUGIN_ROOT}/.../foo.sh` directly — without +x the shell raises
+/// Permission denied. Scoped to the plugin install tree so unrelated managed
+/// files keep their 0o600 default.
+fn apply_managed_file_mode(file: &ManagedFile) -> Result<()> {
+    if !is_claude_plugin_runtime_path(&file.path) {
+        return Ok(());
+    }
+    if !file.contents.starts_with(b"#!") {
+        return Ok(());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = fs::metadata(&file.path)
+            .with_context(|| {
+                format!(
+                    "failed to read metadata for managed file {}",
+                    file.path.display()
+                )
+            })?
+            .permissions();
+        let mode = permissions.mode();
+        let with_exec = mode | 0o111;
+        if with_exec != mode {
+            permissions.set_mode(with_exec);
+            fs::set_permissions(&file.path, permissions).with_context(|| {
+                format!(
+                    "failed to mark managed file executable {}",
+                    file.path.display()
+                )
+            })?;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = file;
+    }
+    Ok(())
+}
+
+fn is_claude_plugin_runtime_path(path: &Path) -> bool {
+    let mut components = path.components().peekable();
+    while let Some(component) = components.next() {
+        if component.as_os_str() != ".nodus" {
+            continue;
+        }
+        if components.next().map(|c| c.as_os_str()) != Some("packages".as_ref()) {
+            continue;
+        }
+        // Skip the alias segment.
+        if components.next().is_none() {
+            return false;
+        }
+        return matches!(
+            components.next().map(|c| c.as_os_str().to_owned()),
+            Some(segment) if segment == "claude-plugin"
+        );
+    }
+    false
 }
 
 pub(super) fn remove_path_and_empty_parents(path: &Path, project_root: &Path) -> Result<()> {
@@ -1036,4 +1102,111 @@ pub(super) fn prune_empty_parent_dirs(path: &Path, project_root: &Path) -> Resul
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod managed_mode_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn detects_claude_plugin_runtime_paths() {
+        assert!(is_claude_plugin_runtime_path(Path::new(
+            "/tmp/proj/.nodus/packages/alias/claude-plugin/.claude/hooks/hook.sh"
+        )));
+        assert!(is_claude_plugin_runtime_path(Path::new(
+            ".nodus/packages/alias/claude-plugin/hooks/hook.sh"
+        )));
+    }
+
+    #[test]
+    fn rejects_non_claude_plugin_runtime_paths() {
+        assert!(!is_claude_plugin_runtime_path(Path::new(
+            "/tmp/proj/.nodus/packages/alias/opencode-plugin/hooks/hook.sh"
+        )));
+        assert!(!is_claude_plugin_runtime_path(Path::new(
+            "/tmp/proj/.claude/hooks/hook.sh"
+        )));
+        assert!(!is_claude_plugin_runtime_path(Path::new(
+            "/tmp/proj/.nodus/packages/alias"
+        )));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn apply_managed_file_mode_sets_exec_bit_on_plugin_scripts() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let plugin_script = temp
+            .path()
+            .join(".nodus/packages/alias/claude-plugin/.claude/hooks/hook.sh");
+        fs::create_dir_all(plugin_script.parent().unwrap()).unwrap();
+        let contents = b"#!/usr/bin/env bash\necho hi\n".to_vec();
+        fs::write(&plugin_script, &contents).unwrap();
+        fs::set_permissions(&plugin_script, fs::Permissions::from_mode(0o600)).unwrap();
+
+        apply_managed_file_mode(&ManagedFile {
+            path: plugin_script.clone(),
+            contents,
+        })
+        .unwrap();
+
+        let mode = fs::metadata(&plugin_script).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o100,
+            0o100,
+            "owner exec bit should be set (mode={mode:o})"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn apply_managed_file_mode_skips_non_shebang_contents() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let plugin_file = temp
+            .path()
+            .join(".nodus/packages/alias/claude-plugin/.claude/hooks/hooks.json");
+        fs::create_dir_all(plugin_file.parent().unwrap()).unwrap();
+        let contents = br#"{"hooks":{}}"#.to_vec();
+        fs::write(&plugin_file, &contents).unwrap();
+        fs::set_permissions(&plugin_file, fs::Permissions::from_mode(0o600)).unwrap();
+
+        apply_managed_file_mode(&ManagedFile {
+            path: plugin_file.clone(),
+            contents,
+        })
+        .unwrap();
+
+        let mode = fs::metadata(&plugin_file).unwrap().permissions().mode();
+        assert_eq!(mode & 0o111, 0, "no exec bits should be set for non-scripts");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn apply_managed_file_mode_leaves_non_plugin_paths_alone() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join(".claude/hooks/nodus-hook-foo.sh");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let contents = b"#!/bin/sh\n".to_vec();
+        fs::write(&path, &contents).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        apply_managed_file_mode(&ManagedFile {
+            path: path.clone(),
+            contents,
+        })
+        .unwrap();
+
+        let mode = fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o111,
+            0,
+            "managed wrappers outside plugin tree must stay non-exec"
+        );
+    }
 }
