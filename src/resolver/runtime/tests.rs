@@ -2610,16 +2610,28 @@ fn add_dependency_accepts_marketplace_plugin_that_points_at_root_claude_plugin_m
     assert!(wrapper_package.dependencies.is_empty());
     assert_eq!(wrapper_package.mcp_servers, vec!["atlan"]);
 
+    assert!(
+        !temp.path().join(".mcp.json").exists(),
+        "Claude native plugin MCP should replace dependency project-level MCP output"
+    );
+    let plugin_mcp_path = temp.path().join(format!(
+        ".nodus/packages/{wrapper_alias}/claude-plugin/.mcp.json"
+    ));
     let json: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(temp.path().join(".mcp.json")).unwrap()).unwrap();
+        serde_json::from_str(&fs::read_to_string(plugin_mcp_path).unwrap()).unwrap();
     assert_eq!(
-        json["mcpServers"][format!("{wrapper_alias}__atlan")]["url"].as_str(),
+        json["mcpServers"]["atlan"]["url"].as_str(),
         Some("https://mcp.atlan.com/mcp")
     );
-    assert_eq!(
-        json["mcpServers"][format!("{wrapper_alias}__atlan")]["type"].as_str(),
-        Some("http")
-    );
+    assert_eq!(json["mcpServers"]["atlan"]["type"].as_str(), Some("http"));
+    let plugin: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(temp.path().join(format!(
+            ".nodus/packages/{wrapper_alias}/claude-plugin/.claude-plugin/plugin.json"
+        )))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(plugin["mcpServers"].as_str(), Some("./.mcp.json"));
 }
 
 #[test]
@@ -3587,10 +3599,39 @@ fn add_dependency_accepts_codex_marketplace_wrapper_and_syncs_plugin_contents() 
         &managed_skill_id
     ));
 
-    let json: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(temp.path().join(".mcp.json")).unwrap()).unwrap();
+    assert!(
+        !temp.path().join(".mcp.json").exists(),
+        "Claude native plugin MCP should replace dependency project-level MCP output"
+    );
+    let json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(
+            temp.path()
+                .join(".nodus/packages/axiom/claude-plugin/.mcp.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     assert_eq!(
-        json["mcpServers"]["axiom__figma"]["url"].as_str(),
+        json["mcpServers"]["figma"]["url"].as_str(),
+        Some("http://127.0.0.1:3845/mcp")
+    );
+    let codex_mcp: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(
+            temp.path()
+                .join(".nodus/packages/axiom/codex-plugin/.mcp.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        codex_mcp["mcpServers"]["figma"]["url"].as_str(),
+        Some("http://127.0.0.1:3845/mcp")
+    );
+    let codex_config: toml::Value =
+        toml::from_str(&fs::read_to_string(temp.path().join(".codex/config.toml")).unwrap())
+            .unwrap();
+    assert_eq!(
+        codex_config["mcp_servers"]["axiom__figma"]["url"].as_str(),
         Some("http://127.0.0.1:3845/mcp")
     );
 }
@@ -5319,6 +5360,66 @@ IS_FIREBASE_MCP = "true"
         json["mcpServers"]["firebase__firebase"]["env"]["IS_FIREBASE_MCP"].as_str(),
         Some("true")
     );
+}
+
+#[test]
+fn sync_prunes_project_mcp_when_claude_native_plugin_owns_mcp_servers() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[dependencies.firebase]
+path = "vendor/firebase"
+"#,
+    );
+    write_manifest(
+        &temp.path().join("vendor/firebase"),
+        r#"
+[mcp_servers.firebase]
+command = "npx"
+args = ["-y", "firebase-tools", "mcp", "--dir", "."]
+"#,
+    );
+    write_skill(
+        &temp.path().join("vendor/firebase/skills/firebase-review"),
+        "Firebase Review",
+    );
+
+    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
+    assert!(temp.path().join(".mcp.json").exists());
+
+    sync_in_dir_with_adapters(
+        temp.path(),
+        cache.path(),
+        false,
+        false,
+        &[Adapter::Claude, Adapter::Codex],
+    )
+    .unwrap();
+
+    assert!(
+        !temp.path().join(".mcp.json").exists(),
+        "Claude native plugin MCP should replace the stale project-level MCP file"
+    );
+    assert!(
+        temp.path()
+            .join(".nodus/packages/firebase/claude-plugin/.mcp.json")
+            .exists()
+    );
+    let plugin: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(
+            temp.path()
+                .join(".nodus/packages/firebase/claude-plugin/.claude-plugin/plugin.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(plugin["mcpServers"].as_str(), Some("./.mcp.json"));
+    let codex_config = fs::read_to_string(temp.path().join(".codex/config.toml")).unwrap();
+    assert!(codex_config.contains("firebase__firebase"));
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    assert!(!lockfile.managed_files.contains(&String::from(".mcp.json")));
 }
 
 #[test]

@@ -560,6 +560,7 @@ pub(crate) fn build_output_plan(
     if let Some(file) = mcp_config_file(
         project_root,
         packages,
+        selected_adapters,
         existing_lockfile,
         merge_existing_mcp,
     )? {
@@ -1454,16 +1455,22 @@ fn register_managed_paths(
 fn mcp_config_file(
     project_root: &Path,
     packages: &[(ResolvedPackage, PathBuf)],
+    selected_adapters: Adapters,
     existing_lockfile: Option<&Lockfile>,
     merge_existing_mcp: bool,
 ) -> Result<Option<ManagedFile>> {
     let path = project_root.join(".mcp.json");
     let previously_managed = previously_managed_mcp_servers(existing_lockfile, ".mcp.json");
     let mut desired_servers = BTreeMap::new();
+    let mut has_direct_mcp_package = false;
     for (package, _) in packages {
-        if !package_selects_mcp(package) {
+        if !package_has_mcp_servers(package) {
             continue;
         }
+        if mcp_servers_are_emitted_by_claude_native_plugin(package, selected_adapters) {
+            continue;
+        }
+        has_direct_mcp_package = true;
 
         for (server_id, server) in &package.manifest.manifest.mcp_servers {
             if !server.enabled {
@@ -1476,7 +1483,7 @@ fn mcp_config_file(
         }
     }
 
-    if should_auto_register_nodus_mcp(packages) {
+    if has_direct_mcp_package {
         let nodus_command = managed_nodus_command();
         let nodus_args = managed_nodus_args();
         desired_servers.insert(
@@ -1516,6 +1523,17 @@ fn mcp_config_file(
         .context("failed to serialize managed MCP configuration")?;
     contents.push(b'\n');
     Ok(Some(ManagedFile { path, contents }))
+}
+
+fn mcp_servers_are_emitted_by_claude_native_plugin(
+    package: &ResolvedPackage,
+    selected_adapters: Adapters,
+) -> bool {
+    selected_adapters.contains(Adapter::Claude)
+        && preferred_surface(Adapter::Claude) == PreferredSurface::PackagePluginWorkspaceMarketplace
+        && !matches!(package.source, PackageSource::Root)
+        && native_package_plugin_has_content(Adapter::Claude, package)
+        && package_has_mcp_servers(package)
 }
 
 fn read_project_mcp_config(path: &Path) -> Result<ProjectMcpConfig> {

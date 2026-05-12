@@ -3515,6 +3515,14 @@ local_playbook = { path = "vendor/playbook" }
 "#,
     );
     write_skill(&temp.path().join("vendor/playbook/skills/review"), "Review");
+    write_file(
+        &temp.path().join("vendor/playbook/nodus.toml"),
+        r#"
+[mcp_servers.playbook]
+command = "playbook-mcp"
+enabled = false
+"#,
+    );
 
     run_command_in_dir(
         Command::Sync {
