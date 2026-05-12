@@ -7252,6 +7252,52 @@ sync_on_startup = true
 }
 
 #[test]
+fn sync_warns_when_activation_is_unsupported_for_selected_adapters() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[adapters]
+enabled = ["agents", "cursor"]
+
+[dependencies.shared]
+path = "vendor/shared"
+components = ["skills"]
+"#,
+    );
+    write_manifest(
+        &temp.path().join("vendor/shared"),
+        r#"
+[activation]
+always_context = ["prompts/bootstrap.md"]
+"#,
+    );
+    write_file(
+        &temp.path().join("vendor/shared/prompts/bootstrap.md"),
+        "Bootstrap context.\n",
+    );
+
+    let buffer = SharedBuffer::default();
+    let reporter = Reporter::sink(ColorMode::Never, buffer.clone());
+    super::sync_in_dir_with_adapters(
+        temp.path(),
+        cache.path(),
+        false,
+        false,
+        false,
+        &[],
+        false,
+        &reporter,
+    )
+    .unwrap();
+
+    let output = buffer.contents();
+    assert!(output.contains("activation context is not emitted for `agents`"));
+    assert!(output.contains("activation context is not emitted for `cursor`"));
+}
+
+#[test]
 fn sync_rejects_launch_hook_persistence_with_locked_flag() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();

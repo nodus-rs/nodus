@@ -9,6 +9,31 @@ valid.
 
 This page is the source of truth for what each adapter supports today.
 
+## Activation context
+
+Packages that only need startup context should prefer `[activation]` over raw
+`[[hooks]]`:
+
+```toml
+[activation]
+always_context = ["prompts/first-principles.md"]
+prefer_skills = ["rust-testing", "rust-verification-sweep"]
+```
+
+Activation is higher-level package metadata. During `nodus sync`, Claude and
+Codex receive generated `SessionStart` hook entries for `startup|resume`.
+Nodus fully reads each `always_context` UTF-8 file into the hook's
+`additionalContext` output, with deterministic file boundaries, and appends one
+short `prefer_skills` instruction using the managed runtime skill names. The
+listed skill bodies are not embedded unless a package also names them in
+`always_context`.
+
+Activation hooks are generated separately from package-authored `[[hooks]]`.
+They reuse the same managed hook files, merge behavior, and stale-file pruning,
+but are not a replacement for command hooks that need to run arbitrary logic.
+Adapters without supported session-start context injection skip activation and
+emit a sync warning.
+
 ## Event catalog
 
 These are the eight events the nodus manifest recognizes. The value on the

@@ -112,6 +112,19 @@ If the package publishes `mcp_servers`, Nodus now carries that MCP config into t
 runtime outputs as well. Today that includes the legacy project `.mcp.json`, Codex
 `.codex/config.toml`, and OpenCode `opencode.json`.
 
+Packages can also declare activation context that is injected at session start
+for adapters with native support:
+
+```toml
+[activation]
+always_context = ["prompts/first-principles.md"]
+prefer_skills = ["rust-testing", "rust-verification-sweep"]
+```
+
+`always_context` files are loaded into the generated startup context.
+`prefer_skills` is advisory: Nodus tells the agent which managed skills to
+load first without embedding the skill bodies.
+
 If you want the package without MCP wiring, exclude that component:
 
 ```bash
