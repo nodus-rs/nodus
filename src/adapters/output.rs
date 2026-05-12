@@ -521,6 +521,14 @@ pub(crate) fn build_output_plan(
             }
         }
 
+        emit_native_package_plugins(
+            &mut plan,
+            project_root,
+            package,
+            snapshot_root,
+            selected_adapters,
+        )?;
+
         merge_files(
             &mut plan.files,
             managed_path_files(project_root, package, snapshot_root)?,
@@ -611,6 +619,353 @@ pub(crate) fn build_output_plan(
         managed_files: plan.managed_files.into_iter().collect(),
         warnings: plan.warnings,
     })
+}
+
+fn emit_native_package_plugins(
+    plan: &mut OutputAccumulator,
+    project_root: &Path,
+    package: &ResolvedPackage,
+    snapshot_root: &Path,
+    selected_adapters: Adapters,
+) -> Result<()> {
+    if !package.emits_runtime_outputs() {
+        return Ok(());
+    }
+
+    if selected_adapters.contains(Adapter::Claude)
+        && preferred_surface(Adapter::Claude) == PreferredSurface::PackagePluginWorkspaceMarketplace
+        && native_package_plugin_has_content(Adapter::Claude, package)
+    {
+        let plugin_root = native_package_plugin_root(project_root, Adapter::Claude, package);
+        merge_files(
+            &mut plan.files,
+            claude_native_package_plugin_files(&plugin_root, package, snapshot_root)?,
+        )?;
+        register_native_package_plugin_root(
+            project_root,
+            &mut plan.managed_files,
+            Adapter::Claude,
+            package,
+            &plugin_root,
+        );
+    }
+
+    if selected_adapters.contains(Adapter::Codex)
+        && preferred_surface(Adapter::Codex) == PreferredSurface::PackagePluginWorkspaceMarketplace
+        && native_package_plugin_has_content(Adapter::Codex, package)
+    {
+        let plugin_root = native_package_plugin_root(project_root, Adapter::Codex, package);
+        merge_files(
+            &mut plan.files,
+            codex_native_package_plugin_files(&plugin_root, package, snapshot_root)?,
+        )?;
+        register_native_package_plugin_root(
+            project_root,
+            &mut plan.managed_files,
+            Adapter::Codex,
+            package,
+            &plugin_root,
+        );
+    }
+
+    Ok(())
+}
+
+fn native_package_plugin_has_content(adapter: Adapter, package: &ResolvedPackage) -> bool {
+    let manifest = &package.manifest;
+    (package.selects_component(DependencyComponent::Skills)
+        && artifact_supported(adapter, ArtifactKind::Skill)
+        && !manifest.discovered.skills.is_empty())
+        || (package.selects_component(DependencyComponent::Agents)
+            && artifact_supported(adapter, ArtifactKind::Agent)
+            && !manifest.discovered.selected_agents(adapter).is_empty())
+        || (package.selects_component(DependencyComponent::Commands)
+            && (artifact_supported(adapter, ArtifactKind::Command) || adapter == Adapter::Codex)
+            && !manifest.discovered.commands.is_empty())
+        || (package.selects_component(DependencyComponent::Rules)
+            && artifact_supported(adapter, ArtifactKind::Rule)
+            && !manifest.discovered.rules.is_empty())
+        || package_selects_mcp(package)
+}
+
+fn native_package_plugin_root(
+    project_root: &Path,
+    adapter: Adapter,
+    package: &ResolvedPackage,
+) -> PathBuf {
+    if matches!(package.source, PackageSource::Root) {
+        return project_root.to_path_buf();
+    }
+
+    project_root
+        .join(".nodus")
+        .join("packages")
+        .join(&package.alias)
+        .join(match adapter {
+            Adapter::Claude => "claude-plugin",
+            Adapter::Codex => "codex-plugin",
+            Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => {
+                unreachable!("only native plugin adapters have package plugin roots")
+            }
+        })
+}
+
+fn register_native_package_plugin_root(
+    project_root: &Path,
+    managed_files: &mut BTreeSet<String>,
+    adapter: Adapter,
+    package: &ResolvedPackage,
+    plugin_root: &Path,
+) {
+    if matches!(package.source, PackageSource::Root) {
+        let metadata_path = match adapter {
+            Adapter::Claude => project_root.join(".claude-plugin/plugin.json"),
+            Adapter::Codex => project_root.join(".codex-plugin/plugin.json"),
+            Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => {
+                unreachable!("only native plugin adapters have plugin metadata")
+            }
+        };
+        managed_files.insert(display_relative(project_root, &metadata_path));
+    } else {
+        managed_files.insert(display_relative(project_root, plugin_root));
+    }
+}
+
+fn claude_native_package_plugin_files(
+    plugin_root: &Path,
+    package: &ResolvedPackage,
+    snapshot_root: &Path,
+) -> Result<Vec<ManagedFile>> {
+    let names = ManagedArtifactNames::from_resolved_packages([package]);
+    let mut files = BTreeMap::new();
+
+    if package.selects_component(DependencyComponent::Skills) {
+        for skill in &package.manifest.discovered.skills {
+            merge_files(
+                &mut files,
+                super::claude::skill_files(&names, plugin_root, package, snapshot_root, skill)?,
+            )?;
+        }
+    }
+
+    if package.selects_component(DependencyComponent::Agents) {
+        for agent in package.manifest.discovered.selected_agents(Adapter::Claude) {
+            merge_file(
+                &mut files,
+                super::claude::agent_file(&names, plugin_root, package, snapshot_root, agent)?,
+            )?;
+        }
+    }
+
+    if package.selects_component(DependencyComponent::Rules) {
+        for rule in &package.manifest.discovered.rules {
+            merge_file(
+                &mut files,
+                super::claude::rule_file(&names, plugin_root, package, snapshot_root, rule)?,
+            )?;
+        }
+    }
+
+    if package.selects_component(DependencyComponent::Commands) {
+        for command in &package.manifest.discovered.commands {
+            merge_file(
+                &mut files,
+                super::claude::command_file(&names, plugin_root, package, snapshot_root, command)?,
+            )?;
+        }
+    }
+
+    merge_file(
+        &mut files,
+        ManagedFile {
+            path: plugin_root.join(".claude-plugin/plugin.json"),
+            contents: claude_native_package_plugin_json(&names, package)?,
+        },
+    )?;
+    Ok(managed_files_from_map(files))
+}
+
+fn codex_native_package_plugin_files(
+    plugin_root: &Path,
+    package: &ResolvedPackage,
+    snapshot_root: &Path,
+) -> Result<Vec<ManagedFile>> {
+    let names = ManagedArtifactNames::from_resolved_packages([package]);
+    let mut files = BTreeMap::new();
+
+    if package.selects_component(DependencyComponent::Skills) {
+        for skill in &package.manifest.discovered.skills {
+            merge_files(
+                &mut files,
+                super::codex::skill_files(&names, plugin_root, package, snapshot_root, skill)?,
+            )?;
+        }
+    }
+
+    if package.selects_component(DependencyComponent::Agents) {
+        for agent in package.manifest.discovered.selected_agents(Adapter::Codex) {
+            merge_file(
+                &mut files,
+                super::codex::agent_file(&names, plugin_root, package, snapshot_root, agent)?,
+            )?;
+        }
+    }
+
+    if package.selects_component(DependencyComponent::Commands) {
+        for command in &package.manifest.discovered.commands {
+            merge_file(
+                &mut files,
+                super::codex::command_skill_file(
+                    &names,
+                    plugin_root,
+                    package,
+                    snapshot_root,
+                    command,
+                )?,
+            )?;
+        }
+    }
+
+    if package_selects_mcp(package) {
+        merge_file(
+            &mut files,
+            ManagedFile {
+                path: plugin_root.join(".codex-plugin/mcp.json"),
+                contents: codex_native_package_mcp_json(package)?,
+            },
+        )?;
+    }
+
+    merge_file(
+        &mut files,
+        ManagedFile {
+            path: plugin_root.join(".codex-plugin/plugin.json"),
+            contents: codex_native_package_plugin_json(package)?,
+        },
+    )?;
+    Ok(managed_files_from_map(files))
+}
+
+fn claude_native_package_plugin_json(
+    names: &ManagedArtifactNames,
+    package: &ResolvedPackage,
+) -> Result<Vec<u8>> {
+    let mut root = native_plugin_metadata_base(package);
+
+    if package.selects_component(DependencyComponent::Skills)
+        && !package.manifest.discovered.skills.is_empty()
+    {
+        root.insert(
+            "skills".into(),
+            JsonValue::String(".claude/skills".to_string()),
+        );
+    }
+
+    if package.selects_component(DependencyComponent::Agents) {
+        let agents = package
+            .manifest
+            .discovered
+            .selected_agents(Adapter::Claude)
+            .into_iter()
+            .map(|agent| {
+                JsonValue::String(format!(
+                    ".claude/agents/{}",
+                    super::managed_file_name(names, package, ArtifactKind::Agent, &agent.id, "md")
+                ))
+            })
+            .collect::<Vec<_>>();
+        if !agents.is_empty() {
+            root.insert("agents".into(), JsonValue::Array(agents));
+        }
+    }
+
+    if package.selects_component(DependencyComponent::Commands) {
+        let commands = package
+            .manifest
+            .discovered
+            .commands
+            .iter()
+            .map(|command| {
+                (
+                    command.id.clone(),
+                    JsonValue::Object(JsonMap::from_iter([(
+                        "source".to_string(),
+                        JsonValue::String(format!(
+                            ".claude/commands/{}",
+                            super::managed_file_name(
+                                names,
+                                package,
+                                ArtifactKind::Command,
+                                &command.id,
+                                "md",
+                            )
+                        )),
+                    )])),
+                )
+            })
+            .collect::<JsonMap<_, _>>();
+        if !commands.is_empty() {
+            root.insert("commands".into(), JsonValue::Object(commands));
+        }
+    }
+
+    if package_selects_mcp(package) {
+        root.insert(
+            "mcpServers".into(),
+            serde_json::to_value(&package.manifest.manifest.mcp_servers)
+                .context("failed to serialize Claude plugin MCP metadata")?,
+        );
+    }
+
+    json_bytes(root)
+}
+
+fn codex_native_package_plugin_json(package: &ResolvedPackage) -> Result<Vec<u8>> {
+    let mut root = native_plugin_metadata_base(package);
+    if package_selects_mcp(package) {
+        root.insert(
+            "mcpServers".into(),
+            JsonValue::String(".codex-plugin/mcp.json".to_string()),
+        );
+    }
+    json_bytes(root)
+}
+
+fn codex_native_package_mcp_json(package: &ResolvedPackage) -> Result<Vec<u8>> {
+    json_bytes(JsonMap::from_iter([(
+        "mcpServers".to_string(),
+        serde_json::to_value(&package.manifest.manifest.mcp_servers)
+            .context("failed to serialize Codex plugin MCP metadata")?,
+    )]))
+}
+
+fn native_plugin_metadata_base(package: &ResolvedPackage) -> JsonMap<String, JsonValue> {
+    let mut root = JsonMap::from_iter([(
+        "name".to_string(),
+        JsonValue::String(package.manifest.effective_name()),
+    )]);
+    if let Some(version) = package
+        .manifest
+        .effective_version()
+        .map(|version| version.to_string())
+    {
+        root.insert("version".to_string(), JsonValue::String(version));
+    }
+    root
+}
+
+fn json_bytes(root: JsonMap<String, JsonValue>) -> Result<Vec<u8>> {
+    let mut contents =
+        serde_json::to_vec_pretty(&JsonValue::Object(root)).context("failed to serialize JSON")?;
+    contents.push(b'\n');
+    Ok(contents)
+}
+
+fn managed_files_from_map(files: BTreeMap<PathBuf, Vec<u8>>) -> Vec<ManagedFile> {
+    files
+        .into_iter()
+        .map(|(path, contents)| ManagedFile { path, contents })
+        .collect()
 }
 
 fn gitignore_files(

@@ -1417,6 +1417,132 @@ fn sync_generates_workspace_marketplace_files() {
 }
 
 #[test]
+fn sync_emits_claude_native_plugin_layout_for_dependency_package() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+    );
+    write_manifest(
+        &temp.path().join("vendor/shared"),
+        r#"
+name = "Shared Tools"
+version = "1.2.3"
+"#,
+    );
+    write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+    write_file(
+        &temp.path().join("vendor/shared/agents/security.md"),
+        "# Security\n",
+    );
+    write_file(
+        &temp.path().join("vendor/shared/commands/build.md"),
+        "# Build\n",
+    );
+
+    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Claude]).unwrap();
+
+    let plugin_root = temp.path().join(".nodus/packages/shared/claude-plugin");
+    assert!(plugin_root.join(".claude/skills/review/SKILL.md").exists());
+    assert!(plugin_root.join(".claude/agents/security.md").exists());
+    assert!(plugin_root.join(".claude/commands/build.md").exists());
+
+    let plugin: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(plugin_root.join(".claude-plugin/plugin.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(plugin["name"].as_str(), Some("Shared Tools"));
+    assert_eq!(plugin["version"].as_str(), Some("1.2.3"));
+    assert_eq!(plugin["skills"].as_str(), Some(".claude/skills"));
+    assert_eq!(
+        plugin["agents"][0].as_str(),
+        Some(".claude/agents/security.md")
+    );
+    assert_eq!(
+        plugin["commands"]["build"]["source"].as_str(),
+        Some(".claude/commands/build.md")
+    );
+
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    assert!(
+        lockfile
+            .managed_files
+            .contains(&String::from(".nodus/packages/shared/claude-plugin"))
+    );
+}
+
+#[test]
+fn sync_emits_codex_native_plugin_layout_for_dependency_package() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+    );
+    write_manifest(
+        &temp.path().join("vendor/shared"),
+        r#"
+name = "Shared Tools"
+
+[mcp_servers.figma]
+command = "npx"
+args = ["figma-developer-mcp"]
+"#,
+    );
+    write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+    write_codex_agent_toml(
+        &temp.path().join("vendor/shared/agents/security.toml"),
+        "security",
+        "Security reviewer",
+        "Audit the code.",
+    );
+    write_file(
+        &temp.path().join("vendor/shared/commands/build.md"),
+        "# Build\n",
+    );
+
+    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
+
+    let plugin_root = temp.path().join(".nodus/packages/shared/codex-plugin");
+    assert!(plugin_root.join(".codex/skills/review/SKILL.md").exists());
+    assert!(plugin_root.join(".codex/agents/security.toml").exists());
+    assert!(
+        plugin_root
+            .join(".codex/skills/__cmd_build/SKILL.md")
+            .exists()
+    );
+
+    let plugin: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(plugin_root.join(".codex-plugin/plugin.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(plugin["name"].as_str(), Some("Shared Tools"));
+    assert_eq!(
+        plugin["mcpServers"].as_str(),
+        Some(".codex-plugin/mcp.json")
+    );
+    let mcp: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(plugin_root.join(".codex-plugin/mcp.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(mcp["mcpServers"]["figma"]["command"].as_str(), Some("npx"));
+
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    assert!(
+        lockfile
+            .managed_files
+            .contains(&String::from(".nodus/packages/shared/codex-plugin"))
+    );
+}
+
+#[test]
 fn sync_skips_invalid_workspace_members_in_marketplace_files() {
     let repo = TempDir::new().unwrap();
     let cache = cache_dir();
