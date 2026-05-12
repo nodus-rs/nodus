@@ -293,6 +293,31 @@ fn managed_artifact_file(
     .unwrap()
 }
 
+fn simulate_legacy_direct_claude_codex_skill_outputs(project_root: &Path) {
+    let _ = fs::remove_dir_all(project_root.join(".agents"));
+    let _ = fs::remove_dir_all(project_root.join(".claude"));
+    let _ = fs::remove_dir_all(project_root.join(".claude-plugin"));
+    let _ = fs::remove_dir_all(project_root.join(".codex"));
+    let _ = fs::remove_dir_all(project_root.join(".nodus"));
+
+    write_skill(
+        &project_root.join(".claude/skills/review"),
+        "Legacy Claude Review",
+    );
+    write_skill(
+        &project_root.join(".codex/skills/review"),
+        "Legacy Codex Review",
+    );
+
+    let mut lockfile = Lockfile::read(&project_root.join(LOCKFILE_NAME)).unwrap();
+    lockfile.managed_files = vec![
+        ".claude/skills/review".into(),
+        ".codex/skills/review".into(),
+    ];
+    lockfile.managed_outputs.clear();
+    lockfile.write(&project_root.join(LOCKFILE_NAME)).unwrap();
+}
+
 fn resolution_skill_id(
     resolution: &Resolution,
     package: &ResolvedPackage,
@@ -1643,6 +1668,164 @@ args = ["figma-developer-mcp"]
         lockfile
             .managed_files
             .contains(&String::from(".nodus/packages/shared/codex-plugin"))
+    );
+}
+
+#[test]
+fn sync_migrates_owned_direct_claude_codex_outputs_to_native_plugins() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[adapters]
+enabled = ["claude", "codex"]
+
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+    );
+    write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+    sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+    simulate_legacy_direct_claude_codex_skill_outputs(temp.path());
+
+    assert!(temp.path().join(".claude/skills/review/SKILL.md").exists());
+    assert!(temp.path().join(".codex/skills/review/SKILL.md").exists());
+
+    sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+
+    assert!(!temp.path().join(".claude/skills/review/SKILL.md").exists());
+    assert!(!temp.path().join(".codex/skills/review/SKILL.md").exists());
+    assert!(
+        temp.path()
+            .join(".nodus/packages/shared/claude-plugin/.claude/skills/review/SKILL.md")
+            .exists()
+    );
+    assert!(
+        temp.path()
+            .join(".nodus/packages/shared/codex-plugin/.codex/skills/review/SKILL.md")
+            .exists()
+    );
+    assert!(temp.path().join(".claude-plugin/marketplace.json").exists());
+    assert!(
+        temp.path()
+            .join(".agents/plugins/marketplace.json")
+            .exists()
+    );
+
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    assert!(
+        lockfile
+            .managed_files
+            .contains(&".nodus/packages/shared/claude-plugin".into())
+    );
+    assert!(
+        lockfile
+            .managed_files
+            .contains(&".nodus/packages/shared/codex-plugin".into())
+    );
+    assert!(
+        !lockfile
+            .managed_files
+            .contains(&".claude/skills/review".into())
+    );
+    assert!(
+        !lockfile
+            .managed_files
+            .contains(&".codex/skills/review".into())
+    );
+}
+
+#[test]
+fn sync_locked_and_frozen_reject_native_plugin_migration() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[adapters]
+enabled = ["claude", "codex"]
+
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+    );
+    write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+    sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+    simulate_legacy_direct_claude_codex_skill_outputs(temp.path());
+    let legacy_lockfile = fs::read(temp.path().join(LOCKFILE_NAME)).unwrap();
+
+    let locked_error = sync_in_dir(temp.path(), cache.path(), true, false)
+        .unwrap_err()
+        .to_string();
+    assert!(locked_error.contains("nodus.lock is out of date"));
+    assert_eq!(
+        fs::read(temp.path().join(LOCKFILE_NAME)).unwrap(),
+        legacy_lockfile
+    );
+    assert!(temp.path().join(".codex/skills/review/SKILL.md").exists());
+    assert!(
+        !temp
+            .path()
+            .join(".nodus/packages/shared/codex-plugin")
+            .exists()
+    );
+
+    let frozen_error = sync_in_dir_frozen(temp.path(), cache.path(), false)
+        .unwrap_err()
+        .to_string();
+    assert!(frozen_error.contains("nodus.lock is out of date"));
+    assert_eq!(
+        fs::read(temp.path().join(LOCKFILE_NAME)).unwrap(),
+        legacy_lockfile
+    );
+    assert!(temp.path().join(".claude/skills/review/SKILL.md").exists());
+    assert!(
+        !temp
+            .path()
+            .join(".nodus/packages/shared/claude-plugin")
+            .exists()
+    );
+}
+
+#[test]
+fn sync_blocks_native_plugin_migration_when_target_collides_with_unmanaged_file() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[adapters]
+enabled = ["claude", "codex"]
+
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+    );
+    write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+    sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+    simulate_legacy_direct_claude_codex_skill_outputs(temp.path());
+    write_file(
+        &temp
+            .path()
+            .join(".nodus/packages/shared/codex-plugin/.codex/skills"),
+        "user-owned blocking file\n",
+    );
+
+    let error = sync_in_dir(temp.path(), cache.path(), false, false)
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("refusing to overwrite unmanaged file"));
+    assert!(error.contains(".nodus/packages/shared/codex-plugin/.codex/skills"));
+    assert!(temp.path().join(".codex/skills/review/SKILL.md").exists());
+    assert_eq!(
+        fs::read_to_string(
+            temp.path()
+                .join(".nodus/packages/shared/codex-plugin/.codex/skills")
+        )
+        .unwrap(),
+        "user-owned blocking file\n"
     );
 }
 
@@ -9430,6 +9613,51 @@ shared = { path = "vendor/shared" }
 
     assert_eq!(summary.status, DoctorStatus::Fixed);
     assert!(managed_skill_path.exists());
+}
+
+#[test]
+fn doctor_check_and_repair_missing_native_package_marketplace_output() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[adapters]
+enabled = ["codex"]
+
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+    );
+    write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+    sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+
+    let marketplace_path = temp.path().join(".agents/plugins/marketplace.json");
+    fs::remove_file(&marketplace_path).unwrap();
+
+    let check = doctor_in_dir_with_mode(
+        temp.path(),
+        cache.path(),
+        DoctorMode::Check,
+        &Reporter::silent(),
+    )
+    .unwrap();
+    assert_eq!(check.status, DoctorStatus::Blocked);
+    assert!(check.findings.iter().any(|finding| {
+        finding.kind == DoctorFindingKind::SafeAutoFix
+            && finding.message.contains(".agents/plugins/marketplace.json")
+    }));
+    assert!(!marketplace_path.exists());
+
+    let repair = doctor_in_dir_with_mode(
+        temp.path(),
+        cache.path(),
+        DoctorMode::Repair,
+        &Reporter::silent(),
+    )
+    .unwrap();
+    assert_eq!(repair.status, DoctorStatus::Fixed);
+    assert!(marketplace_path.exists());
 }
 
 #[test]
