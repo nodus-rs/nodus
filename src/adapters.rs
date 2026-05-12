@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::lockfile::LockedPackage;
 use crate::manifest::{DependencyComponent, HookEvent, HookSessionSource, HookSpec, HookTool};
+use crate::paths::{display_path, strip_path_prefix};
 use crate::resolver::{PackageSource, ResolvedPackage};
 
 mod output;
@@ -523,6 +524,29 @@ pub(crate) fn native_marketplace_root(project_root: &Path) -> PathBuf {
 
 pub(crate) fn native_marketplace_source_path() -> &'static str {
     "./.nodus"
+}
+
+pub(crate) fn native_marketplace_plugin_source_path(
+    project_root: &Path,
+    plugin_root: &Path,
+) -> String {
+    let marketplace_root = native_marketplace_root(project_root);
+    if let Some(relative) = strip_path_prefix(plugin_root, &marketplace_root) {
+        return local_marketplace_path(relative);
+    }
+    if let Some(relative) = strip_path_prefix(plugin_root, project_root) {
+        return format!("../{}", display_path(relative));
+    }
+    display_path(plugin_root)
+}
+
+fn local_marketplace_path(relative: &Path) -> String {
+    let path = display_path(relative);
+    if path.starts_with("./") || path.starts_with("../") {
+        path
+    } else {
+        format!("./{path}")
+    }
 }
 
 pub(crate) fn native_marketplace_path(project_root: &Path, adapter: Adapter) -> Option<PathBuf> {

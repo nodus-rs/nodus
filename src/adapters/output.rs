@@ -766,7 +766,7 @@ fn native_marketplace_plugin_entry(
     }
 
     let plugin_root = native_package_plugin_root(project_root, adapter, package);
-    let source_path = local_plugin_path(&display_relative(project_root, &plugin_root));
+    let source_path = super::native_marketplace_plugin_source_path(project_root, &plugin_root);
     let mut entry = JsonMap::from_iter([(
         "name".to_string(),
         JsonValue::String(native_package_plugin_name(package)),
@@ -851,14 +851,6 @@ fn normalize_marketplace_name(value: &str) -> String {
         String::from("agentpack")
     } else {
         normalized
-    }
-}
-
-fn local_plugin_path(path: &str) -> String {
-    if path.starts_with("./") {
-        path.to_string()
-    } else {
-        format!("./{path}")
     }
 }
 

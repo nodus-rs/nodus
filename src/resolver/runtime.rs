@@ -1460,7 +1460,12 @@ fn planned_workspace_marketplace_files(
                 ),
                 (
                     "source".to_string(),
-                    serde_json::Value::String(display_path(&member.path)),
+                    serde_json::Value::String(
+                        crate::adapters::native_marketplace_plugin_source_path(
+                            &root.root,
+                            &member_root,
+                        ),
+                    ),
                 ),
             ]);
             if let Some(version) = manifest
@@ -1486,22 +1491,30 @@ fn planned_workspace_marketplace_files(
 
     let codex_plugins = members
         .iter()
-        .filter_map(|member| {
-            member.codex.as_ref().map(|codex| {
-                serde_json::json!({
-                    "name": member.name.clone().unwrap_or_else(|| member.id.clone()),
-                    "source": {
-                        "source": "local",
-                        "path": codex_workspace_plugin_path(&member.path),
-                    },
-                    "policy": {
-                        "installation": codex.installation,
-                        "authentication": codex.authentication,
-                    },
-                    "category": codex.category,
-                })
-            })
+        .map(|member| {
+            let Some(codex) = member.codex.as_ref() else {
+                return Ok(None);
+            };
+            let member_root = root.resolve_path(&member.path)?;
+            Ok(Some(serde_json::json!({
+                "name": member.name.clone().unwrap_or_else(|| member.id.clone()),
+                "source": {
+                    "source": "local",
+                    "path": crate::adapters::native_marketplace_plugin_source_path(
+                        &root.root,
+                        &member_root,
+                    ),
+                },
+                "policy": {
+                    "installation": codex.installation,
+                    "authentication": codex.authentication,
+                },
+                "category": codex.category,
+            })))
         })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
         .collect::<Vec<_>>();
     if !codex_plugins.is_empty() {
         files.push(ManagedFile {
@@ -1515,15 +1528,6 @@ fn planned_workspace_marketplace_files(
     }
 
     Ok(files)
-}
-
-fn codex_workspace_plugin_path(member_path: &Path) -> String {
-    let path = display_path(member_path);
-    if path.starts_with("./") {
-        path
-    } else {
-        format!("./{path}")
-    }
 }
 
 fn workspace_marketplace_name(root: &LoadedManifest) -> String {

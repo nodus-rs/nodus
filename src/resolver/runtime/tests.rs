@@ -1565,7 +1565,7 @@ fn sync_generates_workspace_marketplace_files() {
     assert_eq!(claude["plugins"].as_array().unwrap().len(), 2);
     assert_eq!(
         claude["plugins"][0]["source"].as_str(),
-        Some("plugins/axiom")
+        Some("../plugins/axiom")
     );
 
     let codex: serde_json::Value = serde_json::from_str(
@@ -1579,7 +1579,7 @@ fn sync_generates_workspace_marketplace_files() {
     assert_eq!(codex["plugins"].as_array().unwrap().len(), 2);
     assert_eq!(
         codex["plugins"][0]["source"]["path"].as_str(),
-        Some("./plugins/axiom")
+        Some("../plugins/axiom")
     );
     assert_eq!(
         codex["plugins"][0]["policy"]["installation"].as_str(),
@@ -1725,7 +1725,7 @@ version = "1.2.3"
     assert_eq!(marketplace["plugins"][0]["name"].as_str(), Some("shared"));
     assert_eq!(
         marketplace["plugins"][0]["source"].as_str(),
-        Some("./.nodus/packages/shared/claude-plugin")
+        Some("./packages/shared/claude-plugin")
     );
     let plugin_key = format!(
         "shared@{}",
@@ -1813,7 +1813,7 @@ args = ["figma-developer-mcp"]
     assert_eq!(marketplace["plugins"][0]["name"].as_str(), Some("shared"));
     assert_eq!(
         marketplace["plugins"][0]["source"]["path"].as_str(),
-        Some("./.nodus/packages/shared/codex-plugin")
+        Some("./packages/shared/codex-plugin")
     );
     assert_eq!(
         marketplace["plugins"][0]["policy"]["installation"].as_str(),
@@ -2148,7 +2148,7 @@ fn sync_skips_invalid_workspace_members_in_marketplace_files() {
     assert_eq!(claude["plugins"].as_array().unwrap().len(), 1);
     assert_eq!(
         claude["plugins"][0]["source"].as_str(),
-        Some("plugins/axiom")
+        Some("../plugins/axiom")
     );
 
     let codex: serde_json::Value = serde_json::from_str(
@@ -2163,7 +2163,7 @@ fn sync_skips_invalid_workspace_members_in_marketplace_files() {
     assert_eq!(codex["plugins"][0]["name"].as_str(), Some("Axiom"));
     assert_eq!(
         codex["plugins"][0]["source"]["path"].as_str(),
-        Some("./plugins/axiom")
+        Some("../plugins/axiom")
     );
 }
 
@@ -2204,7 +2204,7 @@ fn sync_emits_codex_marketplace_for_only_workspace_members_with_codex_metadata()
     assert_eq!(codex["plugins"][0]["name"].as_str(), Some("Axiom"));
     assert_eq!(
         codex["plugins"][0]["source"]["path"].as_str(),
-        Some("./plugins/axiom")
+        Some("../plugins/axiom")
     );
 }
 
@@ -2244,7 +2244,7 @@ authentication = "ON_INSTALL"
     assert_eq!(claude["plugins"][0]["name"].as_str(), Some("Axiom"));
     assert_eq!(
         claude["plugins"][0]["source"].as_str(),
-        Some("plugins/axiom")
+        Some("../plugins/axiom")
     );
 }
 
