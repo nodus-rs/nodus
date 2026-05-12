@@ -209,8 +209,22 @@ fn adapter_runtime_root_name(adapter: Adapter) -> &'static str {
 
 fn path_contains_adapter_runtime(path: &Path, adapter: Adapter) -> bool {
     let runtime = adapter_runtime_root_name(adapter);
-    path.components()
+    if path
+        .components()
         .any(|component| component.as_os_str() == runtime)
+    {
+        return true;
+    }
+
+    let plugin_root = match adapter {
+        Adapter::Claude => "claude-plugin",
+        Adapter::Codex => "codex-plugin",
+        Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => {
+            return false;
+        }
+    };
+    path.components()
+        .any(|component| component.as_os_str() == plugin_root)
 }
 
 fn runtime_skill_paths(project_root: &Path, adapter: Adapter, skill_id: &str) -> Vec<PathBuf> {
@@ -974,7 +988,7 @@ root_skill_pack = { path = "vendor/root-skill-pack" }
 
     let emitted_skill = temp
         .path()
-        .join(".nodus/packages/root_skill_pack/claude-plugin/.claude/skills/root-skill-pack");
+        .join(".nodus/packages/root_skill_pack/claude-plugin/skills/root-skill-pack");
     assert!(emitted_skill.join("SKILL.md").exists());
     assert_eq!(
         fs::read_to_string(emitted_skill.join("assets/reference.md")).unwrap(),
@@ -1608,24 +1622,45 @@ version = "1.2.3"
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Claude]).unwrap();
 
     let plugin_root = temp.path().join(".nodus/packages/shared/claude-plugin");
-    assert!(plugin_root.join(".claude/skills/review/SKILL.md").exists());
-    assert!(plugin_root.join(".claude/agents/security.md").exists());
-    assert!(plugin_root.join(".claude/commands/build.md").exists());
+    assert!(plugin_root.join("skills/review/SKILL.md").exists());
+    assert!(plugin_root.join("agents/security.md").exists());
+    assert!(plugin_root.join("commands/build.md").exists());
 
     let plugin: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(plugin_root.join(".claude-plugin/plugin.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(plugin["name"].as_str(), Some("Shared Tools"));
+    assert_eq!(plugin["name"].as_str(), Some("shared"));
     assert_eq!(plugin["version"].as_str(), Some("1.2.3"));
-    assert_eq!(plugin["skills"].as_str(), Some(".claude/skills"));
-    assert_eq!(
-        plugin["agents"][0].as_str(),
-        Some(".claude/agents/security.md")
-    );
+    assert_eq!(plugin["skills"].as_str(), Some("./skills/"));
+    assert_eq!(plugin["agents"][0].as_str(), Some("./agents/security.md"));
     assert_eq!(
         plugin["commands"]["build"]["source"].as_str(),
-        Some(".claude/commands/build.md")
+        Some("./commands/build.md")
+    );
+
+    let settings: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(temp.path().join(".claude/settings.json")).unwrap(),
+    )
+    .unwrap();
+    let marketplace: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(temp.path().join(".claude-plugin/marketplace.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(marketplace["plugins"][0]["name"].as_str(), Some("shared"));
+    assert_eq!(
+        marketplace["plugins"][0]["source"].as_str(),
+        Some("./.nodus/packages/shared/claude-plugin")
+    );
+    let plugin_key = format!(
+        "shared@{}",
+        marketplace["name"].as_str().expect("marketplace name")
+    );
+    assert_eq!(
+        settings["enabledPlugins"]
+            .get(&plugin_key)
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
     );
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
@@ -1672,28 +1707,34 @@ args = ["figma-developer-mcp"]
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
 
     let plugin_root = temp.path().join(".nodus/packages/shared/codex-plugin");
-    assert!(plugin_root.join(".codex/skills/review/SKILL.md").exists());
-    assert!(plugin_root.join(".codex/agents/security.toml").exists());
-    assert!(
-        plugin_root
-            .join(".codex/skills/__cmd_build/SKILL.md")
-            .exists()
-    );
+    assert!(plugin_root.join("skills/review/SKILL.md").exists());
+    assert!(plugin_root.join("agents/security.toml").exists());
+    assert!(plugin_root.join("skills/__cmd_build/SKILL.md").exists());
 
     let plugin: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(plugin_root.join(".codex-plugin/plugin.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(plugin["name"].as_str(), Some("Shared Tools"));
-    assert_eq!(
-        plugin["mcpServers"].as_str(),
-        Some(".codex-plugin/mcp.json")
-    );
-    let mcp: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(plugin_root.join(".codex-plugin/mcp.json")).unwrap(),
+    assert_eq!(plugin["name"].as_str(), Some("shared"));
+    assert_eq!(plugin["skills"].as_str(), Some("./skills/"));
+    assert_eq!(plugin["mcpServers"].as_str(), Some("./.mcp.json"));
+    let mcp: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(plugin_root.join(".mcp.json")).unwrap()).unwrap();
+    assert_eq!(mcp["mcpServers"]["figma"]["command"].as_str(), Some("npx"));
+
+    let marketplace: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(temp.path().join(".agents/plugins/marketplace.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(mcp["mcpServers"]["figma"]["command"].as_str(), Some("npx"));
+    assert_eq!(marketplace["plugins"][0]["name"].as_str(), Some("shared"));
+    assert_eq!(
+        marketplace["plugins"][0]["source"]["path"].as_str(),
+        Some("./.nodus/packages/shared/codex-plugin")
+    );
+    assert_eq!(
+        marketplace["plugins"][0]["policy"]["installation"].as_str(),
+        Some("INSTALLED_BY_DEFAULT")
+    );
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert!(
@@ -1730,12 +1771,12 @@ shared = { path = "vendor/shared" }
     assert!(!temp.path().join(".codex/skills/review/SKILL.md").exists());
     assert!(
         temp.path()
-            .join(".nodus/packages/shared/claude-plugin/.claude/skills/review/SKILL.md")
+            .join(".nodus/packages/shared/claude-plugin/skills/review/SKILL.md")
             .exists()
     );
     assert!(
         temp.path()
-            .join(".nodus/packages/shared/codex-plugin/.codex/skills/review/SKILL.md")
+            .join(".nodus/packages/shared/codex-plugin/skills/review/SKILL.md")
             .exists()
     );
     assert!(temp.path().join(".claude-plugin/marketplace.json").exists());
@@ -1840,7 +1881,7 @@ shared = { path = "vendor/shared" }
     write_file(
         &temp
             .path()
-            .join(".nodus/packages/shared/codex-plugin/.codex/skills"),
+            .join(".nodus/packages/shared/codex-plugin/skills"),
         "user-owned blocking file\n",
     );
 
@@ -1849,12 +1890,12 @@ shared = { path = "vendor/shared" }
         .to_string();
 
     assert!(error.contains("refusing to overwrite unmanaged file"));
-    assert!(error.contains(".nodus/packages/shared/codex-plugin/.codex/skills"));
+    assert!(error.contains(".nodus/packages/shared/codex-plugin/skills"));
     assert!(temp.path().join(".codex/skills/review/SKILL.md").exists());
     assert_eq!(
         fs::read_to_string(
             temp.path()
-                .join(".nodus/packages/shared/codex-plugin/.codex/skills")
+                .join(".nodus/packages/shared/codex-plugin/skills")
         )
         .unwrap(),
         "user-owned blocking file\n"
@@ -4815,7 +4856,7 @@ shared = { path = "vendor/shared" }
     write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
     let blocking_path = temp
         .path()
-        .join(".nodus/packages/shared/codex-plugin/.codex/skills");
+        .join(".nodus/packages/shared/codex-plugin/skills");
     write_file(&blocking_path, "user-owned blocking file\n");
 
     let error =
@@ -4823,7 +4864,7 @@ shared = { path = "vendor/shared" }
             .unwrap_err()
             .to_string();
     assert!(error.contains("refusing to overwrite unmanaged file"));
-    assert!(error.contains(".nodus/packages/shared/codex-plugin/.codex/skills"));
+    assert!(error.contains(".nodus/packages/shared/codex-plugin/skills"));
 
     sync_in_dir_with_adapters_force(temp.path(), cache.path(), false, false, &[Adapter::Codex])
         .unwrap();
@@ -5007,7 +5048,7 @@ shared = { path = "vendor/shared" }
     write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
     let blocking_path = temp
         .path()
-        .join(".nodus/packages/shared/codex-plugin/.codex/skills");
+        .join(".nodus/packages/shared/codex-plugin/skills");
     write_file(&blocking_path, "user-owned blocking file\n");
 
     sync_in_dir_with_adapters_dry_run_force(
@@ -5028,7 +5069,7 @@ shared = { path = "vendor/shared" }
         !lockfile
             .managed_files
             .iter()
-            .any(|path| path.starts_with(".nodus/packages/shared/codex-plugin/.codex/skills/"))
+            .any(|path| path.starts_with(".nodus/packages/shared/codex-plugin/skills/"))
     );
 }
 

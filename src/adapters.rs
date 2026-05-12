@@ -565,10 +565,11 @@ pub(crate) fn managed_runtime_root(
     package: &ResolvedPackage,
 ) -> PathBuf {
     if preferred_surface(adapter) == PreferredSurface::PackagePluginWorkspaceMarketplace {
-        return runtime_root(
-            &native_package_plugin_root(project_root, adapter, package),
-            adapter,
-        );
+        let plugin_root = native_package_plugin_root(project_root, adapter, package);
+        if !matches!(package.source, PackageSource::Root) {
+            return plugin_root;
+        }
+        return runtime_root(&plugin_root, adapter);
     }
 
     runtime_root(project_root, adapter)

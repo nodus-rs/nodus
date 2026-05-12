@@ -298,8 +298,22 @@ fn runtime_files_under(root: &Path, adapter: Adapter, file_name: &str) -> Vec<Pa
         .filter(|entry| entry.file_type().is_file() && entry.file_name() == file_name)
         .map(|entry| entry.into_path())
         .filter(|path| {
-            path.components()
+            if path
+                .components()
                 .any(|component| component.as_os_str() == runtime)
+            {
+                return true;
+            }
+
+            let plugin_root = match adapter {
+                Adapter::Claude => "claude-plugin",
+                Adapter::Codex => "codex-plugin",
+                Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => {
+                    return false;
+                }
+            };
+            path.components()
+                .any(|component| component.as_os_str() == plugin_root)
         })
         .collect::<Vec<_>>();
     paths.sort();
@@ -315,7 +329,7 @@ fn first_runtime_file_under(root: &Path, adapter: Adapter, file_name: &str) -> P
 
 fn claude_package_skill(root: &Path, alias: &str, skill_id: &str) -> PathBuf {
     root.join(format!(
-        ".nodus/packages/{alias}/claude-plugin/.claude/skills/{skill_id}/SKILL.md"
+        ".nodus/packages/{alias}/claude-plugin/skills/{skill_id}/SKILL.md"
     ))
 }
 

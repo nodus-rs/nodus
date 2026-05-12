@@ -604,8 +604,17 @@ pub(crate) fn build_output_plan(
         && packages
             .iter()
             .any(|(package, _)| !package.manifest.manifest.opencode_plugin_hooks.is_empty());
+    let has_claude_native_plugin_enablement = selected_adapters.contains(Adapter::Claude)
+        && preferred_surface(Adapter::Claude)
+            == PreferredSurface::PackagePluginWorkspaceMarketplace
+        && native_package_plugin_keys(project_root, packages, Adapter::Claude).is_some();
 
-    if !hooks.is_empty() || has_activation || has_claude_plugin_hooks || has_opencode_plugin_hooks {
+    if !hooks.is_empty()
+        || has_activation
+        || has_claude_plugin_hooks
+        || has_opencode_plugin_hooks
+        || has_claude_native_plugin_enablement
+    {
         for file in hook_files(
             project_root,
             packages,
@@ -724,10 +733,10 @@ fn native_marketplace_plugin_entry(
     }
 
     let plugin_root = native_package_plugin_root(project_root, adapter, package);
-    let source_path = display_relative(project_root, &plugin_root);
+    let source_path = local_plugin_path(&display_relative(project_root, &plugin_root));
     let mut entry = JsonMap::from_iter([(
         "name".to_string(),
-        JsonValue::String(package.manifest.effective_name()),
+        JsonValue::String(native_package_plugin_name(package)),
     )]);
     if let Some(version) = package
         .manifest
@@ -746,10 +755,7 @@ fn native_marketplace_plugin_entry(
                 "source".to_string(),
                 JsonValue::Object(JsonMap::from_iter([
                     ("source".to_string(), JsonValue::String("local".to_string())),
-                    (
-                        "path".to_string(),
-                        JsonValue::String(codex_local_plugin_path(&source_path)),
-                    ),
+                    ("path".to_string(), JsonValue::String(source_path)),
                 ])),
             );
             entry.insert(
@@ -757,7 +763,7 @@ fn native_marketplace_plugin_entry(
                 JsonValue::Object(JsonMap::from_iter([
                     (
                         "installation".to_string(),
-                        JsonValue::String("AVAILABLE".to_string()),
+                        JsonValue::String("INSTALLED_BY_DEFAULT".to_string()),
                     ),
                     (
                         "authentication".to_string(),
@@ -815,12 +821,57 @@ fn normalize_marketplace_name(value: &str) -> String {
     }
 }
 
-fn codex_local_plugin_path(path: &str) -> String {
+fn local_plugin_path(path: &str) -> String {
     if path.starts_with("./") {
         path.to_string()
     } else {
         format!("./{path}")
     }
+}
+
+fn native_package_plugin_name(package: &ResolvedPackage) -> String {
+    let base = if matches!(package.source, PackageSource::Root) {
+        package.manifest.effective_name()
+    } else {
+        package.alias.clone()
+    };
+    normalize_marketplace_name(&base)
+}
+
+fn native_package_plugin_keys(
+    project_root: &Path,
+    packages: &[(ResolvedPackage, PathBuf)],
+    adapter: Adapter,
+) -> Option<(String, Vec<String>)> {
+    if !matches!(adapter, Adapter::Claude | Adapter::Codex) {
+        return None;
+    }
+    if packages.iter().any(|(package, _)| {
+        matches!(package.source, PackageSource::Root)
+            && package.manifest.manifest.workspace.is_some()
+    }) {
+        return None;
+    }
+
+    let plugins = packages
+        .iter()
+        .filter(|(package, _)| {
+            !matches!(package.source, PackageSource::Root)
+                && package.emits_runtime_outputs()
+                && native_package_plugin_has_content(adapter, package)
+        })
+        .map(|(package, _)| native_package_plugin_name(package))
+        .collect::<Vec<_>>();
+    if plugins.is_empty() {
+        return None;
+    }
+
+    let (marketplace, _) = native_marketplace_names(project_root, packages);
+    let keys = plugins
+        .into_iter()
+        .map(|plugin| format!("{plugin}@{marketplace}"))
+        .collect::<Vec<_>>();
+    Some((marketplace, keys))
 }
 
 fn emit_native_package_plugins(
@@ -1015,6 +1066,16 @@ fn claude_native_package_plugin_files(
         }
     }
 
+    if package_has_mcp_servers(package) {
+        merge_file(
+            &mut files,
+            ManagedFile {
+                path: plugin_root.join(".mcp.json"),
+                contents: native_package_mcp_json(package)?,
+            },
+        )?;
+    }
+
     merge_file(
         &mut files,
         ManagedFile {
@@ -1070,8 +1131,8 @@ fn codex_native_package_plugin_files(
         merge_file(
             &mut files,
             ManagedFile {
-                path: plugin_root.join(".codex-plugin/mcp.json"),
-                contents: codex_native_package_mcp_json(package)?,
+                path: plugin_root.join(".mcp.json"),
+                contents: native_package_mcp_json(package)?,
             },
         )?;
     }
@@ -1095,10 +1156,7 @@ fn claude_native_package_plugin_json(
     if package.selects_component(DependencyComponent::Skills)
         && !package.manifest.discovered.skills.is_empty()
     {
-        root.insert(
-            "skills".into(),
-            JsonValue::String(".claude/skills".to_string()),
-        );
+        root.insert("skills".into(), JsonValue::String("./skills/".to_string()));
     }
 
     if package.selects_component(DependencyComponent::Agents) {
@@ -1109,7 +1167,7 @@ fn claude_native_package_plugin_json(
             .into_iter()
             .map(|agent| {
                 JsonValue::String(format!(
-                    ".claude/agents/{}",
+                    "./agents/{}",
                     super::managed_file_name(names, package, ArtifactKind::Agent, &agent.id, "md")
                 ))
             })
@@ -1131,7 +1189,7 @@ fn claude_native_package_plugin_json(
                     JsonValue::Object(JsonMap::from_iter([(
                         "source".to_string(),
                         JsonValue::String(format!(
-                            ".claude/commands/{}",
+                            "./commands/{}",
                             super::managed_file_name(
                                 names,
                                 package,
@@ -1152,8 +1210,7 @@ fn claude_native_package_plugin_json(
     if package_has_mcp_servers(package) {
         root.insert(
             "mcpServers".into(),
-            serde_json::to_value(&package.manifest.manifest.mcp_servers)
-                .context("failed to serialize Claude plugin MCP metadata")?,
+            JsonValue::String("./.mcp.json".to_string()),
         );
     }
 
@@ -1162,27 +1219,34 @@ fn claude_native_package_plugin_json(
 
 fn codex_native_package_plugin_json(package: &ResolvedPackage) -> Result<Vec<u8>> {
     let mut root = native_plugin_metadata_base(package);
+    if package.selects_component(DependencyComponent::Skills)
+        && (!package.manifest.discovered.skills.is_empty()
+            || (package.selects_component(DependencyComponent::Commands)
+                && !package.manifest.discovered.commands.is_empty()))
+    {
+        root.insert("skills".into(), JsonValue::String("./skills/".to_string()));
+    }
     if package_has_mcp_servers(package) {
         root.insert(
             "mcpServers".into(),
-            JsonValue::String(".codex-plugin/mcp.json".to_string()),
+            JsonValue::String("./.mcp.json".to_string()),
         );
     }
     json_bytes(root)
 }
 
-fn codex_native_package_mcp_json(package: &ResolvedPackage) -> Result<Vec<u8>> {
+fn native_package_mcp_json(package: &ResolvedPackage) -> Result<Vec<u8>> {
     json_bytes(JsonMap::from_iter([(
         "mcpServers".to_string(),
         serde_json::to_value(&package.manifest.manifest.mcp_servers)
-            .context("failed to serialize Codex plugin MCP metadata")?,
+            .context("failed to serialize plugin MCP metadata")?,
     )]))
 }
 
 fn native_plugin_metadata_base(package: &ResolvedPackage) -> JsonMap<String, JsonValue> {
     let mut root = JsonMap::from_iter([(
         "name".to_string(),
-        JsonValue::String(package.manifest.effective_name()),
+        JsonValue::String(native_package_plugin_name(package)),
     )]);
     if let Some(version) = package
         .manifest
@@ -2030,15 +2094,31 @@ fn hook_files(
     } else {
         Vec::new()
     };
+    let claude_plugin_enablement = if selected_adapters.contains(Adapter::Claude)
+        && preferred_surface(Adapter::Claude) == PreferredSurface::PackagePluginWorkspaceMarketplace
+    {
+        native_package_plugin_keys(project_root, packages, Adapter::Claude)
+    } else {
+        None
+    };
+    let (claude_plugin_marketplace, claude_enabled_plugins): (Option<&str>, &[String]) =
+        claude_plugin_enablement
+            .as_ref()
+            .map_or((None, &[][..]), |(marketplace, plugins)| {
+                (Some(marketplace.as_str()), plugins.as_slice())
+            });
     if !claude_hooks.is_empty()
         || !claude_activation_hooks.is_empty()
         || !claude_plugin_packages.is_empty()
+        || claude_plugin_marketplace.is_some()
     {
         let (claude_files, claude_warnings) = super::claude::hook_files(
             project_root,
             &claude_hooks,
             &claude_activation_hooks,
             &claude_plugin_packages,
+            claude_plugin_marketplace,
+            claude_enabled_plugins,
             merge_existing_mcp,
         )?;
         files.extend(claude_files);

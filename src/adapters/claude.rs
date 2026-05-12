@@ -114,6 +114,8 @@ pub fn hook_files(
     hooks: &[ManagedHookSpec],
     activation_hooks: &[ManagedActivationHook],
     plugin_packages: &[(&ResolvedPackage, &Path)],
+    managed_plugin_marketplace: Option<&str>,
+    managed_enabled_plugins: &[String],
     merge_existing: bool,
 ) -> Result<(Vec<ManagedFile>, Vec<String>)> {
     let settings_path = project_root.join(".claude/settings.json");
@@ -173,10 +175,16 @@ pub fn hook_files(
         warnings.extend(package_warnings);
     }
 
-    if !entries.is_empty() {
+    if !entries.is_empty() || managed_plugin_marketplace.is_some() {
         files.push(ManagedFile {
             path: settings_path.clone(),
-            contents: settings_contents(&settings_path, merge_existing, &entries)?,
+            contents: settings_contents(
+                &settings_path,
+                merge_existing,
+                &entries,
+                managed_plugin_marketplace,
+                managed_enabled_plugins,
+            )?,
         });
     }
 
@@ -482,6 +490,8 @@ fn settings_contents(
     path: &Path,
     merge_existing: bool,
     entries: &[ManagedSettingsEntry],
+    managed_plugin_marketplace: Option<&str>,
+    managed_enabled_plugins: &[String],
 ) -> Result<Vec<u8>> {
     let mut root = if merge_existing && path.exists() {
         serde_json::from_slice::<Value>(
@@ -496,10 +506,21 @@ fn settings_contents(
     let root_object = root
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("{} must contain a JSON object", path.display()))?;
-    let hooks_object = object_field(root_object, "hooks", path)?;
-    remove_managed_hook_entries(hooks_object);
-    for managed_entry in entries {
-        array_field(hooks_object, &managed_entry.event, path)?.push(managed_entry.entry.clone());
+    if !entries.is_empty() {
+        let hooks_object = object_field(root_object, "hooks", path)?;
+        remove_managed_hook_entries(hooks_object);
+        for managed_entry in entries {
+            array_field(hooks_object, &managed_entry.event, path)?
+                .push(managed_entry.entry.clone());
+        }
+    }
+    if let Some(marketplace_name) = managed_plugin_marketplace {
+        let enabled_plugins = object_field(root_object, "enabledPlugins", path)?;
+        let suffix = format!("@{marketplace_name}");
+        enabled_plugins.retain(|key, _| !key.ends_with(&suffix));
+        for plugin in managed_enabled_plugins {
+            enabled_plugins.insert(plugin.clone(), Value::Bool(true));
+        }
     }
 
     let mut contents =
