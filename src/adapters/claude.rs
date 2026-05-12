@@ -515,6 +515,17 @@ fn settings_contents(
         }
     }
     if let Some(marketplace_name) = managed_plugin_marketplace {
+        let extra_marketplaces = object_field(root_object, "extraKnownMarketplaces", path)?;
+        extra_marketplaces.insert(
+            marketplace_name.to_string(),
+            serde_json::json!({
+                "source": {
+                    "source": "directory",
+                    "path": "."
+                }
+            }),
+        );
+
         let enabled_plugins = object_field(root_object, "enabledPlugins", path)?;
         let suffix = format!("@{marketplace_name}");
         enabled_plugins.retain(|key, _| !key.ends_with(&suffix));

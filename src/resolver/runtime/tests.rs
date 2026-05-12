@@ -1656,6 +1656,15 @@ version = "1.2.3"
         "shared@{}",
         marketplace["name"].as_str().expect("marketplace name")
     );
+    let marketplace_name = marketplace["name"].as_str().expect("marketplace name");
+    assert_eq!(
+        settings["extraKnownMarketplaces"][marketplace_name]["source"]["source"].as_str(),
+        Some("directory")
+    );
+    assert_eq!(
+        settings["extraKnownMarketplaces"][marketplace_name]["source"]["path"].as_str(),
+        Some(".")
+    );
     assert_eq!(
         settings["enabledPlugins"]
             .get(&plugin_key)
