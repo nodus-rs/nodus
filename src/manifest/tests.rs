@@ -487,6 +487,7 @@ prefer_skills = ["review"]
     let loaded = load_root_from_dir(temp.path()).unwrap();
     let activation = loaded.manifest.activation.as_ref().unwrap();
 
+    assert!(loaded.warnings.is_empty());
     assert_eq!(
         activation.always_context,
         vec![PathBuf::from("prompts/first-principles.md")]
