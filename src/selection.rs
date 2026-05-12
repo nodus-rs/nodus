@@ -134,6 +134,12 @@ pub fn detect_repo_adapters(project_root: &Path) -> Adapters {
             .join("plugins")
             .join("marketplace.json")
             .is_file()
+        || project_root
+            .join(".nodus")
+            .join(".agents")
+            .join("plugins")
+            .join("marketplace.json")
+            .is_file()
     {
         detected = detected.union(Adapters::CODEX);
     }
@@ -388,6 +394,22 @@ mod tests {
         let detected = detect_repo_adapters(temp.path());
 
         assert!(detected.contains(Adapter::Agents));
+        assert!(detected.contains(Adapter::Codex));
+    }
+
+    #[test]
+    fn detects_nested_nodus_codex_marketplace_without_codex_dir() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join(".nodus/.agents/plugins")).unwrap();
+        fs::write(
+            temp.path().join(".nodus/.agents/plugins/marketplace.json"),
+            "{\n  \"plugins\": []\n}\n",
+        )
+        .unwrap();
+
+        let detected = detect_repo_adapters(temp.path());
+
+        assert!(!detected.contains(Adapter::Agents));
         assert!(detected.contains(Adapter::Codex));
     }
 

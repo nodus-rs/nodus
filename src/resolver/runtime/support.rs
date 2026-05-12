@@ -12,7 +12,7 @@ use super::{
     PlannedFileWrite, Resolution, ResolvedManagedPathOrigin, SyncExecutionPlan, SyncMode,
     SyncSummary, TtyManagedCollisionResolver, UnmanagedCollision,
 };
-use crate::adapters::ManagedFile;
+use crate::adapters::{Adapter, ManagedFile};
 use crate::execution::{ExecutionMode, PreviewChange};
 use crate::lockfile::Lockfile;
 use crate::manifest::{LoadedManifest, load_dependency_from_dir};
@@ -785,7 +785,8 @@ pub(super) fn planned_workspace_marketplace_files(
         })
         .collect::<Result<Vec<_>>>()?;
     files.push(ManagedFile {
-        path: runtime_root.join(".claude-plugin/marketplace.json"),
+        path: crate::adapters::native_marketplace_path(runtime_root, Adapter::Claude)
+            .expect("claude marketplace path"),
         contents: serde_json::to_vec_pretty(&serde_json::json!({
             "name": claude_marketplace_name,
             "owner": {
@@ -816,7 +817,8 @@ pub(super) fn planned_workspace_marketplace_files(
         .collect::<Vec<_>>();
     if !codex_plugins.is_empty() {
         files.push(ManagedFile {
-            path: runtime_root.join(".agents/plugins/marketplace.json"),
+            path: crate::adapters::native_marketplace_path(runtime_root, Adapter::Codex)
+                .expect("codex marketplace path"),
             contents: serde_json::to_vec_pretty(&serde_json::json!({
                 "name": claude_marketplace_name,
                 "plugins": codex_plugins,
@@ -1018,13 +1020,25 @@ fn is_runtime_managed_path(project_root: &Path, path: &Path) -> bool {
             components.next().map(|component| component.as_os_str().to_string_lossy()),
             Some(second) if second == "skills" || second == "agents"
         ),
-        ".nodus" => matches!(
-            (
-                components.next().map(|component| component.as_os_str().to_string_lossy()),
-                components.next().map(|component| component.as_os_str().to_string_lossy())
-            ),
-            (Some(second), Some(_third)) if second == "packages"
-        ),
+        ".nodus" => {
+            let second = components
+                .next()
+                .map(|component| component.as_os_str().to_string_lossy());
+            let third = components
+                .next()
+                .map(|component| component.as_os_str().to_string_lossy());
+            let fourth = components
+                .next()
+                .map(|component| component.as_os_str().to_string_lossy());
+            matches!(
+                (second.as_deref(), third.as_deref()),
+                (Some("packages"), Some(_))
+            ) || matches!(
+                (second.as_deref(), third.as_deref(), fourth.as_deref()),
+                (Some(".claude-plugin"), Some("marketplace.json"), _)
+                    | (Some(".agents"), Some("plugins"), Some("marketplace.json"))
+            )
+        }
         _ => false,
     }
 }

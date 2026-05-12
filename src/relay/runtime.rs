@@ -483,11 +483,13 @@ fn adapters_from_lockfile(lockfile: &Lockfile) -> Adapters {
                 Some(Adapter::Agents)
             } else if path.starts_with(".claude/")
                 || path.starts_with(".claude-plugin/")
+                || path.starts_with(".nodus/.claude-plugin/")
                 || (path.starts_with(".nodus/packages/") && path.contains("/claude-plugin/"))
             {
                 Some(Adapter::Claude)
             } else if path.starts_with(".codex/")
                 || path.starts_with(".codex-plugin/")
+                || path.starts_with(".nodus/.agents/plugins/")
                 || (path.starts_with(".nodus/packages/") && path.contains("/codex-plugin/"))
             {
                 Some(Adapter::Codex)

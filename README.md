@@ -34,6 +34,7 @@ If a package publishes content such as `skills/`, `agents/`, `rules/`, or `comma
 - record what you asked for in `nodus.toml`
 - lock the exact resolved revision in `nodus.lock`
 - write managed files into adapter roots such as `.codex/`, `.claude/`, `.cursor/`, `.github/`, `.agents/`, or `.opencode/`
+- keep generated native plugin marketplaces under `.nodus/` while pointing Claude and Codex at that local marketplace root
 - compose managed MCP server config for supported runtimes, including `.mcp.json`, `.codex/config.toml`, and `opencode.json`
 - prune stale generated files without touching unmanaged ones
 

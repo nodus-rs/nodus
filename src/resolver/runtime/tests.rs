@@ -109,6 +109,14 @@ fn write_codex_marketplace(path: &Path, contents: &str) {
     write_file(&path.join(".agents/plugins/marketplace.json"), contents);
 }
 
+fn generated_claude_marketplace_path(path: &Path) -> PathBuf {
+    path.join(".nodus/.claude-plugin/marketplace.json")
+}
+
+fn generated_codex_marketplace_path(path: &Path) -> PathBuf {
+    path.join(".nodus/.agents/plugins/marketplace.json")
+}
+
 fn write_codex_plugin_json(path: &Path, version: &str, mcp_servers_path: Option<&str>) {
     let mut fields = vec![
         String::from(r#"  "name": "plugin""#),
@@ -1542,7 +1550,7 @@ fn sync_generates_workspace_marketplace_files() {
     sync_in_dir_with_adapters(repo.path(), cache.path(), false, false, &Adapter::ALL).unwrap();
 
     let claude: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(repo.path().join(".claude-plugin/marketplace.json")).unwrap(),
+        &fs::read_to_string(generated_claude_marketplace_path(repo.path())).unwrap(),
     )
     .unwrap();
     let expected_marketplace_name = normalize_workspace_marketplace_name(&expected_owner_name);
@@ -1561,7 +1569,7 @@ fn sync_generates_workspace_marketplace_files() {
     );
 
     let codex: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(repo.path().join(".agents/plugins/marketplace.json")).unwrap(),
+        &fs::read_to_string(generated_codex_marketplace_path(repo.path())).unwrap(),
     )
     .unwrap();
     assert_eq!(
@@ -1577,18 +1585,85 @@ fn sync_generates_workspace_marketplace_files() {
         codex["plugins"][0]["policy"]["installation"].as_str(),
         Some("AVAILABLE")
     );
+    let settings: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(repo.path().join(".claude/settings.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        settings["extraKnownMarketplaces"][expected_marketplace_name.as_str()]["source"]["path"]
+            .as_str(),
+        Some("./.nodus")
+    );
+    assert!(settings.get("enabledPlugins").is_none());
 
     let lockfile = Lockfile::read(&repo.path().join(LOCKFILE_NAME)).unwrap();
     assert!(
         lockfile
             .managed_files
-            .contains(&String::from(".claude-plugin/marketplace.json"))
+            .contains(&String::from(".nodus/.claude-plugin/marketplace.json"))
     );
     assert!(
         lockfile
             .managed_files
-            .contains(&String::from(".agents/plugins/marketplace.json"))
+            .contains(&String::from(".nodus/.agents/plugins/marketplace.json"))
     );
+}
+
+#[test]
+fn sync_registers_workspace_codex_marketplace_in_user_config() {
+    let repo = create_workspace_dependency();
+    let cache = cache_dir();
+    let codex_home = TempDir::new().unwrap();
+    let codex_config = codex_home.path().join("config.toml");
+    write_file(
+        &codex_config,
+        r#"# codex user config
+model = "gpt-5"
+"#,
+    );
+
+    let reporter = Reporter::silent();
+    let install_paths =
+        InstallPaths::project(repo.path()).with_codex_user_config(Some(codex_config.clone()));
+    super::sync_in_dir_with_adapters_mode(
+        &install_paths,
+        cache.path(),
+        SyncMode::Normal,
+        false,
+        false,
+        &[Adapter::Codex],
+        false,
+        ExecutionMode::Apply,
+        None,
+        DependencyFailureMode::Graceful,
+        &reporter,
+    )
+    .unwrap();
+
+    let contents = fs::read_to_string(&codex_config).unwrap();
+    let config: toml::Value = toml::from_str(&contents).unwrap();
+    let expected_marketplace_name = normalize_workspace_marketplace_name(
+        repo.path()
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap(),
+    );
+    let marketplace = config
+        .get("marketplaces")
+        .and_then(toml::Value::as_table)
+        .and_then(|marketplaces| marketplaces.get(&expected_marketplace_name))
+        .and_then(toml::Value::as_table)
+        .expect("workspace marketplace table");
+    let expected_marketplace_source = display_path(&repo.path().join(".nodus"));
+    assert_eq!(
+        marketplace.get("source_type").and_then(toml::Value::as_str),
+        Some("local")
+    );
+    assert_eq!(
+        marketplace.get("source").and_then(toml::Value::as_str),
+        Some(expected_marketplace_source.as_str())
+    );
+    assert!(config.get("plugins").is_none());
 }
 
 #[test]
@@ -1644,7 +1719,7 @@ version = "1.2.3"
     )
     .unwrap();
     let marketplace: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(temp.path().join(".claude-plugin/marketplace.json")).unwrap(),
+        &fs::read_to_string(generated_claude_marketplace_path(temp.path())).unwrap(),
     )
     .unwrap();
     assert_eq!(marketplace["plugins"][0]["name"].as_str(), Some("shared"));
@@ -1663,7 +1738,7 @@ version = "1.2.3"
     );
     assert_eq!(
         settings["extraKnownMarketplaces"][marketplace_name]["source"]["path"].as_str(),
-        Some("./")
+        Some("./.nodus")
     );
     assert_eq!(
         settings["enabledPlugins"]
@@ -1732,7 +1807,7 @@ args = ["figma-developer-mcp"]
     assert_eq!(mcp["mcpServers"]["figma"]["command"].as_str(), Some("npx"));
 
     let marketplace: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(temp.path().join(".agents/plugins/marketplace.json")).unwrap(),
+        &fs::read_to_string(generated_codex_marketplace_path(temp.path())).unwrap(),
     )
     .unwrap();
     assert_eq!(marketplace["plugins"][0]["name"].as_str(), Some("shared"));
@@ -1802,6 +1877,13 @@ enabled = false
 
 [plugins."grapha@yoki-ios"]
 enabled = false
+
+[marketplaces.yoki-ios]
+source_type = "git"
+source = "https://github.com/example/old.git"
+ref = "main"
+sparse_paths = ["plugins"]
+custom = "kept"
 "#,
     );
 
@@ -1852,6 +1934,27 @@ enabled = false
             .and_then(toml::Value::as_bool),
         Some(false)
     );
+    let marketplace = config
+        .get("marketplaces")
+        .and_then(toml::Value::as_table)
+        .and_then(|marketplaces| marketplaces.get("yoki-ios"))
+        .and_then(toml::Value::as_table)
+        .expect("yoki-ios marketplace table");
+    assert_eq!(
+        marketplace.get("source_type").and_then(toml::Value::as_str),
+        Some("local")
+    );
+    let expected_marketplace_source = display_path(&temp.path().join(".nodus"));
+    assert_eq!(
+        marketplace.get("source").and_then(toml::Value::as_str),
+        Some(expected_marketplace_source.as_str())
+    );
+    assert!(marketplace.get("ref").is_none());
+    assert!(marketplace.get("sparse_paths").is_none());
+    assert_eq!(
+        marketplace.get("custom").and_then(toml::Value::as_str),
+        Some("kept")
+    );
     assert!(
         !Lockfile::read(&temp.path().join(LOCKFILE_NAME))
             .unwrap()
@@ -1896,12 +1999,8 @@ shared = { path = "vendor/shared" }
             .join(".nodus/packages/shared/codex-plugin/skills/review/SKILL.md")
             .exists()
     );
-    assert!(temp.path().join(".claude-plugin/marketplace.json").exists());
-    assert!(
-        temp.path()
-            .join(".agents/plugins/marketplace.json")
-            .exists()
-    );
+    assert!(generated_claude_marketplace_path(temp.path()).exists());
+    assert!(generated_codex_marketplace_path(temp.path()).exists());
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert!(
@@ -2034,7 +2133,7 @@ fn sync_skips_invalid_workspace_members_in_marketplace_files() {
     sync_in_dir_with_adapters(repo.path(), cache.path(), false, false, &Adapter::ALL).unwrap();
 
     let claude: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(repo.path().join(".claude-plugin/marketplace.json")).unwrap(),
+        &fs::read_to_string(generated_claude_marketplace_path(repo.path())).unwrap(),
     )
     .unwrap();
     let expected_marketplace_name = normalize_workspace_marketplace_name(&expected_owner_name);
@@ -2053,7 +2152,7 @@ fn sync_skips_invalid_workspace_members_in_marketplace_files() {
     );
 
     let codex: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(repo.path().join(".agents/plugins/marketplace.json")).unwrap(),
+        &fs::read_to_string(generated_codex_marketplace_path(repo.path())).unwrap(),
     )
     .unwrap();
     assert_eq!(
@@ -2083,7 +2182,7 @@ fn sync_emits_codex_marketplace_for_only_workspace_members_with_codex_metadata()
     sync_in_dir_with_adapters(repo.path(), cache.path(), false, false, &Adapter::ALL).unwrap();
 
     let claude: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(repo.path().join(".claude-plugin/marketplace.json")).unwrap(),
+        &fs::read_to_string(generated_claude_marketplace_path(repo.path())).unwrap(),
     )
     .unwrap();
     let expected_marketplace_name = normalize_workspace_marketplace_name(&expected_owner_name);
@@ -2094,7 +2193,7 @@ fn sync_emits_codex_marketplace_for_only_workspace_members_with_codex_metadata()
     assert_eq!(claude["plugins"].as_array().unwrap().len(), 2);
 
     let codex: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(repo.path().join(".agents/plugins/marketplace.json")).unwrap(),
+        &fs::read_to_string(generated_codex_marketplace_path(repo.path())).unwrap(),
     )
     .unwrap();
     assert_eq!(
@@ -2136,7 +2235,7 @@ authentication = "ON_INSTALL"
     sync_in_dir_with_adapters(repo.path(), cache.path(), false, false, &Adapter::ALL).unwrap();
 
     let claude: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(repo.path().join(".claude-plugin/marketplace.json")).unwrap(),
+        &fs::read_to_string(generated_claude_marketplace_path(repo.path())).unwrap(),
     )
     .unwrap();
     assert_eq!(claude["name"].as_str(), Some("workspace-plugins"));
@@ -4977,7 +5076,7 @@ shared = { path = "vendor/shared", components = ["commands"] }
         Adapter::Codex,
         &managed_codex_command_skill
     ));
-    assert_eq!(summary.managed_file_count, 4);
+    assert_eq!(summary.managed_file_count, 3);
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     let shared = lockfile
@@ -8185,7 +8284,7 @@ shared = { path = "vendor/shared", components = ["agents"] }
         sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex])
             .unwrap();
     // The package selects only agents, so MCP config is not emitted.
-    assert_eq!(summary.managed_file_count, 4);
+    assert_eq!(summary.managed_file_count, 3);
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     let shared = lockfile
@@ -8197,7 +8296,7 @@ shared = { path = "vendor/shared", components = ["agents"] }
         shared.selected_components,
         Some(vec![DependencyComponent::Agents])
     );
-    assert_eq!(lockfile.managed_files.len(), 4);
+    assert_eq!(lockfile.managed_files.len(), 3);
     assert!(!lockfile.managed_files.contains(&String::from(".mcp.json")));
     assert!(runtime_file_exists(
         temp.path(),
@@ -10176,7 +10275,7 @@ shared = { path = "vendor/shared" }
     write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
     sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
 
-    let marketplace_path = temp.path().join(".agents/plugins/marketplace.json");
+    let marketplace_path = generated_codex_marketplace_path(temp.path());
     fs::remove_file(&marketplace_path).unwrap();
 
     let check = doctor_in_dir_with_mode(
@@ -10455,7 +10554,7 @@ fn doctor_missing_lockfile_with_workspace_marketplace_collision_blocks_repair() 
     sync_in_dir_with_adapters(repo.path(), cache.path(), false, false, &[Adapter::Claude]).unwrap();
     fs::remove_file(repo.path().join(LOCKFILE_NAME)).unwrap();
     write_file(
-        &repo.path().join(".claude-plugin/marketplace.json"),
+        &generated_claude_marketplace_path(repo.path()),
         "user-authored marketplace\n",
     );
 
@@ -10474,7 +10573,7 @@ fn doctor_missing_lockfile_with_workspace_marketplace_collision_blocks_repair() 
     }));
     assert!(!repo.path().join(LOCKFILE_NAME).exists());
     assert_eq!(
-        fs::read_to_string(repo.path().join(".claude-plugin/marketplace.json")).unwrap(),
+        fs::read_to_string(generated_claude_marketplace_path(repo.path())).unwrap(),
         "user-authored marketplace\n"
     );
 }
@@ -10486,7 +10585,7 @@ fn doctor_recovers_exact_match_workspace_marketplace_after_lockfile_loss() {
 
     sync_in_dir_with_adapters(repo.path(), cache.path(), false, false, &[Adapter::Claude]).unwrap();
     let expected_marketplace =
-        fs::read_to_string(repo.path().join(".claude-plugin/marketplace.json")).unwrap();
+        fs::read_to_string(generated_claude_marketplace_path(repo.path())).unwrap();
     fs::remove_file(repo.path().join(LOCKFILE_NAME)).unwrap();
 
     let summary = doctor_in_dir_with_mode(
@@ -10500,7 +10599,7 @@ fn doctor_recovers_exact_match_workspace_marketplace_after_lockfile_loss() {
     assert_eq!(summary.status, DoctorStatus::Fixed);
     assert!(repo.path().join(LOCKFILE_NAME).exists());
     assert_eq!(
-        fs::read_to_string(repo.path().join(".claude-plugin/marketplace.json")).unwrap(),
+        fs::read_to_string(generated_claude_marketplace_path(repo.path())).unwrap(),
         expected_marketplace
     );
 }
@@ -10834,8 +10933,9 @@ fn doctor_check_mode_reports_risky_cleanup_without_deleting_anything() {
     let cache = cache_dir();
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
     fs::remove_file(temp.path().join(LOCKFILE_NAME)).unwrap();
-    fs::remove_dir_all(temp.path().join(".agents")).unwrap();
-    write_file(&temp.path().join(".agents"), "user-owned file\n");
+    let codex_marketplace_parent = temp.path().join(".nodus/.agents");
+    fs::remove_dir_all(&codex_marketplace_parent).unwrap();
+    write_file(&codex_marketplace_parent, "user-owned file\n");
 
     let summary = doctor_in_dir_with_mode(
         temp.path(),
@@ -10852,7 +10952,7 @@ fn doctor_check_mode_reports_risky_cleanup_without_deleting_anything() {
             .iter()
             .any(|finding| finding.kind == DoctorFindingKind::RiskyFix)
     );
-    assert!(temp.path().join(".agents").is_file());
+    assert!(codex_marketplace_parent.is_file());
 }
 
 #[test]
@@ -10861,8 +10961,9 @@ fn doctor_force_mode_applies_risky_cleanup_without_prompt() {
     let cache = cache_dir();
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
     fs::remove_file(temp.path().join(LOCKFILE_NAME)).unwrap();
-    fs::remove_dir_all(temp.path().join(".agents")).unwrap();
-    write_file(&temp.path().join(".agents"), "user-owned file\n");
+    let codex_marketplace_parent = temp.path().join(".nodus/.agents");
+    fs::remove_dir_all(&codex_marketplace_parent).unwrap();
+    write_file(&codex_marketplace_parent, "user-owned file\n");
 
     let summary = doctor_in_dir_with_mode(
         temp.path(),
@@ -10878,12 +10979,8 @@ fn doctor_force_mode_applies_risky_cleanup_without_prompt() {
             .message
             .contains("removed conflicting managed subtree")
     }));
-    assert!(!temp.path().join(".agents").is_file());
-    assert!(
-        temp.path()
-            .join(".agents/plugins/marketplace.json")
-            .exists()
-    );
+    assert!(!codex_marketplace_parent.is_file());
+    assert!(generated_codex_marketplace_path(temp.path()).exists());
     assert!(temp.path().join(LOCKFILE_NAME).exists());
 }
 

@@ -1473,7 +1473,8 @@ fn planned_workspace_marketplace_files(
         })
         .collect::<Result<Vec<_>>>()?;
     files.push(ManagedFile {
-        path: runtime_root.join(".claude-plugin/marketplace.json"),
+        path: crate::adapters::native_marketplace_path(runtime_root, Adapter::Claude)
+            .expect("claude marketplace path"),
         contents: serde_json::to_vec_pretty(&serde_json::json!({
             "name": claude_marketplace_name,
             "owner": {
@@ -1504,7 +1505,8 @@ fn planned_workspace_marketplace_files(
         .collect::<Vec<_>>();
     if !codex_plugins.is_empty() {
         files.push(ManagedFile {
-            path: runtime_root.join(".agents/plugins/marketplace.json"),
+            path: crate::adapters::native_marketplace_path(runtime_root, Adapter::Codex)
+                .expect("codex marketplace path"),
             contents: serde_json::to_vec_pretty(&serde_json::json!({
                 "name": claude_marketplace_name,
                 "plugins": codex_plugins,

@@ -515,6 +515,29 @@ pub fn runtime_root(project_root: &Path, adapter: Adapter) -> PathBuf {
     project_root.join(profile::runtime_root_name(adapter))
 }
 
+const NATIVE_MARKETPLACE_ROOT: &str = ".nodus";
+
+pub(crate) fn native_marketplace_root(project_root: &Path) -> PathBuf {
+    project_root.join(NATIVE_MARKETPLACE_ROOT)
+}
+
+pub(crate) fn native_marketplace_source_path() -> &'static str {
+    "./.nodus"
+}
+
+pub(crate) fn native_marketplace_path(project_root: &Path, adapter: Adapter) -> Option<PathBuf> {
+    let root = native_marketplace_root(project_root);
+    match adapter {
+        Adapter::Claude => Some(root.join(".claude-plugin").join("marketplace.json")),
+        Adapter::Codex => Some(
+            root.join(".agents")
+                .join("plugins")
+                .join("marketplace.json"),
+        ),
+        Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => None,
+    }
+}
+
 pub(crate) fn native_package_plugin_root(
     project_root: &Path,
     adapter: Adapter,

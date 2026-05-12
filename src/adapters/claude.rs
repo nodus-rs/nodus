@@ -521,16 +521,18 @@ fn settings_contents(
             serde_json::json!({
                 "source": {
                     "source": "directory",
-                    "path": "./"
+                    "path": super::native_marketplace_source_path()
                 }
             }),
         );
 
-        let enabled_plugins = object_field(root_object, "enabledPlugins", path)?;
-        let suffix = format!("@{marketplace_name}");
-        enabled_plugins.retain(|key, _| !key.ends_with(&suffix));
-        for plugin in managed_enabled_plugins {
-            enabled_plugins.insert(plugin.clone(), Value::Bool(true));
+        if !managed_enabled_plugins.is_empty() {
+            let enabled_plugins = object_field(root_object, "enabledPlugins", path)?;
+            let suffix = format!("@{marketplace_name}");
+            enabled_plugins.retain(|key, _| !key.ends_with(&suffix));
+            for plugin in managed_enabled_plugins {
+                enabled_plugins.insert(plugin.clone(), Value::Bool(true));
+            }
         }
     }
 
