@@ -16,11 +16,11 @@ pub use model_impls::RequestedGitRef;
 pub(crate) use types::ClaudePluginHookCompatSource;
 #[allow(unused_imports)]
 pub use types::{
-    AdapterConfig, AgentEntry, Capability, DependencyComponent, DependencyEntry, DependencyKind,
-    DependencySourceKind, DependencySpec, FileEntry, HookEvent, HookHandler, HookHandlerType,
-    HookMatcher, HookSessionSource, HookSpec, HookTool, HookWorkingDirectory, InitSummary,
-    LaunchHookConfig, LoadedManifest, MANIFEST_FILE, ManagedExportSpec, ManagedPathSpec,
-    ManagedPlacement, Manifest, McpServerConfig, PackageContents, PackageRole,
+    ActivationConfig, AdapterConfig, AgentEntry, Capability, DependencyComponent, DependencyEntry,
+    DependencyKind, DependencySourceKind, DependencySpec, FileEntry, HookEvent, HookHandler,
+    HookHandlerType, HookMatcher, HookSessionSource, HookSpec, HookTool, HookWorkingDirectory,
+    InitSummary, LaunchHookConfig, LoadedManifest, MANIFEST_FILE, ManagedExportSpec,
+    ManagedPathSpec, ManagedPlacement, Manifest, McpServerConfig, PackageContents, PackageRole,
     ResolvedWorkspaceMember, SkillEntry, WorkspaceConfig, WorkspaceMemberCodexSpec,
     WorkspaceMemberSpec, WorkspaceMemberStatus,
 };

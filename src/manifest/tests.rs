@@ -468,6 +468,38 @@ cwd = "session"
 }
 
 #[test]
+fn loads_root_manifest_activation() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join("prompts/first-principles.md"),
+        "Reason from facts.\n",
+    );
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[activation]
+always_context = ["prompts/first-principles.md"]
+prefer_skills = ["review"]
+"#,
+    );
+
+    let loaded = load_root_from_dir(temp.path()).unwrap();
+    let activation = loaded.manifest.activation.as_ref().unwrap();
+
+    assert_eq!(
+        activation.always_context,
+        vec![PathBuf::from("prompts/first-principles.md")]
+    );
+    assert_eq!(activation.prefer_skills, vec![String::from("review")]);
+    assert!(
+        loaded.package_files().unwrap().contains(
+            &canonicalize_path(&temp.path().join("prompts/first-principles.md")).unwrap()
+        )
+    );
+}
+
+#[test]
 fn loads_root_manifest_claude_native_lifecycle_hooks() {
     let temp = TempDir::new().unwrap();
     write_valid_skill(temp.path());
@@ -754,6 +786,33 @@ command = "example hook"
     assert!(loaded.manifest.mcp_servers.is_empty());
     assert_eq!(loaded.manifest.hooks.len(), 1);
     assert_eq!(loaded.manifest.hooks[0].event, HookEvent::SessionEnd);
+}
+
+#[test]
+fn accepts_dependency_repo_with_only_activation_context() {
+    let temp = TempDir::new().unwrap();
+    write_file(
+        &temp.path().join("prompts/bootstrap.md"),
+        "Bootstrap context.\n",
+    );
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[activation]
+always_context = ["prompts/bootstrap.md"]
+"#,
+    );
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    assert!(loaded.discovered.is_empty());
+    assert!(loaded.manifest.activation_enabled());
+    assert!(
+        loaded
+            .package_files()
+            .unwrap()
+            .contains(&canonicalize_path(&temp.path().join("prompts/bootstrap.md")).unwrap())
+    );
 }
 
 #[test]
@@ -3146,6 +3205,23 @@ fn serializes_adapters_in_stable_sorted_order() {
 }
 
 #[test]
+fn serializes_activation() {
+    let manifest = Manifest {
+        activation: Some(ActivationConfig {
+            always_context: vec![PathBuf::from("./prompts/first-principles.md")],
+            prefer_skills: vec![String::from("rust-testing")],
+        }),
+        ..Manifest::default()
+    };
+
+    let encoded = serialize_manifest(&manifest).unwrap();
+
+    assert!(encoded.contains("[activation]"));
+    assert!(encoded.contains("always_context = [\"prompts/first-principles.md\"]"));
+    assert!(encoded.contains("prefer_skills = [\"rust-testing\"]"));
+}
+
+#[test]
 fn serializes_launch_hooks() {
     let manifest = Manifest {
         launch_hooks: Some(LaunchHookConfig {
@@ -3492,6 +3568,129 @@ content_roots = ["nodus-development"]
     let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
     assert!(error.contains("content_roots"));
     assert!(error.contains("nodus-development"));
+}
+
+#[test]
+fn rejects_activation_context_paths_with_parent_segments() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[activation]
+always_context = ["../shared.md"]
+"#,
+    );
+
+    let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+    assert!(error.contains("activation.always_context"));
+    assert!(error.contains("must not contain `..`"));
+}
+
+#[test]
+fn rejects_duplicate_activation_context_paths_after_normalization() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(&temp.path().join("prompts/context.md"), "Context.\n");
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[activation]
+always_context = ["prompts/context.md", "./prompts/context.md"]
+"#,
+    );
+
+    let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+    assert!(error.contains("activation.always_context"));
+    assert!(error.contains("duplicate paths"));
+}
+
+#[test]
+fn rejects_missing_activation_context_file() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[activation]
+always_context = ["prompts/missing.md"]
+"#,
+    );
+
+    let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+    assert!(error.contains("activation.always_context"));
+    assert!(error.contains("prompts/missing.md"));
+}
+
+#[test]
+fn rejects_activation_context_directory() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    fs::create_dir_all(temp.path().join("prompts")).unwrap();
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[activation]
+always_context = ["prompts"]
+"#,
+    );
+
+    let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+    assert!(error.contains("activation.always_context"));
+    assert!(error.contains("must point to a file"));
+}
+
+#[test]
+fn rejects_non_utf8_activation_context_file() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    fs::create_dir_all(temp.path().join("prompts")).unwrap();
+    fs::write(temp.path().join("prompts/context.md"), [0xff, 0xfe]).unwrap();
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[activation]
+always_context = ["prompts/context.md"]
+"#,
+    );
+
+    let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+    assert!(error.contains("activation.always_context"));
+    assert!(error.contains("must be UTF-8"));
+}
+
+#[test]
+fn rejects_duplicate_activation_preferred_skills() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[activation]
+prefer_skills = ["review", "review"]
+"#,
+    );
+
+    let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+    assert!(error.contains("activation.prefer_skills"));
+    assert!(error.contains("duplicates"));
+}
+
+#[test]
+fn rejects_unknown_activation_preferred_skill() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[activation]
+prefer_skills = ["missing"]
+"#,
+    );
+
+    let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+    assert!(error.contains("activation.prefer_skills"));
+    assert!(error.contains("unknown skill `missing`"));
 }
 
 #[test]

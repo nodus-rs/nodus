@@ -58,6 +58,7 @@ impl LoadedManifest {
         {
             bail!("manifest field `launch_hooks.sync_on_startup` must be true when set");
         }
+        self.validate_activation()?;
         validate_hooks(&self.manifest.hooks, role)?;
         if self.manifest.workspace.is_some() {
             validate_workspace(self)?;
@@ -90,6 +91,7 @@ impl LoadedManifest {
                         && (!self.manifest.dependencies.is_empty()
                             || !self.manifest.mcp_servers.is_empty()
                             || !self.manifest.managed_exports.is_empty()
+                            || self.manifest.activation_enabled()
                             || !self.manifest.hooks.is_empty()
                             || !self.manifest.opencode_plugin_hooks.is_empty())
                 }
@@ -97,6 +99,7 @@ impl LoadedManifest {
         };
         if self.discovered.is_empty()
             && self.manifest.mcp_servers.is_empty()
+            && !self.manifest.activation_enabled()
             && self.manifest.hooks.is_empty()
             && self.manifest.opencode_plugin_hooks.is_empty()
             && !allow_empty_package
@@ -130,6 +133,9 @@ impl LoadedManifest {
 
     pub fn package_files(&self) -> Result<Vec<PathBuf>> {
         let mut files = self.discovered.files(self)?;
+        for path in self.manifest.normalized_activation_context_paths()? {
+            files.push(self.root.join(path));
+        }
         if let Some(manifest_path) = &self.manifest_path {
             files.push(manifest_path.clone());
         }
@@ -180,6 +186,56 @@ impl LoadedManifest {
             .as_ref()
             .map(|plugin| plugin.hook_compat_sources.as_slice())
             .unwrap_or(&[])
+    }
+
+    fn validate_activation(&self) -> Result<()> {
+        let Some(activation) = &self.manifest.activation else {
+            return Ok(());
+        };
+
+        for path in self.manifest.normalized_activation_context_paths()? {
+            let resolved = self.resolve_existing_path(&path).with_context(|| {
+                format!(
+                    "manifest field `activation.always_context` contains invalid path `{}`",
+                    display_path(&path)
+                )
+            })?;
+            if !resolved.is_file() {
+                bail!(
+                    "manifest field `activation.always_context` path `{}` must point to a file",
+                    display_path(&path)
+                );
+            }
+            fs::read_to_string(&resolved).with_context(|| {
+                format!(
+                    "manifest field `activation.always_context` path `{}` must be UTF-8",
+                    display_path(&path)
+                )
+            })?;
+        }
+
+        let mut seen_skills = HashSet::new();
+        let discovered_skill_ids = self
+            .discovered
+            .skills
+            .iter()
+            .map(|skill| skill.id.as_str())
+            .collect::<HashSet<_>>();
+        for skill in &activation.prefer_skills {
+            if skill.trim().is_empty() {
+                bail!("manifest field `activation.prefer_skills` must not contain empty entries");
+            }
+            if !seen_skills.insert(skill.as_str()) {
+                bail!("manifest field `activation.prefer_skills` must not contain duplicates");
+            }
+            if !discovered_skill_ids.contains(skill.as_str()) {
+                bail!(
+                    "manifest field `activation.prefer_skills` references unknown skill `{skill}`"
+                );
+            }
+        }
+
+        Ok(())
     }
 
     fn resolve_package_file_path(&self, path: &Path) -> Result<PathBuf> {
@@ -482,6 +538,34 @@ impl Manifest {
             normalized_paths.push(normalized);
         }
         Ok(normalized_paths)
+    }
+
+    pub fn normalized_activation_context_paths(&self) -> Result<Vec<PathBuf>> {
+        let Some(activation) = &self.activation else {
+            return Ok(Vec::new());
+        };
+
+        let mut normalized_paths = Vec::with_capacity(activation.always_context.len());
+        let mut seen = HashSet::new();
+        for path in &activation.always_context {
+            let normalized = normalize_manifest_relative_path(
+                path,
+                "manifest field `activation.always_context` entry",
+            )?;
+            if !seen.insert(normalized.clone()) {
+                bail!(
+                    "manifest field `activation.always_context` must not contain duplicate paths"
+                );
+            }
+            normalized_paths.push(normalized);
+        }
+        Ok(normalized_paths)
+    }
+
+    pub fn activation_enabled(&self) -> bool {
+        self.activation.as_ref().is_some_and(|activation| {
+            !activation.always_context.is_empty() || !activation.prefer_skills.is_empty()
+        })
     }
 
     pub fn set_enabled_adapters(&mut self, adapters: &[Adapter]) {

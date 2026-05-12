@@ -265,6 +265,33 @@ pub fn serialize_manifest(manifest: &Manifest) -> Result<String> {
         output.push_str(&format!("enabled = [{encoded}]\n"));
     }
 
+    if let Some(activation) = &manifest.activation
+        && (!activation.always_context.is_empty() || !activation.prefer_skills.is_empty())
+    {
+        if !output.is_empty() && !output.ends_with('\n') {
+            output.push('\n');
+        }
+        output.push_str("[activation]\n");
+        let always_context = manifest.normalized_activation_context_paths()?;
+        if !always_context.is_empty() {
+            let encoded = always_context
+                .iter()
+                .map(|path| quote(&display_path(path)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            output.push_str(&format!("always_context = [{encoded}]\n"));
+        }
+        if !activation.prefer_skills.is_empty() {
+            let encoded = activation
+                .prefer_skills
+                .iter()
+                .map(|skill| quote(skill))
+                .collect::<Vec<_>>()
+                .join(", ");
+            output.push_str(&format!("prefer_skills = [{encoded}]\n"));
+        }
+    }
+
     let effective_hooks = manifest.effective_hooks();
     if !effective_hooks.is_empty() {
         if !output.is_empty() && !output.ends_with('\n') {

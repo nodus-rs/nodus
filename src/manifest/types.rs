@@ -32,6 +32,8 @@ pub struct Manifest {
     pub adapters: Option<AdapterConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_hooks: Option<LaunchHookConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation: Option<ActivationConfig>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hooks: Vec<HookSpec>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -67,6 +69,14 @@ impl AdapterConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LaunchHookConfig {
     pub sync_on_startup: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivationConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub always_context: Vec<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prefer_skills: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
