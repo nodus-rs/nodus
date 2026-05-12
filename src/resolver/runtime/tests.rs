@@ -4,6 +4,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use tempfile::TempDir;
+use walkdir::WalkDir;
 
 use super::*;
 use crate::adapters::{Adapter, Adapters, ArtifactKind, ManagedArtifactNames};
@@ -193,6 +194,103 @@ fn namespaced_file_name(package: &ResolvedPackage, artifact_id: &str, extension:
         artifact_id,
         extension,
     )
+}
+
+fn adapter_runtime_root_name(adapter: Adapter) -> &'static str {
+    match adapter {
+        Adapter::Agents => ".agents",
+        Adapter::Claude => ".claude",
+        Adapter::Codex => ".codex",
+        Adapter::Copilot => ".github",
+        Adapter::Cursor => ".cursor",
+        Adapter::OpenCode => ".opencode",
+    }
+}
+
+fn path_contains_adapter_runtime(path: &Path, adapter: Adapter) -> bool {
+    let runtime = adapter_runtime_root_name(adapter);
+    path.components()
+        .any(|component| component.as_os_str() == runtime)
+}
+
+fn runtime_skill_paths(project_root: &Path, adapter: Adapter, skill_id: &str) -> Vec<PathBuf> {
+    let mut paths = WalkDir::new(project_root)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file() && entry.file_name() == "SKILL.md")
+        .map(|entry| entry.into_path())
+        .filter(|path| {
+            path_contains_adapter_runtime(path, adapter)
+                && path
+                    .parent()
+                    .and_then(Path::file_name)
+                    .is_some_and(|name| name == skill_id)
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths
+}
+
+fn runtime_skill_path(project_root: &Path, adapter: Adapter, skill_id: &str) -> PathBuf {
+    let mut paths = runtime_skill_paths(project_root, adapter, skill_id);
+    assert_eq!(paths.len(), 1, "expected one {adapter} skill `{skill_id}`");
+    paths.remove(0)
+}
+
+fn runtime_skill_exists(project_root: &Path, adapter: Adapter, skill_id: &str) -> bool {
+    !runtime_skill_paths(project_root, adapter, skill_id).is_empty()
+}
+
+fn runtime_file_paths(project_root: &Path, adapter: Adapter, file_name: &str) -> Vec<PathBuf> {
+    let mut paths = WalkDir::new(project_root)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file() && entry.file_name() == file_name)
+        .map(|entry| entry.into_path())
+        .filter(|path| path_contains_adapter_runtime(path, adapter))
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths
+}
+
+fn runtime_file_path(project_root: &Path, adapter: Adapter, file_name: &str) -> PathBuf {
+    let mut paths = runtime_file_paths(project_root, adapter, file_name);
+    assert_eq!(paths.len(), 1, "expected one {adapter} file `{file_name}`");
+    paths.remove(0)
+}
+
+fn runtime_file_exists(project_root: &Path, adapter: Adapter, file_name: &str) -> bool {
+    !runtime_file_paths(project_root, adapter, file_name).is_empty()
+}
+
+fn managed_skill_file(
+    project_root: &Path,
+    adapter: Adapter,
+    package: &ResolvedPackage,
+    skill_id: &str,
+) -> PathBuf {
+    let names = ManagedArtifactNames::from_resolved_packages([package]);
+    crate::adapters::managed_skill_root(&names, project_root, adapter, package, skill_id)
+        .join("SKILL.md")
+}
+
+fn managed_artifact_file(
+    project_root: &Path,
+    adapter: Adapter,
+    kind: ArtifactKind,
+    package: &ResolvedPackage,
+    artifact_id: &str,
+) -> PathBuf {
+    let names = ManagedArtifactNames::from_resolved_packages([package]);
+    crate::adapters::managed_artifact_path(
+        &names,
+        project_root,
+        adapter,
+        kind,
+        package,
+        artifact_id,
+    )
+    .unwrap()
 }
 
 fn resolution_skill_id(
@@ -792,7 +890,11 @@ shared = { path = "vendor/shared" }
             .managed_files
             .contains(&".claude/skills/review".into())
     );
-    assert!(lockfile.managed_files.contains(&".claude/skills".into()));
+    assert!(
+        lockfile
+            .managed_files
+            .contains(&".nodus/packages/shared/claude-plugin".into())
+    );
 }
 
 #[test]
@@ -813,7 +915,9 @@ root_skill_pack = { path = "vendor/root-skill-pack" }
 
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Claude]).unwrap();
 
-    let emitted_skill = temp.path().join(".claude/skills/root-skill-pack");
+    let emitted_skill = temp
+        .path()
+        .join(".nodus/packages/root_skill_pack/claude-plugin/.claude/skills/root-skill-pack");
     assert!(emitted_skill.join("SKILL.md").exists());
     assert_eq!(
         fs::read_to_string(emitted_skill.join("assets/reference.md")).unwrap(),
@@ -857,11 +961,11 @@ content_roots = ["nodus-development"]
         .unwrap();
     let managed_skill_id = namespaced_skill_id(dependency, "checks");
 
-    assert!(
-        temp.path()
-            .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
-            .exists()
-    );
+    assert!(runtime_skill_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_skill_id
+    ));
     assert!(
         temp.path()
             .join(format!(".cursor/skills/{managed_skill_id}/SKILL.md"))
@@ -918,11 +1022,11 @@ fn add_dependency_clones_repo_and_updates_manifest() {
         .find(|package| package.alias != "root")
         .unwrap();
     let managed_skill_id = namespaced_skill_id(dependency, "review");
-    assert!(
-        temp.path()
-            .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
-            .exists()
-    );
+    assert!(runtime_skill_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_skill_id
+    ));
 }
 
 #[test]
@@ -1883,16 +1987,16 @@ fn add_dependency_accepts_repo_with_nested_skill_directories() {
         "security-and-governance__configuring-audit-logging",
     );
 
-    assert!(
-        temp.path()
-            .join(format!(".claude/skills/{molt_fetch_skill_id}/SKILL.md"))
-            .exists()
-    );
-    assert!(
-        temp.path()
-            .join(format!(".claude/skills/{audit_logging_skill_id}/SKILL.md"))
-            .exists()
-    );
+    assert!(runtime_skill_exists(
+        temp.path(),
+        Adapter::Claude,
+        &molt_fetch_skill_id
+    ));
+    assert!(runtime_skill_exists(
+        temp.path(),
+        Adapter::Claude,
+        &audit_logging_skill_id
+    ));
 }
 
 #[test]
@@ -1963,11 +2067,11 @@ leaf = {{ url = "{}", tag = "v0.1.0" }}
         .find(|package| package.alias == "leaf")
         .unwrap();
     let managed_skill_id = namespaced_skill_id(leaf_package, "checks");
-    assert!(
-        temp.path()
-            .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
-            .exists()
-    );
+    assert!(runtime_skill_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_skill_id
+    ));
 }
 
 #[test]
@@ -2062,21 +2166,21 @@ fn add_dependency_accepts_claude_marketplace_wrapper_and_syncs_plugin_contents()
             .join(format!(".agents/skills/{managed_skill_id}/SKILL.md"))
             .exists()
     );
-    assert!(
-        temp.path()
-            .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
-            .exists()
-    );
-    assert!(
-        temp.path()
-            .join(format!(".claude/agents/{managed_agent_file}"))
-            .exists()
-    );
-    assert!(
-        temp.path()
-            .join(format!(".claude/commands/{managed_command_file}"))
-            .exists()
-    );
+    assert!(runtime_skill_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_skill_id
+    ));
+    assert!(runtime_file_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_agent_file
+    ));
+    assert!(runtime_file_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_command_file
+    ));
 }
 
 #[test]
@@ -2197,21 +2301,21 @@ fn add_dependency_accepts_modern_claude_plugin_extra_component_paths_and_syncs_c
     let managed_skill_id = namespaced_skill_id(&package, "review");
     let managed_agent_file = namespaced_file_name(&package, "security", "md");
     let managed_command_file = namespaced_file_name(&package, "build", "md");
-    assert!(
-        temp.path()
-            .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
-            .exists()
-    );
-    assert!(
-        temp.path()
-            .join(format!(".claude/agents/{managed_agent_file}"))
-            .exists()
-    );
-    assert!(
-        temp.path()
-            .join(format!(".claude/commands/{managed_command_file}"))
-            .exists()
-    );
+    assert!(runtime_skill_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_skill_id
+    ));
+    assert!(runtime_file_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_agent_file
+    ));
+    assert!(runtime_file_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_command_file
+    ));
 }
 
 #[test]
@@ -3013,16 +3117,16 @@ fn add_dependency_accepts_all_claude_marketplace_remote_sources_and_syncs_conten
 
     let root_skill_id = namespaced_skill_id(root_package, "checks");
     let subdir_skill_id = namespaced_skill_id(subdir_package, "review");
-    assert!(
-        temp.path()
-            .join(format!(".claude/skills/{root_skill_id}/SKILL.md"))
-            .exists()
-    );
-    assert!(
-        temp.path()
-            .join(format!(".claude/skills/{subdir_skill_id}/SKILL.md"))
-            .exists()
-    );
+    assert!(runtime_skill_exists(
+        temp.path(),
+        Adapter::Claude,
+        &root_skill_id
+    ));
+    assert!(runtime_skill_exists(
+        temp.path(),
+        Adapter::Claude,
+        &subdir_skill_id
+    ));
 }
 
 #[test]
@@ -3104,11 +3208,11 @@ fn add_dependency_accepts_codex_marketplace_wrapper_and_syncs_plugin_contents() 
         .find(|package| package.alias == "axiom")
         .unwrap();
     let managed_skill_id = namespaced_skill_id(plugin_package, "review");
-    assert!(
-        temp.path()
-            .join(format!(".codex/skills/{managed_skill_id}/SKILL.md"))
-            .exists()
-    );
+    assert!(runtime_skill_exists(
+        temp.path(),
+        Adapter::Codex,
+        &managed_skill_id
+    ));
 
     let json: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(temp.path().join(".mcp.json")).unwrap()).unwrap();
@@ -3539,11 +3643,11 @@ bundled = { path = "vendor/bundled" }
         .find(|package| package.alias == "bundled")
         .unwrap();
     let managed_skill_id = namespaced_skill_id(bundled_package, "bundled");
-    assert!(
-        temp.path()
-            .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
-            .exists()
-    );
+    assert!(runtime_skill_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_skill_id
+    ));
 }
 
 #[test]
@@ -3659,22 +3763,21 @@ fn remove_dependency_updates_manifest_and_prunes_managed_files() {
     let managed_skill_id = namespaced_skill_id(&dependency, "review");
 
     assert!(manifest_before.manifest.dependencies.contains_key(&alias));
-    assert!(
-        temp.path()
-            .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
-            .exists()
-    );
+    assert!(runtime_skill_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_skill_id
+    ));
 
     remove_dependency_in_dir(temp.path(), cache.path(), &alias).unwrap();
 
     let manifest_after = load_root_from_dir(temp.path()).unwrap();
     assert!(manifest_after.manifest.dependencies.is_empty());
-    assert!(
-        !temp
-            .path()
-            .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
-            .exists()
-    );
+    assert!(!runtime_skill_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_skill_id
+    ));
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert_eq!(lockfile.packages.len(), 1);
@@ -3759,16 +3862,16 @@ fn global_add_installs_to_all_detected_supported_adapters() {
         .unwrap();
     let managed_skill_id = namespaced_skill_id(&dependency, "review");
 
-    assert!(
-        home.path()
-            .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
-            .exists()
-    );
-    assert!(
-        home.path()
-            .join(format!(".codex/skills/{managed_skill_id}/SKILL.md"))
-            .exists()
-    );
+    assert!(runtime_skill_exists(
+        home.path(),
+        Adapter::Claude,
+        &managed_skill_id
+    ));
+    assert!(runtime_skill_exists(
+        home.path(),
+        Adapter::Codex,
+        &managed_skill_id
+    ));
     assert!(
         !home
             .path()
@@ -3818,9 +3921,7 @@ fn global_remove_prunes_home_scoped_outputs() {
         .find(|package| package.alias != "root")
         .unwrap();
     let managed_skill_id = namespaced_skill_id(&dependency, "review");
-    let managed_skill = home
-        .path()
-        .join(format!(".codex/skills/{managed_skill_id}/SKILL.md"));
+    let managed_skill = runtime_skill_path(home.path(), Adapter::Codex, &managed_skill_id);
     assert!(managed_skill.exists());
 
     let alias = normalize_alias_from_url(&url).unwrap();
@@ -3956,38 +4057,36 @@ shared = { path = "vendor/shared" }
     let managed_claude_rule_file = namespaced_file_name(dependency, "default", "md");
     let managed_cursor_rule_file = namespaced_file_name(dependency, "default", "mdc");
 
-    assert!(
-        temp.path()
-            .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
-            .exists()
-    );
-    assert!(
-        temp.path()
-            .join(format!(".claude/agents/{managed_agent_file}"))
-            .exists()
-    );
-    assert!(
-        temp.path()
-            .join(format!(".claude/commands/{managed_command_file}"))
-            .exists()
-    );
-    assert!(
-        temp.path()
-            .join(format!(".claude/rules/{managed_claude_rule_file}"))
-            .exists()
-    );
-    assert!(
-        temp.path()
-            .join(format!(".codex/skills/{managed_skill_id}/SKILL.md"))
-            .exists()
-    );
-    assert!(
-        temp.path()
-            .join(format!(
-                ".codex/skills/{managed_codex_command_skill}/SKILL.md"
-            ))
-            .exists()
-    );
+    assert!(runtime_skill_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_skill_id
+    ));
+    assert!(runtime_file_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_agent_file
+    ));
+    assert!(runtime_file_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_command_file
+    ));
+    assert!(runtime_file_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_claude_rule_file
+    ));
+    assert!(runtime_skill_exists(
+        temp.path(),
+        Adapter::Codex,
+        &managed_skill_id
+    ));
+    assert!(runtime_skill_exists(
+        temp.path(),
+        Adapter::Codex,
+        &managed_codex_command_skill
+    ));
     assert!(
         temp.path()
             .join(format!(".github/skills/{managed_skill_id}/SKILL.md"))
@@ -4038,7 +4137,11 @@ shared = { path = "vendor/shared" }
             .join(format!(".opencode/rules/{managed_claude_rule_file}"))
             .exists()
     );
-    assert!(!temp.path().join(".claude/agents/security.md").exists());
+    assert!(!runtime_file_exists(
+        temp.path(),
+        Adapter::Claude,
+        "security.md"
+    ));
     assert!(!temp.path().join(".opencode/agents/security.md").exists());
     assert!(
         fs::read_to_string(
@@ -4194,51 +4297,48 @@ shared = { path = "vendor/shared", components = ["skills"] }
         dependency.selected_components,
         Some(vec![DependencyComponent::Skills])
     );
-    assert!(
-        temp.path()
-            .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
-            .exists()
-    );
+    assert!(runtime_skill_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_skill_id
+    ));
     assert!(
         temp.path()
             .join(format!(".opencode/skills/{managed_skill_id}/SKILL.md"))
             .exists()
     );
-    assert!(
-        !temp
-            .path()
-            .join(format!(".claude/agents/{managed_agent_file}"))
-            .exists()
-    );
+    assert!(!runtime_file_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_agent_file
+    ));
     assert!(
         !temp
             .path()
             .join(format!(".opencode/agents/{managed_agent_file}"))
             .exists()
     );
-    assert!(
-        !temp
-            .path()
-            .join(format!(".claude/commands/{managed_command_file}"))
-            .exists()
-    );
+    assert!(!runtime_file_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_command_file
+    ));
     assert!(
         !temp
             .path()
             .join(format!(".opencode/commands/{managed_command_file}"))
             .exists()
     );
-    assert!(
-        temp.path()
-            .join(format!(".codex/skills/{managed_skill_id}/SKILL.md"))
-            .exists()
-    );
-    assert!(
-        !temp
-            .path()
-            .join(format!(".claude/rules/{managed_claude_rule_file}"))
-            .exists()
-    );
+    assert!(runtime_skill_exists(
+        temp.path(),
+        Adapter::Codex,
+        &managed_skill_id
+    ));
+    assert!(!runtime_file_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_claude_rule_file
+    ));
     assert!(
         !temp
             .path()
@@ -4256,7 +4356,11 @@ shared = { path = "vendor/shared", components = ["skills"] }
         shared.selected_components,
         Some(vec![DependencyComponent::Skills])
     );
-    assert!(lockfile.managed_files.contains(&".claude/skills".into()));
+    assert!(
+        lockfile
+            .managed_files
+            .contains(&".nodus/packages/shared/claude-plugin".into())
+    );
     assert!(
         !lockfile
             .managed_files
@@ -4301,18 +4405,16 @@ fn sync_does_not_publish_root_assets_by_default() {
     let managed_skill_id = namespaced_skill_id(root_package, "review");
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
 
-    assert!(
-        !temp
-            .path()
-            .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
-            .exists()
-    );
-    assert!(
-        !temp
-            .path()
-            .join(format!(".codex/skills/{managed_skill_id}/SKILL.md"))
-            .exists()
-    );
+    assert!(!runtime_skill_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_skill_id
+    ));
+    assert!(!runtime_skill_exists(
+        temp.path(),
+        Adapter::Codex,
+        &managed_skill_id
+    ));
     assert!(
         !lockfile
             .managed_files
@@ -4350,11 +4452,11 @@ publish_root = true
     let managed_claude_rule_file = namespaced_file_name(root_package, "default", "md");
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
 
-    assert!(
-        temp.path()
-            .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
-            .exists()
-    );
+    assert!(runtime_skill_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_skill_id
+    ));
     assert!(
         temp.path()
             .join(format!(".cursor/skills/{managed_skill_id}/SKILL.md"))
@@ -4365,16 +4467,16 @@ publish_root = true
             .join(format!(".opencode/skills/{managed_skill_id}/SKILL.md"))
             .exists()
     );
-    assert!(
-        temp.path()
-            .join(format!(".claude/rules/{managed_claude_rule_file}"))
-            .exists()
-    );
-    assert!(
-        temp.path()
-            .join(format!(".codex/skills/{managed_skill_id}/SKILL.md"))
-            .exists()
-    );
+    assert!(runtime_file_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_claude_rule_file
+    ));
+    assert!(runtime_skill_exists(
+        temp.path(),
+        Adapter::Codex,
+        &managed_skill_id
+    ));
     assert!(lockfile.managed_files.contains(&".claude/skills".into()));
     assert!(lockfile.managed_files.contains(&".codex/skills".into()));
 }
@@ -4410,16 +4512,12 @@ shared = { path = "vendor/shared" }
         .unwrap();
     let managed_skill_id = namespaced_skill_id(dependency, "review");
     let managed_command_file = namespaced_file_name(dependency, "build", "md");
-    let managed_codex_command_skill =
-        resolution_codex_command_skill_id(&resolution, dependency, "build");
     let codex_gitignore = fs::read_to_string(temp.path().join(".codex/.gitignore")).unwrap();
     let agents_gitignore = fs::read_to_string(temp.path().join(".agents/.gitignore")).unwrap();
     let cursor_gitignore = fs::read_to_string(temp.path().join(".cursor/.gitignore")).unwrap();
 
     assert!(codex_gitignore.contains("# Managed by nodus"));
     assert!(codex_gitignore.contains(".gitignore"));
-    assert!(codex_gitignore.contains(&format!("skills/{managed_skill_id}")));
-    assert!(codex_gitignore.contains(&format!("skills/{managed_codex_command_skill}")));
     assert!(agents_gitignore.contains("# Managed by nodus"));
     assert!(agents_gitignore.contains(".gitignore"));
     assert!(agents_gitignore.contains(&format!("skills/{managed_skill_id}")));
@@ -4460,14 +4558,12 @@ shared = { path = "vendor/shared", components = ["commands"] }
     let managed_codex_command_skill =
         resolution_codex_command_skill_id(&resolution, dependency, "build");
 
-    assert!(
-        temp.path()
-            .join(format!(
-                ".codex/skills/{managed_codex_command_skill}/SKILL.md"
-            ))
-            .exists()
-    );
-    assert_eq!(summary.managed_file_count, 2);
+    assert!(runtime_skill_exists(
+        temp.path(),
+        Adapter::Codex,
+        &managed_codex_command_skill
+    ));
+    assert_eq!(summary.managed_file_count, 4);
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     let shared = lockfile
@@ -4480,7 +4576,11 @@ shared = { path = "vendor/shared", components = ["commands"] }
         Some(vec![DependencyComponent::Commands])
     );
     assert_eq!(shared.commands, vec!["build"]);
-    assert!(lockfile.managed_files.contains(&".codex/skills".into()));
+    assert!(
+        lockfile
+            .managed_files
+            .contains(&".nodus/packages/shared/codex-plugin".into())
+    );
 }
 
 #[test]
@@ -4498,17 +4598,17 @@ shared = { path = "vendor/shared" }
 "#,
     );
     write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
-    write_file(
-        &temp.path().join(".codex/skills"),
-        "user-owned blocking file\n",
-    );
+    let blocking_path = temp
+        .path()
+        .join(".nodus/packages/shared/codex-plugin/.codex/skills");
+    write_file(&blocking_path, "user-owned blocking file\n");
 
     let error =
         sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex])
             .unwrap_err()
             .to_string();
     assert!(error.contains("refusing to overwrite unmanaged file"));
-    assert!(error.contains(".codex/skills"));
+    assert!(error.contains(".nodus/packages/shared/codex-plugin/.codex/skills"));
 
     sync_in_dir_with_adapters_force(temp.path(), cache.path(), false, false, &[Adapter::Codex])
         .unwrap();
@@ -4520,10 +4620,11 @@ shared = { path = "vendor/shared" }
         .find(|package| package.alias == "shared")
         .unwrap();
     let managed_skill_id = namespaced_skill_id(dependency, "review");
-    let skill = fs::read_to_string(
-        temp.path()
-            .join(format!(".codex/skills/{managed_skill_id}/SKILL.md")),
-    )
+    let skill = fs::read_to_string(runtime_skill_path(
+        temp.path(),
+        Adapter::Codex,
+        &managed_skill_id,
+    ))
     .unwrap();
     assert!(skill.contains("# Review"));
 }
@@ -4557,10 +4658,7 @@ shared = { path = "vendor/shared" }
         .iter()
         .find(|package| package.alias == "shared")
         .unwrap();
-    let managed_skill_id = namespaced_skill_id(dependency, "review");
-    let managed_skill_path = temp
-        .path()
-        .join(format!(".codex/skills/{managed_skill_id}/SKILL.md"));
+    let managed_skill_path = managed_skill_file(temp.path(), Adapter::Codex, dependency, "review");
     let managed_skill_contents = output_plan
         .files
         .iter()
@@ -4579,7 +4677,7 @@ shared = { path = "vendor/shared" }
         lockfile
             .managed_files
             .iter()
-            .any(|path| path == ".codex/skills")
+            .any(|path| path == ".nodus/packages/shared/codex-plugin")
     );
 }
 
@@ -4609,38 +4707,32 @@ shared = { path = "vendor/shared" }
         .iter()
         .find(|package| package.alias == "shared")
         .unwrap();
-    let managed_command_file = namespaced_file_name(dependency, "build", "md");
-    write_file(
-        &temp
-            .path()
-            .join(format!(".claude/commands/{managed_command_file}")),
-        "user-owned command\n",
+    let managed_command_path = managed_artifact_file(
+        temp.path(),
+        Adapter::Claude,
+        ArtifactKind::Command,
+        dependency,
+        "build",
     );
+    write_file(&managed_command_path, "user-owned command\n");
 
     sync_in_dir_with_collision_choice(temp.path(), cache.path(), ManagedCollisionChoice::Adopt)
         .unwrap();
 
     assert_eq!(
-        fs::read_to_string(
-            temp.path()
-                .join(format!(".claude/commands/{managed_command_file}"))
-        )
-        .unwrap(),
+        fs::read_to_string(&managed_command_path).unwrap(),
         "cargo test\n"
     );
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
-    let managed_paths = lockfile.managed_paths(temp.path()).unwrap();
     assert!(
-        managed_paths.contains(
-            &temp
-                .path()
-                .join(format!(".claude/commands/{managed_command_file}"))
-        )
+        lockfile
+            .managed_files
+            .contains(&".nodus/packages/shared/claude-plugin".into())
     );
 }
 
 #[test]
-fn sync_can_cancel_unmanaged_runtime_command_output_collision() {
+fn sync_overwrites_owned_native_plugin_command_output_without_prompt() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();
     write_manifest(
@@ -4665,24 +4757,21 @@ shared = { path = "vendor/shared" }
         .iter()
         .find(|package| package.alias == "shared")
         .unwrap();
-    let managed_command_file = namespaced_file_name(dependency, "build", "md");
-    let managed_command_path = temp
-        .path()
-        .join(format!(".claude/commands/{managed_command_file}"));
+    let managed_command_path = managed_artifact_file(
+        temp.path(),
+        Adapter::Claude,
+        ArtifactKind::Command,
+        dependency,
+        "build",
+    );
     write_file(&managed_command_path, "user-owned command\n");
 
-    let error = sync_in_dir_with_collision_choice(
-        temp.path(),
-        cache.path(),
-        ManagedCollisionChoice::Cancel,
-    )
-    .unwrap_err()
-    .to_string();
+    sync_in_dir_with_collision_choice(temp.path(), cache.path(), ManagedCollisionChoice::Cancel)
+        .unwrap();
 
-    assert!(error.contains("cancelled `nodus sync`"));
     assert_eq!(
         fs::read_to_string(&managed_command_path).unwrap(),
-        "user-owned command\n"
+        "cargo test\n"
     );
 }
 
@@ -4701,10 +4790,10 @@ shared = { path = "vendor/shared" }
 "#,
     );
     write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
-    write_file(
-        &temp.path().join(".codex/skills"),
-        "user-owned blocking file\n",
-    );
+    let blocking_path = temp
+        .path()
+        .join(".nodus/packages/shared/codex-plugin/.codex/skills");
+    write_file(&blocking_path, "user-owned blocking file\n");
 
     sync_in_dir_with_adapters_dry_run_force(
         temp.path(),
@@ -4716,7 +4805,7 @@ shared = { path = "vendor/shared" }
     .unwrap();
 
     assert_eq!(
-        fs::read_to_string(temp.path().join(".codex/skills")).unwrap(),
+        fs::read_to_string(&blocking_path).unwrap(),
         "user-owned blocking file\n"
     );
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
@@ -4724,7 +4813,7 @@ shared = { path = "vendor/shared" }
         !lockfile
             .managed_files
             .iter()
-            .any(|path| path.starts_with(".codex/skills/"))
+            .any(|path| path.starts_with(".nodus/packages/shared/codex-plugin/.codex/skills/"))
     );
 }
 
@@ -4740,7 +4829,7 @@ path = "vendor/shared"
 
 [[dependencies.shared.managed]]
 source = "config/.gitignore"
-target = ".claude/.gitignore"
+target = ".cursor/.gitignore"
 "#,
     );
     write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
@@ -4749,8 +4838,8 @@ target = ".claude/.gitignore"
         ".DS_Store\n",
     );
 
-    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Claude]).unwrap();
-    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Claude]).unwrap();
+    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Cursor]).unwrap();
+    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Cursor]).unwrap();
 
     let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
     let dependency = resolution
@@ -4759,7 +4848,7 @@ target = ".claude/.gitignore"
         .find(|package| package.alias == "shared")
         .unwrap();
     let managed_skill_id = namespaced_skill_id(dependency, "review");
-    let gitignore = fs::read_to_string(temp.path().join(".claude/.gitignore")).unwrap();
+    let gitignore = fs::read_to_string(temp.path().join(".cursor/.gitignore")).unwrap();
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
 
     assert!(gitignore.contains("# Managed by nodus"));
@@ -4769,7 +4858,7 @@ target = ".claude/.gitignore"
     assert!(
         lockfile
             .managed_files
-            .contains(&".claude/.gitignore".into())
+            .contains(&".cursor/.gitignore".into())
     );
 }
 
@@ -4786,11 +4875,11 @@ shared = { path = "vendor/shared" }
     );
     write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
     write_file(
-        &temp.path().join(".codex/.gitignore"),
+        &temp.path().join(".cursor/.gitignore"),
         ".gitignore\n# custom\nskills/*_legacy/\n",
     );
 
-    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
+    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Cursor]).unwrap();
 
     let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
     let dependency = resolution
@@ -4799,7 +4888,7 @@ shared = { path = "vendor/shared" }
         .find(|package| package.alias == "shared")
         .unwrap();
     let managed_skill_id = namespaced_skill_id(dependency, "review");
-    let gitignore = fs::read_to_string(temp.path().join(".codex/.gitignore")).unwrap();
+    let gitignore = fs::read_to_string(temp.path().join(".cursor/.gitignore")).unwrap();
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
 
     assert!(gitignore.starts_with("# Managed by nodus\n.gitignore\n"));
@@ -4809,7 +4898,7 @@ shared = { path = "vendor/shared" }
     assert!(
         lockfile
             .managed_files
-            .contains(&String::from(".codex/.gitignore"))
+            .contains(&String::from(".cursor/.gitignore"))
     );
 }
 
@@ -5368,20 +5457,24 @@ shared = { path = "vendor/shared" }
     let legacy_agent_file = crate::adapters::namespaced_file_name(dependency, "security", "md");
     let legacy_command_file = crate::adapters::namespaced_file_name(dependency, "build", "md");
 
-    fs::rename(
-        temp.path()
-            .join(format!(".claude/agents/{managed_agent_file}")),
-        temp.path()
-            .join(format!(".claude/agents/{legacy_agent_file}")),
-    )
-    .unwrap();
-    fs::rename(
-        temp.path()
-            .join(format!(".claude/commands/{managed_command_file}")),
-        temp.path()
-            .join(format!(".claude/commands/{legacy_command_file}")),
-    )
-    .unwrap();
+    let managed_claude_agent = managed_artifact_file(
+        temp.path(),
+        Adapter::Claude,
+        ArtifactKind::Agent,
+        dependency,
+        "security",
+    );
+    let legacy_claude_agent = managed_claude_agent.with_file_name(&legacy_agent_file);
+    fs::rename(&managed_claude_agent, &legacy_claude_agent).unwrap();
+    let managed_claude_command = managed_artifact_file(
+        temp.path(),
+        Adapter::Claude,
+        ArtifactKind::Command,
+        dependency,
+        "build",
+    );
+    let legacy_claude_command = managed_claude_command.with_file_name(&legacy_command_file);
+    fs::rename(&managed_claude_command, &legacy_claude_command).unwrap();
     fs::rename(
         temp.path()
             .join(format!(".opencode/agents/{managed_agent_file}")),
@@ -5426,16 +5519,8 @@ shared = { path = "vendor/shared" }
     let upgraded_lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
 
     assert_eq!(upgraded_lockfile.version, Lockfile::current_version());
-    assert!(
-        temp.path()
-            .join(format!(".claude/agents/{managed_agent_file}"))
-            .exists()
-    );
-    assert!(
-        temp.path()
-            .join(format!(".claude/commands/{managed_command_file}"))
-            .exists()
-    );
+    assert!(managed_claude_agent.exists());
+    assert!(managed_claude_command.exists());
     assert!(
         temp.path()
             .join(format!(".opencode/agents/{managed_agent_file}"))
@@ -5451,18 +5536,8 @@ shared = { path = "vendor/shared" }
             .join(format!(".opencode/skills/{managed_skill_id}"))
             .exists()
     );
-    assert!(
-        !temp
-            .path()
-            .join(format!(".claude/agents/{legacy_agent_file}"))
-            .exists()
-    );
-    assert!(
-        !temp
-            .path()
-            .join(format!(".claude/commands/{legacy_command_file}"))
-            .exists()
-    );
+    assert!(!legacy_claude_agent.exists());
+    assert!(!legacy_claude_command.exists());
     assert!(
         !temp
             .path()
@@ -5832,8 +5907,22 @@ path = "vendor/alpha"
 
     sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
 
-    let claude_skill_dir = temp.path().join(".claude/skills/alpha-memory");
-    let codex_skill_dir = temp.path().join(".codex/skills/alpha-memory");
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let dependency = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "alpha")
+        .unwrap();
+    let claude_skill_dir =
+        managed_skill_file(temp.path(), Adapter::Claude, dependency, "alpha-memory")
+            .parent()
+            .unwrap()
+            .to_path_buf();
+    let codex_skill_dir =
+        managed_skill_file(temp.path(), Adapter::Codex, dependency, "alpha-memory")
+            .parent()
+            .unwrap()
+            .to_path_buf();
     let claude_inode = fs::metadata(&claude_skill_dir).unwrap().ino();
     let codex_inode = fs::metadata(&codex_skill_dir).unwrap().ino();
 
@@ -6863,7 +6952,12 @@ shared = { path = "vendor/shared" }
         fs::read(temp.path().join(LOCKFILE_NAME)).unwrap(),
         lockfile_before
     );
-    assert!(!temp.path().join(".codex/skills").exists());
+    assert!(
+        !temp
+            .path()
+            .join(".nodus/packages/shared/codex-plugin")
+            .exists()
+    );
 }
 
 #[test]
@@ -6975,10 +7069,8 @@ review_pkg = {{ url = "{}", branch = "main" }}
         .iter()
         .find(|package| package.alias == "review_pkg")
         .unwrap();
-    let initial_skill_id = namespaced_skill_id(initial_dependency, "review");
-    let initial_skill_path = temp
-        .path()
-        .join(format!(".claude/skills/{initial_skill_id}/SKILL.md"));
+    let initial_skill_path =
+        managed_skill_file(temp.path(), Adapter::Claude, initial_dependency, "review");
 
     fs::remove_dir_all(repo.path()).unwrap();
 
@@ -7098,9 +7190,8 @@ review_pkg = {{ url = "{}", branch = "main" }}
         .find(|package| package.alias == "review_pkg")
         .unwrap();
     let initial_skill_id = namespaced_skill_id(initial_dependency, "review");
-    let initial_skill_path = temp
-        .path()
-        .join(format!(".claude/skills/{initial_skill_id}/SKILL.md"));
+    let initial_skill_path =
+        managed_skill_file(temp.path(), Adapter::Claude, initial_dependency, "review");
     assert!(initial_skill_path.exists());
     assert!(
         fs::read_to_string(&initial_skill_path)
@@ -7149,9 +7240,8 @@ review_pkg = {{ url = "{}", branch = "main" }}
         .find(|package| package.alias == "review_pkg")
         .unwrap();
     let updated_skill_id = namespaced_skill_id(updated_dependency, "review");
-    let updated_skill_path = temp
-        .path()
-        .join(format!(".claude/skills/{updated_skill_id}/SKILL.md"));
+    let updated_skill_path =
+        managed_skill_file(temp.path(), Adapter::Claude, updated_dependency, "review");
     assert_eq!(updated_skill_id, initial_skill_id);
     assert!(initial_skill_path.exists());
     assert!(updated_skill_path.exists());
@@ -7209,7 +7299,18 @@ shared = { path = "vendor/shared" }
     write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
 
     sync_all(temp.path(), cache.path());
-    assert!(temp.path().join(".claude/skills").exists());
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let dependency = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .unwrap();
+    let managed_skill_id = namespaced_skill_id(dependency, "review");
+    assert!(runtime_skill_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_skill_id
+    ));
     assert!(temp.path().join(".opencode/skills").exists());
 
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Claude]).unwrap();
@@ -7219,10 +7320,16 @@ shared = { path = "vendor/shared" }
         manifest.manifest.enabled_adapters().unwrap(),
         [Adapter::Claude].as_slice()
     );
-    assert!(temp.path().join(".claude/skills").exists());
-    assert!(temp.path().join(".claude/.gitignore").exists());
-    assert!(!temp.path().join(".codex/skills").exists());
-    assert!(!temp.path().join(".codex/.gitignore").exists());
+    assert!(runtime_skill_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_skill_id
+    ));
+    assert!(!runtime_skill_exists(
+        temp.path(),
+        Adapter::Codex,
+        &managed_skill_id
+    ));
     assert!(!temp.path().join(".opencode/skills").exists());
     assert!(!temp.path().join(".opencode/.gitignore").exists());
 }
@@ -7254,16 +7361,16 @@ shared = { path = "vendor/shared" }
         .unwrap();
     let managed_skill_id = namespaced_skill_id(dependency, "review");
     let managed_agent_file = namespaced_file_name(dependency, "shared", "md");
-    assert!(
-        temp.path()
-            .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
-            .exists()
-    );
-    assert!(
-        temp.path()
-            .join(format!(".claude/agents/{managed_agent_file}"))
-            .exists()
-    );
+    assert!(runtime_skill_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_skill_id
+    ));
+    assert!(runtime_file_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_agent_file
+    ));
 
     write_manifest(
         temp.path(),
@@ -7278,17 +7385,16 @@ shared = { path = "vendor/shared", components = ["skills"] }
 
     sync_all(temp.path(), cache.path());
 
-    assert!(
-        temp.path()
-            .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
-            .exists()
-    );
-    assert!(
-        !temp
-            .path()
-            .join(format!(".claude/agents/{managed_agent_file}"))
-            .exists()
-    );
+    assert!(runtime_skill_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_skill_id
+    ));
+    assert!(!runtime_file_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_agent_file
+    ));
     assert!(
         !temp
             .path()
@@ -7317,7 +7423,11 @@ shared = { path = "vendor/shared" }
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
 
-    assert!(lockfile.managed_files.contains(&".claude/skills".into()));
+    assert!(
+        lockfile
+            .managed_files
+            .contains(&".nodus/packages/shared/claude-plugin".into())
+    );
     assert!(lockfile.managed_files.contains(&".github/skills".into()));
     assert!(lockfile.managed_files.contains(&".opencode/skills".into()));
     assert!(
@@ -7348,7 +7458,7 @@ shared = { path = "vendor/shared", components = ["agents"] }
         sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex])
             .unwrap();
     // The package selects only agents, so MCP config is not emitted.
-    assert_eq!(summary.managed_file_count, 2);
+    assert_eq!(summary.managed_file_count, 4);
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     let shared = lockfile
@@ -7360,9 +7470,13 @@ shared = { path = "vendor/shared", components = ["agents"] }
         shared.selected_components,
         Some(vec![DependencyComponent::Agents])
     );
-    assert_eq!(lockfile.managed_files.len(), 2);
+    assert_eq!(lockfile.managed_files.len(), 4);
     assert!(!lockfile.managed_files.contains(&String::from(".mcp.json")));
-    assert!(temp.path().join(".codex/agents/shared.toml").exists());
+    assert!(runtime_file_exists(
+        temp.path(),
+        Adapter::Codex,
+        "shared.toml"
+    ));
     assert!(!temp.path().join(".mcp.json").exists());
 }
 
@@ -7398,11 +7512,21 @@ shared = { path = "vendor/shared", components = ["agents"] }
     .unwrap();
 
     assert_eq!(
-        fs::read_to_string(temp.path().join(".claude/agents/security.md")).unwrap(),
+        fs::read_to_string(runtime_file_path(
+            temp.path(),
+            Adapter::Claude,
+            "security.md"
+        ))
+        .unwrap(),
         "# Shared markdown\n"
     );
 
-    let codex = fs::read_to_string(temp.path().join(".codex/agents/security.toml")).unwrap();
+    let codex = fs::read_to_string(runtime_file_path(
+        temp.path(),
+        Adapter::Codex,
+        "security.toml",
+    ))
+    .unwrap();
     assert!(codex.contains("name = \"Security reviewer\""));
     assert!(codex.contains("description = \"Codex-specific instructions.\""));
     assert!(codex.contains("developer_instructions = \"Use codex.\""));
@@ -7426,7 +7550,12 @@ shared = { path = "vendor/shared", components = ["agents"] }
 
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
 
-    let codex = fs::read_to_string(temp.path().join(".codex/agents/shared.toml")).unwrap();
+    let codex = fs::read_to_string(runtime_file_path(
+        temp.path(),
+        Adapter::Codex,
+        "shared.toml",
+    ))
+    .unwrap();
     assert!(codex.contains("name = \"shared\""));
     assert!(codex.contains("description = \"Instructions for the `shared` agent.\""));
     assert!(codex.contains("# Shared"));
@@ -8257,10 +8386,7 @@ shared = { path = "vendor/shared" }
         .iter()
         .find(|package| package.alias == "shared")
         .unwrap();
-    let managed_skill_id = namespaced_skill_id(dependency, "review");
-    let managed_skill_path = temp
-        .path()
-        .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"));
+    let managed_skill_path = managed_skill_file(temp.path(), Adapter::Claude, dependency, "review");
     assert!(managed_skill_path.exists());
 
     write_manifest(
@@ -8319,16 +8445,16 @@ shared_skills = { path = "vendor/shared", components = ["skills"] }
             DependencyComponent::Agents,
         ])
     );
-    assert!(
-        temp.path()
-            .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
-            .exists()
-    );
-    assert!(
-        temp.path()
-            .join(format!(".claude/agents/{managed_agent_file}"))
-            .exists()
-    );
+    assert!(runtime_skill_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_skill_id
+    ));
+    assert!(runtime_file_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_agent_file
+    ));
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     let shared = lockfile
@@ -8392,17 +8518,16 @@ leaf = { path = "vendor/leaf" }
         wrapper.selected_components,
         Some(vec![DependencyComponent::Skills])
     );
-    assert!(
-        !temp
-            .path()
-            .join(format!(".claude/agents/{managed_wrapper_agent_file}"))
-            .exists()
-    );
-    assert!(
-        temp.path()
-            .join(format!(".claude/skills/{managed_leaf_skill_id}/SKILL.md"))
-            .exists()
-    );
+    assert!(!runtime_file_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_wrapper_agent_file
+    ));
+    assert!(runtime_skill_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_leaf_skill_id
+    ));
 }
 
 #[test]
@@ -8435,11 +8560,11 @@ shared = { path = "vendor/shared" }
         .find(|package| package.alias == "shared")
         .unwrap();
     let managed_skill_id = namespaced_skill_id(dependency, "review");
-    assert!(
-        temp.path()
-            .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
-            .exists()
-    );
+    assert!(runtime_skill_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_skill_id
+    ));
 }
 
 #[test]
@@ -8460,11 +8585,11 @@ fn sync_keeps_unique_dependency_skill_ids_unsuffixed() {
     sync_all(temp.path(), cache.path());
 
     assert_eq!(managed_skill_id, "review");
-    assert!(
-        temp.path()
-            .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
-            .exists()
-    );
+    assert!(runtime_skill_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_skill_id
+    ));
 }
 
 #[test]
@@ -8503,21 +8628,21 @@ shared = { path = "vendor/shared" }
     let managed_agent_file = namespaced_file_name(dependency, "security", "md");
     let managed_command_file = namespaced_file_name(dependency, "build", "md");
     let managed_rule_file = namespaced_file_name(dependency, "default", "md");
-    assert!(
-        temp.path()
-            .join(format!(".claude/agents/{managed_agent_file}"))
-            .exists()
-    );
-    assert!(
-        temp.path()
-            .join(format!(".claude/commands/{managed_command_file}"))
-            .exists()
-    );
-    assert!(
-        temp.path()
-            .join(format!(".claude/rules/{managed_rule_file}"))
-            .exists()
-    );
+    assert!(runtime_file_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_agent_file
+    ));
+    assert!(runtime_file_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_command_file
+    ));
+    assert!(runtime_file_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_rule_file
+    ));
     assert!(
         temp.path()
             .join(format!(".opencode/agents/{managed_agent_file}"))
@@ -8542,24 +8667,21 @@ shared = { path = "vendor/shared" }
     fs::remove_dir(temp.path().join("vendor/shared/commands")).unwrap();
     sync_all(temp.path(), cache.path());
 
-    assert!(
-        !temp
-            .path()
-            .join(format!(".claude/agents/{managed_agent_file}"))
-            .exists()
-    );
-    assert!(
-        !temp
-            .path()
-            .join(format!(".claude/commands/{managed_command_file}"))
-            .exists()
-    );
-    assert!(
-        !temp
-            .path()
-            .join(format!(".claude/rules/{managed_rule_file}"))
-            .exists()
-    );
+    assert!(!runtime_file_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_agent_file
+    ));
+    assert!(!runtime_file_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_command_file
+    ));
+    assert!(!runtime_file_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_rule_file
+    ));
     assert!(
         !temp
             .path()
@@ -8910,11 +9032,11 @@ shared = { path = "vendor/shared" }
         .find(|package| package.alias == "shared")
         .unwrap();
     let managed_rule_file = namespaced_file_name(dependency, "default", "md");
-    assert!(
-        temp.path()
-            .join(format!(".claude/rules/{managed_rule_file}"))
-            .exists()
-    );
+    assert!(runtime_file_exists(
+        temp.path(),
+        Adapter::Claude,
+        &managed_rule_file
+    ));
 }
 
 #[test]
@@ -9064,35 +9186,17 @@ other = { path = "vendor/other" }
     assert_ne!(shared_codex_command_skill, other_codex_command_skill);
     assert_ne!(shared_claude_rule_file, other_claude_rule_file);
 
-    assert!(
-        temp.path()
-            .join(format!(".claude/agents/{shared_agent_file}"))
-            .exists()
+    assert_eq!(
+        runtime_file_paths(temp.path(), Adapter::Claude, "security.md").len(),
+        2
     );
-    assert!(
-        temp.path()
-            .join(format!(".claude/agents/{other_agent_file}"))
-            .exists()
+    assert_eq!(
+        runtime_file_paths(temp.path(), Adapter::Claude, "build.md").len(),
+        2
     );
-    assert!(
-        temp.path()
-            .join(format!(".claude/commands/{shared_command_file}"))
-            .exists()
-    );
-    assert!(
-        temp.path()
-            .join(format!(".claude/commands/{other_command_file}"))
-            .exists()
-    );
-    assert!(
-        temp.path()
-            .join(format!(".claude/rules/{shared_claude_rule_file}"))
-            .exists()
-    );
-    assert!(
-        temp.path()
-            .join(format!(".claude/rules/{other_claude_rule_file}"))
-            .exists()
+    assert_eq!(
+        runtime_file_paths(temp.path(), Adapter::Claude, "default.md").len(),
+        2
     );
     assert!(
         temp.path()
@@ -9134,19 +9238,9 @@ other = { path = "vendor/other" }
             .join(format!(".opencode/rules/{other_claude_rule_file}"))
             .exists()
     );
-    assert!(
-        temp.path()
-            .join(format!(
-                ".codex/skills/{shared_codex_command_skill}/SKILL.md"
-            ))
-            .exists()
-    );
-    assert!(
-        temp.path()
-            .join(format!(
-                ".codex/skills/{other_codex_command_skill}/SKILL.md"
-            ))
-            .exists()
+    assert_eq!(
+        runtime_skill_paths(temp.path(), Adapter::Codex, "__cmd_build").len(),
+        2
     );
 }
 
@@ -9172,7 +9266,11 @@ shared = { path = "vendor/shared" }
         .find(|package| package.alias == "shared")
         .unwrap();
     let first_skill_id = namespaced_skill_id(first_dependency, "review");
-    let first_skill_dir = temp.path().join(format!(".claude/skills/{first_skill_id}"));
+    let first_skill_dir =
+        managed_skill_file(temp.path(), Adapter::Claude, first_dependency, "review")
+            .parent()
+            .unwrap()
+            .to_path_buf();
     assert!(first_skill_dir.exists());
 
     write_file(
@@ -9189,9 +9287,11 @@ shared = { path = "vendor/shared" }
         .find(|package| package.alias == "shared")
         .unwrap();
     let second_skill_id = namespaced_skill_id(second_dependency, "review");
-    let second_skill_dir = temp
-        .path()
-        .join(format!(".claude/skills/{second_skill_id}"));
+    let second_skill_dir =
+        managed_skill_file(temp.path(), Adapter::Claude, second_dependency, "review")
+            .parent()
+            .unwrap()
+            .to_path_buf();
 
     assert_eq!(first_skill_id, second_skill_id);
     assert!(second_skill_dir.exists());
@@ -9219,12 +9319,8 @@ shared = { path = "vendor/shared" }
         .iter()
         .find(|package| package.alias == "shared")
         .unwrap();
-    let managed_skill_id = namespaced_skill_id(dependency, "review");
-    fs::remove_file(
-        temp.path()
-            .join(format!(".claude/skills/{managed_skill_id}/SKILL.md")),
-    )
-    .unwrap();
+    let managed_skill_path = managed_skill_file(temp.path(), Adapter::Claude, dependency, "review");
+    fs::remove_file(&managed_skill_path).unwrap();
 
     let summary = doctor_in_dir_with_mode(
         temp.path(),
@@ -9281,10 +9377,7 @@ shared = { path = "vendor/shared" }
         .iter()
         .find(|package| package.alias == "shared")
         .unwrap();
-    let managed_skill_id = namespaced_skill_id(dependency, "review");
-    let managed_skill_path = temp
-        .path()
-        .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"));
+    let managed_skill_path = managed_skill_file(temp.path(), Adapter::Claude, dependency, "review");
     fs::remove_file(&managed_skill_path).unwrap();
 
     let summary = doctor_in_dir_with_mode(
@@ -9324,12 +9417,8 @@ shared = { path = "vendor/shared" }
         .iter()
         .find(|package| package.alias == "shared")
         .unwrap();
-    let managed_skill_id = namespaced_skill_id(dependency, "review");
-    fs::remove_file(
-        temp.path()
-            .join(format!(".claude/skills/{managed_skill_id}/SKILL.md")),
-    )
-    .unwrap();
+    let managed_skill_path = managed_skill_file(temp.path(), Adapter::Claude, dependency, "review");
+    fs::remove_file(&managed_skill_path).unwrap();
 
     let summary = doctor_in_dir_with_mode(
         temp.path(),
@@ -9340,7 +9429,7 @@ shared = { path = "vendor/shared" }
     .unwrap();
 
     assert_eq!(summary.status, DoctorStatus::Fixed);
-    assert!(temp.path().join(".claude/skills/review/SKILL.md").exists());
+    assert!(managed_skill_path.exists());
 }
 
 #[test]
@@ -9676,6 +9765,8 @@ target = "learnings"
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
     fs::remove_file(temp.path().join(LOCKFILE_NAME)).unwrap();
     fs::remove_dir_all(temp.path().join(".codex")).unwrap();
+    let _ = fs::remove_dir_all(temp.path().join(".nodus/packages/shared/codex-plugin"));
+    let _ = fs::remove_dir_all(temp.path().join(".agents"));
     fs::create_dir_all(temp.path().join(".nodus/packages/shared/learnings/extra")).unwrap();
 
     let summary = doctor_in_dir_with_mode(
@@ -9729,6 +9820,8 @@ target = "learnings/review.md"
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
     fs::remove_file(temp.path().join(LOCKFILE_NAME)).unwrap();
     fs::remove_dir_all(temp.path().join(".codex")).unwrap();
+    let _ = fs::remove_dir_all(temp.path().join(".nodus/packages/shared/codex-plugin"));
+    let _ = fs::remove_dir_all(temp.path().join(".agents"));
 
     let real_target = temp.path().join("real-review.md");
     write_file(&real_target, "Use the learning pack.\n");
@@ -9855,6 +9948,8 @@ target = "learnings"
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
     fs::remove_file(temp.path().join(LOCKFILE_NAME)).unwrap();
     fs::remove_dir_all(temp.path().join(".codex")).unwrap();
+    let _ = fs::remove_dir_all(temp.path().join(".nodus/packages/shared/codex-plugin"));
+    let _ = fs::remove_dir_all(temp.path().join(".agents"));
 
     let summary = doctor_in_dir_with_mode(
         temp.path(),
@@ -9908,6 +10003,8 @@ target = "learnings/review.md"
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
     fs::remove_file(temp.path().join(LOCKFILE_NAME)).unwrap();
     fs::remove_dir_all(temp.path().join(".codex")).unwrap();
+    let _ = fs::remove_dir_all(temp.path().join(".nodus/packages/shared/codex-plugin"));
+    let _ = fs::remove_dir_all(temp.path().join(".agents"));
 
     let summary = doctor_in_dir_with_mode(
         temp.path(),

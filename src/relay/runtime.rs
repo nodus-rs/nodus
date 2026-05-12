@@ -481,9 +481,15 @@ fn adapters_from_lockfile(lockfile: &Lockfile) -> Adapters {
         .filter_map(|path| {
             if path.starts_with(".agents/") {
                 Some(Adapter::Agents)
-            } else if path.starts_with(".claude/") {
+            } else if path.starts_with(".claude/")
+                || path.starts_with(".claude-plugin/")
+                || (path.starts_with(".nodus/packages/") && path.contains("/claude-plugin/"))
+            {
                 Some(Adapter::Claude)
-            } else if path.starts_with(".codex/") {
+            } else if path.starts_with(".codex/")
+                || path.starts_with(".codex-plugin/")
+                || (path.starts_with(".nodus/packages/") && path.contains("/codex-plugin/"))
+            {
                 Some(Adapter::Codex)
             } else if path.starts_with(".github/skills/") || path.starts_with(".github/agents/") {
                 Some(Adapter::Copilot)
@@ -1837,8 +1843,17 @@ placement = "project"
             &[Adapter::Codex],
         );
 
+        let package = resolved_package(project.path(), cache.path(), &[Adapter::Codex]);
+        let managed_path = managed_artifact_path(
+            project.path(),
+            Adapter::Codex,
+            ArtifactKind::Agent,
+            &package,
+            "auditor",
+        )
+        .unwrap();
         write_codex_agent_toml(
-            &project.path().join(".codex/agents/auditor.toml"),
+            &managed_path,
             "auditor",
             "Instructions for the `auditor` agent.",
             "Audit changes carefully.",
@@ -1874,12 +1889,9 @@ placement = "project"
             &[Adapter::Codex],
         );
 
-        write_codex_command_skill(
-            &project.path().join(".codex/skills/__cmd_draft/SKILL.md"),
-            "__cmd_draft",
-            "draft",
-            "# Draft\nrelay me\n",
-        );
+        let package = resolved_package(project.path(), cache.path(), &[Adapter::Codex]);
+        let managed_path = managed_codex_command_skill_path(project.path(), &package, "draft");
+        write_codex_command_skill(&managed_path, "__cmd_draft", "draft", "# Draft\nrelay me\n");
 
         let summary = relay_dependency_in_dir_create_missing(
             project.path(),

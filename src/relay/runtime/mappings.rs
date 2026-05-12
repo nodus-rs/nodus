@@ -280,7 +280,8 @@ fn build_missing_mappings_for_adapter(
     linked_repo: &Path,
 ) -> Result<Vec<RelayFileMapping>> {
     let mut mappings = Vec::new();
-    let runtime_root = crate::adapters::runtime_root(project_root, adapter);
+    let runtime_root =
+        crate::adapters::managed_runtime_root(project_root, adapter, &dependency.package);
 
     if dependency
         .package

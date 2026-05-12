@@ -331,6 +331,11 @@ fn load_claude_marketplace_plugin(
                     marketplace_path.display()
                 );
             }
+            if loaded.manifest_path.is_some()
+                && local_marketplace_source_is_generated_native_plugin(source, Adapter::Claude)
+            {
+                return Ok(None);
+            }
 
             let source_path = PathBuf::from(source);
             let joined_source = loaded.root.join(&source_path);
@@ -452,6 +457,11 @@ fn load_codex_marketplace_plugin(
             marketplace_path.display()
         );
     }
+    if loaded.manifest_path.is_some()
+        && local_marketplace_source_is_generated_native_plugin(source, Adapter::Codex)
+    {
+        return Ok(None);
+    }
 
     let alias = normalize_dependency_alias(name)?;
     if !aliases.insert(alias.clone()) {
@@ -514,6 +524,34 @@ fn load_codex_marketplace_plugin(
     Ok(plugin_manifest.effective_version())
 }
 
+fn local_marketplace_source_is_generated_native_plugin(source: &str, adapter: Adapter) -> bool {
+    let expected_plugin_dir = match adapter {
+        Adapter::Claude => "claude-plugin",
+        Adapter::Codex => "codex-plugin",
+        Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => return false,
+    };
+    let mut components = Path::new(source)
+        .components()
+        .filter(|component| !matches!(component, Component::CurDir));
+
+    matches!(
+        (
+            components.next(),
+            components.next(),
+            components.next(),
+            components.next(),
+            components.next(),
+        ),
+        (
+            Some(Component::Normal(first)),
+            Some(Component::Normal(second)),
+            Some(Component::Normal(_alias)),
+            Some(Component::Normal(plugin_dir)),
+            None,
+        ) if first == ".nodus" && second == "packages" && plugin_dir == expected_plugin_dir
+    )
+}
+
 fn import_marketplace_mcp_servers(
     manifest: &mut Manifest,
     plugin_name: &str,
@@ -554,12 +592,17 @@ pub(super) fn import_claude_plugin_metadata(loaded: &mut LoadedManifest) -> Resu
     let metadata_exists = metadata_path.exists();
     let mut extras = if metadata_exists {
         let (descriptor, version) = read_claude_plugin_descriptor(&metadata_path)?;
-        let extras = parse_claude_plugin_extras(
+        let mut extras = parse_claude_plugin_extras(
             &loaded.root,
             &descriptor,
             &metadata_path,
             &mut loaded.warnings,
         )?;
+        if loaded.manifest_path.is_some() {
+            extras.skills.clear();
+            extras.agents.clear();
+            extras.commands.clear();
+        }
         if loaded.manifest.version.is_none()
             && let Some(version) = version.as_deref()
         {

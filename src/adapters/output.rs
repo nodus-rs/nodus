@@ -202,6 +202,7 @@ pub(crate) fn build_output_plan(
             }
 
             if selected_adapters.contains(Adapter::Claude)
+                && adapter_uses_direct_runtime_outputs(Adapter::Claude)
                 && artifact_supported(Adapter::Claude, ArtifactKind::Skill)
             {
                 merge_files(
@@ -219,6 +220,7 @@ pub(crate) fn build_output_plan(
             }
 
             if selected_adapters.contains(Adapter::Codex)
+                && adapter_uses_direct_runtime_outputs(Adapter::Codex)
                 && artifact_supported(Adapter::Codex, ArtifactKind::Skill)
             {
                 merge_files(
@@ -289,6 +291,7 @@ pub(crate) fn build_output_plan(
 
         if package.selects_component(DependencyComponent::Agents) {
             if selected_adapters.contains(Adapter::Claude)
+                && adapter_uses_direct_runtime_outputs(Adapter::Claude)
                 && artifact_supported(Adapter::Claude, ArtifactKind::Agent)
             {
                 for agent in package.manifest.discovered.selected_agents(Adapter::Claude) {
@@ -308,6 +311,7 @@ pub(crate) fn build_output_plan(
             }
 
             if selected_adapters.contains(Adapter::Codex)
+                && adapter_uses_direct_runtime_outputs(Adapter::Codex)
                 && artifact_supported(Adapter::Codex, ArtifactKind::Agent)
             {
                 for agent in package.manifest.discovered.selected_agents(Adapter::Codex) {
@@ -379,6 +383,7 @@ pub(crate) fn build_output_plan(
             }
 
             if selected_adapters.contains(Adapter::Claude)
+                && adapter_uses_direct_runtime_outputs(Adapter::Claude)
                 && artifact_supported(Adapter::Claude, ArtifactKind::Rule)
             {
                 merge_file(
@@ -453,6 +458,7 @@ pub(crate) fn build_output_plan(
             }
 
             if selected_adapters.contains(Adapter::Claude)
+                && adapter_uses_direct_runtime_outputs(Adapter::Claude)
                 && artifact_supported(Adapter::Claude, ArtifactKind::Command)
             {
                 merge_file(
@@ -469,7 +475,9 @@ pub(crate) fn build_output_plan(
                     .insert(format!(".claude/commands/{}.md", command.id));
             }
 
-            if selected_adapters.contains(Adapter::Codex) {
+            if selected_adapters.contains(Adapter::Codex)
+                && adapter_uses_direct_runtime_outputs(Adapter::Codex)
+            {
                 let skill_id =
                     super::codex::synthetic_command_skill_id(&managed_names, package, &command.id);
                 merge_file(
@@ -534,6 +542,12 @@ pub(crate) fn build_output_plan(
             managed_path_files(project_root, package, snapshot_root)?,
         )?;
         register_managed_paths(project_root, &mut plan.managed_files, package)?;
+    }
+
+    for file in native_package_marketplace_files(project_root, packages, selected_adapters)? {
+        plan.managed_files
+            .insert(display_relative(project_root, &file.path));
+        merge_file(&mut plan.files, file)?;
     }
 
     if let Some(file) = mcp_config_file(
@@ -621,6 +635,187 @@ pub(crate) fn build_output_plan(
     })
 }
 
+fn adapter_uses_direct_runtime_outputs(adapter: Adapter) -> bool {
+    preferred_surface(adapter) == PreferredSurface::DirectManagedOutput
+}
+
+fn native_package_marketplace_files(
+    project_root: &Path,
+    packages: &[(ResolvedPackage, PathBuf)],
+    selected_adapters: Adapters,
+) -> Result<Vec<ManagedFile>> {
+    if packages.iter().any(|(package, _)| {
+        matches!(package.source, PackageSource::Root)
+            && package.manifest.manifest.workspace.is_some()
+    }) {
+        return Ok(Vec::new());
+    }
+
+    let mut files = Vec::new();
+    if selected_adapters.contains(Adapter::Claude)
+        && preferred_surface(Adapter::Claude) == PreferredSurface::PackagePluginWorkspaceMarketplace
+    {
+        let plugins = packages
+            .iter()
+            .filter_map(|(package, _)| {
+                native_marketplace_plugin_entry(project_root, package, Adapter::Claude)
+            })
+            .collect::<Vec<_>>();
+        if !plugins.is_empty() {
+            let (name, owner_name) = native_marketplace_names(project_root, packages);
+            files.push(ManagedFile {
+                path: project_root.join(".claude-plugin/marketplace.json"),
+                contents: json_bytes(JsonMap::from_iter([
+                    ("name".to_string(), JsonValue::String(name)),
+                    (
+                        "owner".to_string(),
+                        JsonValue::Object(JsonMap::from_iter([(
+                            "name".to_string(),
+                            JsonValue::String(owner_name),
+                        )])),
+                    ),
+                    ("plugins".to_string(), JsonValue::Array(plugins)),
+                ]))?,
+            });
+        }
+    }
+
+    if selected_adapters.contains(Adapter::Codex)
+        && preferred_surface(Adapter::Codex) == PreferredSurface::PackagePluginWorkspaceMarketplace
+    {
+        let plugins = packages
+            .iter()
+            .filter_map(|(package, _)| {
+                native_marketplace_plugin_entry(project_root, package, Adapter::Codex)
+            })
+            .collect::<Vec<_>>();
+        if !plugins.is_empty() {
+            let (name, _) = native_marketplace_names(project_root, packages);
+            files.push(ManagedFile {
+                path: project_root.join(".agents/plugins/marketplace.json"),
+                contents: json_bytes(JsonMap::from_iter([
+                    ("name".to_string(), JsonValue::String(name)),
+                    ("plugins".to_string(), JsonValue::Array(plugins)),
+                ]))?,
+            });
+        }
+    }
+
+    Ok(files)
+}
+
+fn native_marketplace_plugin_entry(
+    project_root: &Path,
+    package: &ResolvedPackage,
+    adapter: Adapter,
+) -> Option<JsonValue> {
+    if matches!(package.source, PackageSource::Root)
+        || !package.emits_runtime_outputs()
+        || !native_package_plugin_has_content(adapter, package)
+    {
+        return None;
+    }
+
+    let plugin_root = native_package_plugin_root(project_root, adapter, package);
+    let source_path = display_relative(project_root, &plugin_root);
+    let mut entry = JsonMap::from_iter([(
+        "name".to_string(),
+        JsonValue::String(package.manifest.effective_name()),
+    )]);
+    if let Some(version) = package
+        .manifest
+        .effective_version()
+        .map(|version| version.to_string())
+    {
+        entry.insert("version".to_string(), JsonValue::String(version));
+    }
+
+    match adapter {
+        Adapter::Claude => {
+            entry.insert("source".to_string(), JsonValue::String(source_path));
+        }
+        Adapter::Codex => {
+            entry.insert(
+                "source".to_string(),
+                JsonValue::Object(JsonMap::from_iter([
+                    ("source".to_string(), JsonValue::String("local".to_string())),
+                    (
+                        "path".to_string(),
+                        JsonValue::String(codex_local_plugin_path(&source_path)),
+                    ),
+                ])),
+            );
+            entry.insert(
+                "policy".to_string(),
+                JsonValue::Object(JsonMap::from_iter([
+                    (
+                        "installation".to_string(),
+                        JsonValue::String("AVAILABLE".to_string()),
+                    ),
+                    (
+                        "authentication".to_string(),
+                        JsonValue::String("ON_INSTALL".to_string()),
+                    ),
+                ])),
+            );
+            entry.insert(
+                "category".to_string(),
+                JsonValue::String("Productivity".to_string()),
+            );
+        }
+        Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => {
+            unreachable!("only native plugin adapters have marketplace entries")
+        }
+    }
+
+    Some(JsonValue::Object(entry))
+}
+
+fn native_marketplace_names(
+    project_root: &Path,
+    packages: &[(ResolvedPackage, PathBuf)],
+) -> (String, String) {
+    let owner_name = packages
+        .iter()
+        .find(|(package, _)| matches!(package.source, PackageSource::Root))
+        .map(|(package, _)| package.manifest.effective_name())
+        .unwrap_or_else(|| {
+            project_root
+                .file_name()
+                .and_then(|value| value.to_str())
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| "agentpack".to_string())
+        });
+    (normalize_marketplace_name(&owner_name), owner_name)
+}
+
+fn normalize_marketplace_name(value: &str) -> String {
+    let mut normalized = String::new();
+    for character in value.chars() {
+        if character.is_ascii_alphanumeric() {
+            normalized.push(character.to_ascii_lowercase());
+        } else if !normalized.ends_with('-') {
+            normalized.push('-');
+        }
+    }
+
+    let normalized = normalized.trim_matches('-').to_string();
+    if normalized.is_empty() {
+        String::from("agentpack")
+    } else {
+        normalized
+    }
+}
+
+fn codex_local_plugin_path(path: &str) -> String {
+    if path.starts_with("./") {
+        path.to_string()
+    } else {
+        format!("./{path}")
+    }
+}
+
 fn emit_native_package_plugins(
     plan: &mut OutputAccumulator,
     project_root: &Path,
@@ -685,7 +880,7 @@ fn native_package_plugin_has_content(adapter: Adapter, package: &ResolvedPackage
         || (package.selects_component(DependencyComponent::Rules)
             && artifact_supported(adapter, ArtifactKind::Rule)
             && !manifest.discovered.rules.is_empty())
-        || package_selects_mcp(package)
+        || package_has_mcp_servers(package)
 }
 
 fn native_package_plugin_root(
@@ -726,6 +921,44 @@ fn register_native_package_plugin_root(
             }
         };
         managed_files.insert(display_relative(project_root, &metadata_path));
+        let runtime_root = super::runtime_root(project_root, adapter);
+        if package.selects_component(DependencyComponent::Skills)
+            && artifact_supported(adapter, ArtifactKind::Skill)
+            && !package.manifest.discovered.skills.is_empty()
+        {
+            managed_files.insert(display_relative(project_root, &runtime_root.join("skills")));
+        }
+        if package.selects_component(DependencyComponent::Agents)
+            && artifact_supported(adapter, ArtifactKind::Agent)
+            && !package
+                .manifest
+                .discovered
+                .selected_agents(adapter)
+                .is_empty()
+        {
+            managed_files.insert(display_relative(project_root, &runtime_root.join("agents")));
+        }
+        if package.selects_component(DependencyComponent::Commands)
+            && !package.manifest.discovered.commands.is_empty()
+        {
+            let directory = match adapter {
+                Adapter::Claude => "commands",
+                Adapter::Codex => "skills",
+                Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => {
+                    unreachable!("only native plugin adapters have plugin metadata")
+                }
+            };
+            managed_files.insert(display_relative(
+                project_root,
+                &runtime_root.join(directory),
+            ));
+        }
+        if package.selects_component(DependencyComponent::Rules)
+            && artifact_supported(adapter, ArtifactKind::Rule)
+            && !package.manifest.discovered.rules.is_empty()
+        {
+            managed_files.insert(display_relative(project_root, &runtime_root.join("rules")));
+        }
     } else {
         managed_files.insert(display_relative(project_root, plugin_root));
     }
@@ -826,7 +1059,7 @@ fn codex_native_package_plugin_files(
         }
     }
 
-    if package_selects_mcp(package) {
+    if package_has_mcp_servers(package) {
         merge_file(
             &mut files,
             ManagedFile {
@@ -909,7 +1142,7 @@ fn claude_native_package_plugin_json(
         }
     }
 
-    if package_selects_mcp(package) {
+    if package_has_mcp_servers(package) {
         root.insert(
             "mcpServers".into(),
             serde_json::to_value(&package.manifest.manifest.mcp_servers)
@@ -922,7 +1155,7 @@ fn claude_native_package_plugin_json(
 
 fn codex_native_package_plugin_json(package: &ResolvedPackage) -> Result<Vec<u8>> {
     let mut root = native_plugin_metadata_base(package);
-    if package_selects_mcp(package) {
+    if package_has_mcp_servers(package) {
         root.insert(
             "mcpServers".into(),
             JsonValue::String(".codex-plugin/mcp.json".to_string()),
@@ -1411,6 +1644,10 @@ fn should_auto_register_nodus_mcp(packages: &[(ResolvedPackage, PathBuf)]) -> bo
 
 fn package_selects_mcp(package: &ResolvedPackage) -> bool {
     package.emits_runtime_outputs() && package.selects_component(DependencyComponent::Mcp)
+}
+
+fn package_has_mcp_servers(package: &ResolvedPackage) -> bool {
+    package_selects_mcp(package) && !package.manifest.manifest.mcp_servers.is_empty()
 }
 
 fn previously_managed_mcp_servers(

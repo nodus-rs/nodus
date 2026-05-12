@@ -488,6 +488,69 @@ pub fn runtime_root(project_root: &Path, adapter: Adapter) -> PathBuf {
     project_root.join(profile::runtime_root_name(adapter))
 }
 
+pub(crate) fn native_package_plugin_root(
+    project_root: &Path,
+    adapter: Adapter,
+    package: &ResolvedPackage,
+) -> PathBuf {
+    if matches!(package.source, PackageSource::Root)
+        || project_root_is_native_package_plugin_root(project_root, adapter, package)
+    {
+        return project_root.to_path_buf();
+    }
+
+    project_root
+        .join(".nodus")
+        .join("packages")
+        .join(&package.alias)
+        .join(match adapter {
+            Adapter::Claude => "claude-plugin",
+            Adapter::Codex => "codex-plugin",
+            Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => {
+                unreachable!("only native plugin adapters have package plugin roots")
+            }
+        })
+}
+
+fn project_root_is_native_package_plugin_root(
+    project_root: &Path,
+    adapter: Adapter,
+    package: &ResolvedPackage,
+) -> bool {
+    let Some(plugin_dir) = project_root.file_name().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    let expected_plugin_dir = match adapter {
+        Adapter::Claude => "claude-plugin",
+        Adapter::Codex => "codex-plugin",
+        Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => return false,
+    };
+    if plugin_dir != expected_plugin_dir {
+        return false;
+    }
+
+    project_root
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|value| value.to_str())
+        == Some(package.alias.as_str())
+}
+
+pub(crate) fn managed_runtime_root(
+    project_root: &Path,
+    adapter: Adapter,
+    package: &ResolvedPackage,
+) -> PathBuf {
+    if preferred_surface(adapter) == PreferredSurface::PackagePluginWorkspaceMarketplace {
+        return runtime_root(
+            &native_package_plugin_root(project_root, adapter, package),
+            adapter,
+        );
+    }
+
+    runtime_root(project_root, adapter)
+}
+
 pub fn managed_skill_root(
     names: &ManagedArtifactNames,
     project_root: &Path,
@@ -495,7 +558,15 @@ pub fn managed_skill_root(
     package: &ResolvedPackage,
     skill_id: &str,
 ) -> PathBuf {
-    runtime_root(project_root, adapter)
+    let local_names;
+    let names = if preferred_surface(adapter) == PreferredSurface::PackagePluginWorkspaceMarketplace
+    {
+        local_names = ManagedArtifactNames::from_resolved_packages([package]);
+        &local_names
+    } else {
+        names
+    };
+    managed_runtime_root(project_root, adapter, package)
         .join("skills")
         .join(managed_skill_id(names, package, skill_id))
 }
@@ -508,7 +579,15 @@ pub fn managed_artifact_path(
     package: &ResolvedPackage,
     artifact_id: &str,
 ) -> Option<PathBuf> {
-    let runtime_root = runtime_root(project_root, adapter);
+    let local_names;
+    let names = if preferred_surface(adapter) == PreferredSurface::PackagePluginWorkspaceMarketplace
+    {
+        local_names = ManagedArtifactNames::from_resolved_packages([package]);
+        &local_names
+    } else {
+        names
+    };
+    let runtime_root = managed_runtime_root(project_root, adapter, package);
     match (adapter, kind) {
         (Adapter::Agents, ArtifactKind::Command) => {
             Some(runtime_root.join("commands").join(managed_file_name(

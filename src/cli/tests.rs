@@ -279,14 +279,44 @@ fn read_optional(path: &Path) -> Option<Vec<u8>> {
     fs::read(path).ok()
 }
 
-fn first_file_under(root: &Path, file_name: &str) -> PathBuf {
-    WalkDir::new(root)
+fn adapter_runtime_root_name(adapter: Adapter) -> &'static str {
+    match adapter {
+        Adapter::Agents => ".agents",
+        Adapter::Claude => ".claude",
+        Adapter::Codex => ".codex",
+        Adapter::Copilot => ".github",
+        Adapter::Cursor => ".cursor",
+        Adapter::OpenCode => ".opencode",
+    }
+}
+
+fn runtime_files_under(root: &Path, adapter: Adapter, file_name: &str) -> Vec<PathBuf> {
+    let runtime = adapter_runtime_root_name(adapter);
+    let mut paths = WalkDir::new(root)
         .into_iter()
         .filter_map(Result::ok)
-        .find(|entry| entry.file_type().is_file() && entry.file_name() == file_name)
+        .filter(|entry| entry.file_type().is_file() && entry.file_name() == file_name)
+        .map(|entry| entry.into_path())
+        .filter(|path| {
+            path.components()
+                .any(|component| component.as_os_str() == runtime)
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths
+}
+
+fn first_runtime_file_under(root: &Path, adapter: Adapter, file_name: &str) -> PathBuf {
+    runtime_files_under(root, adapter, file_name)
+        .into_iter()
+        .next()
         .unwrap()
-        .path()
-        .to_path_buf()
+}
+
+fn claude_package_skill(root: &Path, alias: &str, skill_id: &str) -> PathBuf {
+    root.join(format!(
+        ".nodus/packages/{alias}/claude-plugin/.claude/skills/{skill_id}/SKILL.md"
+    ))
 }
 
 #[test]
@@ -2006,8 +2036,8 @@ fn members_list_and_enable_update_workspace_dependency_selection() {
     assert!(enable_output.contains("firebase (disabled)"));
     let manifest = fs::read_to_string(temp.path().join("nodus.toml")).unwrap();
     assert!(manifest.contains("members = [\"axiom\"]"));
-    assert!(temp.path().join(".claude/skills/review/SKILL.md").exists());
-    assert!(!temp.path().join(".claude/skills/checks/SKILL.md").exists());
+    assert!(claude_package_skill(temp.path(), "axiom", "review").exists());
+    assert!(!claude_package_skill(temp.path(), "firebase", "checks").exists());
 }
 
 #[test]
@@ -2073,8 +2103,8 @@ fn members_set_empty_clears_workspace_dependency_selection() {
     assert!(set_output.contains("firebase (disabled)"));
     let manifest = fs::read_to_string(temp.path().join("nodus.toml")).unwrap();
     assert!(!manifest.contains("members ="));
-    assert!(!temp.path().join(".claude/skills/review/SKILL.md").exists());
-    assert!(!temp.path().join(".claude/skills/checks/SKILL.md").exists());
+    assert!(!claude_package_skill(temp.path(), "axiom", "review").exists());
+    assert!(!claude_package_skill(temp.path(), "firebase", "checks").exists());
 }
 
 #[test]
@@ -2128,8 +2158,8 @@ fn members_enable_dry_run_previews_workspace_selection_without_writing() {
         fs::read_to_string(temp.path().join("nodus.toml")).unwrap(),
         manifest_before
     );
-    assert!(!temp.path().join(".claude/skills/review/SKILL.md").exists());
-    assert!(!temp.path().join(".claude/skills/checks/SKILL.md").exists());
+    assert!(!claude_package_skill(temp.path(), "axiom", "review").exists());
+    assert!(!claude_package_skill(temp.path(), "firebase", "checks").exists());
 }
 
 #[test]
@@ -2245,8 +2275,8 @@ fn members_enable_and_disable_manage_wrapper_child_packages() {
     );
     assert!(enable_output.contains("checks (enabled)"));
     assert!(enable_output.contains("review (disabled)"));
-    assert!(temp.path().join(".claude/skills/checks/SKILL.md").exists());
-    assert!(!temp.path().join(".claude/skills/review/SKILL.md").exists());
+    assert!(claude_package_skill(temp.path(), "checks", "checks").exists());
+    assert!(!claude_package_skill(temp.path(), "review", "review").exists());
 
     let disable_output = run_command_output(
         Command::Members {
@@ -2262,8 +2292,8 @@ fn members_enable_and_disable_manage_wrapper_child_packages() {
     );
     assert!(disable_output.contains("checks (disabled)"));
     assert!(disable_output.contains("review (disabled)"));
-    assert!(!temp.path().join(".claude/skills/checks/SKILL.md").exists());
-    assert!(!temp.path().join(".claude/skills/review/SKILL.md").exists());
+    assert!(!claude_package_skill(temp.path(), "checks", "checks").exists());
+    assert!(!claude_package_skill(temp.path(), "review", "review").exists());
 }
 
 #[test]
@@ -2623,7 +2653,7 @@ fn clean_command_removes_project_scoped_cache_entries_only() {
 
     let (mirror_path, checkout_path, snapshot_paths) =
         project_cache_paths(temp.path(), cache.path());
-    let managed_skill = first_file_under(&temp.path().join(".codex"), "SKILL.md");
+    let managed_skill = first_runtime_file_under(temp.path(), Adapter::Codex, "SKILL.md");
 
     assert!(mirror_path.exists());
     assert!(checkout_path.exists());
@@ -3108,7 +3138,7 @@ fn relay_dry_run_does_not_persist_local_config_or_repo_edits() {
     )
     .unwrap();
 
-    let managed_skill = first_file_under(&temp.path().join(".claude"), "SKILL.md");
+    let managed_skill = first_runtime_file_under(temp.path(), Adapter::Claude, "SKILL.md");
     write_file(
         &managed_skill,
         "---\nname: Review\ndescription: Example skill.\n---\n# Edited\n",
@@ -3208,7 +3238,7 @@ fn relay_dry_run_previews_state_only_local_config_changes() {
     )
     .unwrap();
 
-    let managed_skill = first_file_under(&temp.path().join(".claude"), "SKILL.md");
+    let managed_skill = first_runtime_file_under(temp.path(), Adapter::Claude, "SKILL.md");
     write_file(
         &managed_skill,
         "---\nname: Review\ndescription: Example skill.\n---\n# Edited\n",
@@ -3408,12 +3438,7 @@ fn relay_supports_multiple_dependencies_in_one_command() {
     )
     .unwrap();
 
-    let managed_skills = WalkDir::new(temp.path().join(".claude"))
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_file() && entry.file_name() == "SKILL.md")
-        .map(|entry| entry.into_path())
-        .collect::<Vec<_>>();
+    let managed_skills = runtime_files_under(temp.path(), Adapter::Claude, "SKILL.md");
     assert_eq!(managed_skills.len(), 2);
     for path in &managed_skills {
         let mut contents = fs::read_to_string(path).unwrap();
