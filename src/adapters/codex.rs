@@ -5,7 +5,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 
 use crate::adapters::{
-    ArtifactKind, ManagedArtifactNames, ManagedFile, ManagedHookSpec,
+    ArtifactKind, ManagedActivationHook, ManagedArtifactNames, ManagedFile, ManagedHookSpec,
     hook_tool_matchers_for_adapter, managed_artifact_id, managed_artifact_path, managed_skill_root,
 };
 use crate::agent_format::{
@@ -235,7 +235,11 @@ fn copy_directory(
     Ok(files)
 }
 
-pub fn hook_files(project_root: &Path, hooks: &[ManagedHookSpec]) -> Result<Vec<ManagedFile>> {
+pub fn hook_files(
+    project_root: &Path,
+    hooks: &[ManagedHookSpec],
+    activation_hooks: &[ManagedActivationHook],
+) -> Result<Vec<ManagedFile>> {
     let hooks_path = project_root.join(".codex/hooks.json");
     let mut files = hooks
         .iter()
@@ -244,14 +248,24 @@ pub fn hook_files(project_root: &Path, hooks: &[ManagedHookSpec]) -> Result<Vec<
             contents: hook_script_contents(hook),
         })
         .collect::<Vec<_>>();
+    for activation_hook in activation_hooks {
+        files.push(ManagedFile {
+            path: project_root.join(activation_script_relative_path(activation_hook)),
+            contents: activation_script_contents(activation_hook)?,
+        });
+    }
     files.push(ManagedFile {
         path: hooks_path.clone(),
-        contents: merged_hooks_contents(&hooks_path, hooks)?,
+        contents: merged_hooks_contents(&hooks_path, hooks, activation_hooks)?,
     });
     Ok(files)
 }
 
-fn merged_hooks_contents(path: &Path, hooks: &[ManagedHookSpec]) -> Result<Vec<u8>> {
+fn merged_hooks_contents(
+    path: &Path,
+    hooks: &[ManagedHookSpec],
+    activation_hooks: &[ManagedActivationHook],
+) -> Result<Vec<u8>> {
     let mut root = if path.exists() {
         serde_json::from_slice::<Value>(
             &fs::read(path)
@@ -269,6 +283,10 @@ fn merged_hooks_contents(path: &Path, hooks: &[ManagedHookSpec]) -> Result<Vec<u
     remove_managed_hook_entries(hooks_object);
     for hook in hooks {
         array_field(hooks_object, event_name(hook), path)?.push(hook_entry(hook));
+    }
+    for activation_hook in activation_hooks {
+        array_field(hooks_object, "SessionStart", path)?
+            .push(activation_hook_entry(activation_hook));
     }
 
     let mut contents =
@@ -323,6 +341,16 @@ fn hook_entry(hook: &ManagedHookSpec) -> Value {
     }
 }
 
+fn activation_hook_entry(hook: &ManagedActivationHook) -> Value {
+    json!({
+        "matcher": "startup|resume",
+        "hooks": [{
+            "type": "command",
+            "command": activation_hook_command(hook),
+        }],
+    })
+}
+
 fn remove_managed_hook_entries(hooks: &mut Map<String, Value>) {
     for event in [
         "SessionStart",
@@ -355,14 +383,26 @@ fn entry_is_managed(entry: &Value) -> bool {
 }
 
 fn managed_hook_command(hook: &ManagedHookSpec) -> String {
+    managed_hook_command_from_relative_path(&managed_script_relative_path(hook))
+}
+
+fn activation_hook_command(hook: &ManagedActivationHook) -> String {
+    managed_hook_command_from_relative_path(&activation_script_relative_path(hook))
+}
+
+fn managed_hook_command_from_relative_path(relative_path: &str) -> String {
     format!(
         r#"sh "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/{}""#,
-        managed_script_relative_path(hook)
+        relative_path
     )
 }
 
 fn managed_script_relative_path(hook: &ManagedHookSpec) -> String {
     format!(".codex/hooks/{}.sh", managed_script_stem(hook))
+}
+
+fn activation_script_relative_path(hook: &ManagedActivationHook) -> String {
+    format!(".codex/hooks/{}.sh", activation_script_stem(hook))
 }
 
 fn managed_script_stem(hook: &ManagedHookSpec) -> String {
@@ -396,6 +436,25 @@ fn managed_script_stem(hook: &ManagedHookSpec) -> String {
             &blake3_hex(format!("{}:{}", hook.package_alias, hook.hook.id).as_bytes())[..8]
         )
     }
+}
+
+fn activation_script_stem(hook: &ManagedActivationHook) -> String {
+    let package = sanitized_script_segment(&hook.package_alias);
+    format!(
+        "nodus-hook-activation-{package}-{}",
+        &blake3_hex(format!("activation:{}", hook.package_alias).as_bytes())[..8]
+    )
+}
+
+fn sanitized_script_segment(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| match character {
+            'a'..='z' | '0'..='9' => character,
+            'A'..='Z' => character.to_ascii_lowercase(),
+            _ => '-',
+        })
+        .collect()
 }
 
 fn event_name(hook: &ManagedHookSpec) -> &'static str {
@@ -507,6 +566,21 @@ fi
 
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r#"'"'"'"#))
+}
+
+fn activation_script_contents(hook: &ManagedActivationHook) -> Result<Vec<u8>> {
+    let output = json!({
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": hook.context,
+        },
+    });
+    Ok(format!(
+        "#!/bin/sh\nset -eu\n\ncat <<'NODUS_ACTIVATION_JSON'\n{}\nNODUS_ACTIVATION_JSON\n",
+        serde_json::to_string(&output)
+            .context("failed to serialize Codex activation hook output")?
+    )
+    .into_bytes())
 }
 
 #[cfg(test)]

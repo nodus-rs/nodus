@@ -8,8 +8,9 @@ use serde_json::{Map as JsonMap, Value as JsonValue};
 use toml::Value as TomlValue;
 
 use super::{
-    Adapter, Adapters, ArtifactKind, ManagedArtifactNames, ManagedFile, ManagedHookSpec,
-    PreferredSurface, artifact_supported, hook_supported_by_adapter, preferred_surface,
+    Adapter, Adapters, ArtifactKind, ManagedActivationHook, ManagedArtifactNames, ManagedFile,
+    ManagedHookSpec, PreferredSurface, artifact_supported, hook_supported_by_adapter,
+    managed_runtime_skill_id, preferred_surface,
 };
 use crate::lockfile::{Lockfile, managed_mcp_server_name};
 use crate::manifest::{DependencyComponent, HookSpec, McpServerConfig};
@@ -140,13 +141,18 @@ pub(crate) fn build_output_plan(
     let managed_names =
         ManagedArtifactNames::from_resolved_packages(packages.iter().map(|(package, _)| package));
     let hooks = collected_hooks(packages);
+    let has_activation = packages
+        .iter()
+        .any(|(package, _)| package.manifest.manifest.activation_enabled());
     let codex_prefers_native_plugins =
         preferred_surface(Adapter::Codex) == PreferredSurface::PackagePluginWorkspaceMarketplace;
     let emit_codex_hooks = selected_adapters.contains(Adapter::Codex)
         && codex_prefers_native_plugins
-        && hooks
-            .iter()
-            .any(|hook| hook_targets_adapter(&hook.hook, selected_adapters, Adapter::Codex));
+        && (has_activation
+            || hooks
+                .iter()
+                .any(|hook| hook_targets_adapter(&hook.hook, selected_adapters, Adapter::Codex)));
+    warn_if_activation_unsupported(&mut plan.warnings, selected_adapters, has_activation);
 
     for (package, snapshot_root) in packages {
         if matches!(package.source, PackageSource::Root) && !package.manifest.manifest.publish_root
@@ -599,11 +605,12 @@ pub(crate) fn build_output_plan(
             .iter()
             .any(|(package, _)| !package.manifest.manifest.opencode_plugin_hooks.is_empty());
 
-    if !hooks.is_empty() || has_claude_plugin_hooks || has_opencode_plugin_hooks {
+    if !hooks.is_empty() || has_activation || has_claude_plugin_hooks || has_opencode_plugin_hooks {
         for file in hook_files(
             project_root,
             packages,
             &hooks,
+            &managed_names,
             selected_adapters,
             merge_existing_mcp,
             &mut plan.warnings,
@@ -1447,6 +1454,8 @@ fn codex_mcp_config_file(
         config
             .features
             .insert("hooks".into(), TomlValue::Boolean(true));
+    } else {
+        config.features.remove("hooks");
     }
 
     if config.mcp_servers.is_empty() && config.features.is_empty() && config.extra.is_empty() {
@@ -1650,6 +1659,25 @@ fn package_has_mcp_servers(package: &ResolvedPackage) -> bool {
     package_selects_mcp(package) && !package.manifest.manifest.mcp_servers.is_empty()
 }
 
+fn warn_if_activation_unsupported(
+    warnings: &mut Vec<String>,
+    selected_adapters: Adapters,
+    has_activation: bool,
+) {
+    if !has_activation {
+        return;
+    }
+
+    for adapter in selected_adapters.iter() {
+        if matches!(adapter, Adapter::Claude | Adapter::Codex) {
+            continue;
+        }
+        warnings.push(format!(
+            "activation context is not emitted for `{adapter}`; no supported session-start context injection surface is available"
+        ));
+    }
+}
+
 fn previously_managed_mcp_servers(
     existing_lockfile: Option<&Lockfile>,
     config_path: &str,
@@ -1743,6 +1771,78 @@ fn emitted_opencode_header_value(value: &str) -> String {
         return format!("Bearer {{env:{env_var}}}");
     }
     value.to_string()
+}
+
+fn activation_hooks_for_adapter(
+    packages: &[(ResolvedPackage, PathBuf)],
+    names: &ManagedArtifactNames,
+    adapter: Adapter,
+) -> Result<Vec<ManagedActivationHook>> {
+    packages
+        .iter()
+        .filter(|(package, _)| package.manifest.manifest.activation_enabled())
+        .map(|(package, snapshot_root)| {
+            Ok(ManagedActivationHook {
+                package_alias: package.alias.clone(),
+                context: activation_context_text(package, snapshot_root, names, adapter)?,
+            })
+        })
+        .collect()
+}
+
+fn activation_context_text(
+    package: &ResolvedPackage,
+    snapshot_root: &Path,
+    names: &ManagedArtifactNames,
+    adapter: Adapter,
+) -> Result<String> {
+    let activation = package
+        .manifest
+        .manifest
+        .activation
+        .as_ref()
+        .expect("activation context requires activation metadata");
+    let mut context = format!("Nodus package `{}` startup context.\n", package.alias);
+
+    for path in package
+        .manifest
+        .manifest
+        .normalized_activation_context_paths()?
+    {
+        let contents = fs::read_to_string(snapshot_root.join(&path)).with_context(|| {
+            format!(
+                "failed to read activation context {} for `{}`",
+                display_path(&path),
+                package.alias
+            )
+        })?;
+        context.push_str("\n--- Nodus activation file: ");
+        context.push_str(&display_path(&path));
+        context.push_str(" ---\n");
+        context.push_str(&contents);
+        if !contents.ends_with('\n') {
+            context.push('\n');
+        }
+    }
+
+    if !activation.prefer_skills.is_empty() {
+        let skill_names = activation
+            .prefer_skills
+            .iter()
+            .map(|skill_id| managed_runtime_skill_id(names, adapter, package, skill_id))
+            .collect::<Vec<_>>();
+        context.push_str("\nPrefer loading these Nodus-managed skills first when relevant: ");
+        context.push_str(
+            &skill_names
+                .iter()
+                .map(|skill| format!("`{skill}`"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        context.push_str(".\n");
+    }
+
+    Ok(context)
 }
 
 fn extract_exact_env_reference(value: &str) -> Option<&str> {
@@ -1903,6 +2003,7 @@ fn hook_files(
     project_root: &Path,
     packages: &[(ResolvedPackage, PathBuf)],
     hooks: &[ManagedHookSpec],
+    managed_names: &ManagedArtifactNames,
     selected_adapters: Adapters,
     merge_existing_mcp: bool,
     warnings: &mut Vec<String>,
@@ -1910,6 +2011,11 @@ fn hook_files(
     let mut files = Vec::new();
 
     let claude_hooks = hooks_for_adapter(hooks, selected_adapters, Adapter::Claude);
+    let claude_activation_hooks = if selected_adapters.contains(Adapter::Claude) {
+        activation_hooks_for_adapter(packages, managed_names, Adapter::Claude)?
+    } else {
+        Vec::new()
+    };
     let claude_plugin_packages = if selected_adapters.contains(Adapter::Claude) {
         packages
             .iter()
@@ -1924,10 +2030,14 @@ fn hook_files(
     } else {
         Vec::new()
     };
-    if !claude_hooks.is_empty() || !claude_plugin_packages.is_empty() {
+    if !claude_hooks.is_empty()
+        || !claude_activation_hooks.is_empty()
+        || !claude_plugin_packages.is_empty()
+    {
         let (claude_files, claude_warnings) = super::claude::hook_files(
             project_root,
             &claude_hooks,
+            &claude_activation_hooks,
             &claude_plugin_packages,
             merge_existing_mcp,
         )?;
@@ -1963,8 +2073,17 @@ fn hook_files(
         );
     }
     let codex_hooks = hooks_for_adapter(hooks, selected_adapters, Adapter::Codex);
-    if !codex_hooks.is_empty() {
-        files.extend(super::codex::hook_files(project_root, &codex_hooks)?);
+    let codex_activation_hooks = if selected_adapters.contains(Adapter::Codex) {
+        activation_hooks_for_adapter(packages, managed_names, Adapter::Codex)?
+    } else {
+        Vec::new()
+    };
+    if !codex_hooks.is_empty() || !codex_activation_hooks.is_empty() {
+        files.extend(super::codex::hook_files(
+            project_root,
+            &codex_hooks,
+            &codex_activation_hooks,
+        )?);
     }
     let copilot_hooks = hooks_for_adapter(hooks, selected_adapters, Adapter::Copilot);
     if !copilot_hooks.is_empty() {

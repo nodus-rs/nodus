@@ -263,6 +263,38 @@ fn runtime_file_exists(project_root: &Path, adapter: Adapter, file_name: &str) -
     !runtime_file_paths(project_root, adapter, file_name).is_empty()
 }
 
+fn hook_script_path(project_root: &Path, runtime_dir: &str, name_fragment: &str) -> PathBuf {
+    let hooks_dir = project_root.join(runtime_dir).join("hooks");
+    let matches = fs::read_dir(&hooks_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.contains(name_fragment))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        matches.len(),
+        1,
+        "expected one hook script containing `{name_fragment}` in {}",
+        hooks_dir.display()
+    );
+    matches.into_iter().next().unwrap()
+}
+
+fn activation_context_from_script(script: &str) -> String {
+    let json_line = script
+        .lines()
+        .find(|line| line.starts_with("{\"hookSpecificOutput\""))
+        .expect("activation script should embed hook output JSON");
+    let output: serde_json::Value = serde_json::from_str(json_line).unwrap();
+    output["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
 fn managed_skill_file(
     project_root: &Path,
     adapter: Adapter,
@@ -5825,6 +5857,148 @@ sync_on_startup = true
     assert!(manifest.contains("[[hooks]]"));
     assert!(manifest.contains("id = \"nodus.sync_on_startup\""));
     assert!(manifest.contains("event = \"session_start\""));
+}
+
+#[test]
+fn sync_emits_activation_session_start_hooks_for_claude_and_codex() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[adapters]
+enabled = ["claude", "codex"]
+
+[dependencies.shared]
+path = "vendor/shared"
+components = ["skills"]
+"#,
+    );
+    write_manifest(
+        &temp.path().join("vendor/shared"),
+        r#"
+[activation]
+always_context = ["prompts/first-principles.md"]
+prefer_skills = ["review"]
+"#,
+    );
+    write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+    write_file(
+        &temp
+            .path()
+            .join("vendor/shared/prompts/first-principles.md"),
+        "Reason from facts before patterns.\n",
+    );
+
+    sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+
+    let claude_settings: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(temp.path().join(".claude/settings.json")).unwrap(),
+    )
+    .unwrap();
+    let claude_session_start = claude_settings["hooks"]["SessionStart"].as_array().unwrap();
+    assert_eq!(claude_session_start.len(), 1);
+    assert_eq!(
+        claude_session_start[0]["matcher"].as_str(),
+        Some("startup|resume")
+    );
+    assert!(
+        claude_session_start[0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("./.claude/hooks/nodus-hook-activation-shared-")
+    );
+
+    let codex_hooks: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(temp.path().join(".codex/hooks.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        codex_hooks["hooks"]["SessionStart"][0]["matcher"].as_str(),
+        Some("startup|resume")
+    );
+    assert!(
+        codex_hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("/.codex/hooks/nodus-hook-activation-shared-")
+    );
+    let codex_config: toml::Value =
+        toml::from_str(&fs::read_to_string(temp.path().join(".codex/config.toml")).unwrap())
+            .unwrap();
+    assert_eq!(codex_config["features"]["hooks"].as_bool(), Some(true));
+
+    let claude_script = fs::read_to_string(hook_script_path(
+        temp.path(),
+        ".claude",
+        "activation-shared",
+    ))
+    .unwrap();
+    let codex_script =
+        fs::read_to_string(hook_script_path(temp.path(), ".codex", "activation-shared")).unwrap();
+    for context in [
+        activation_context_from_script(&claude_script),
+        activation_context_from_script(&codex_script),
+    ] {
+        assert!(context.contains("Nodus package `shared` startup context."));
+        assert!(context.contains("--- Nodus activation file: prompts/first-principles.md ---"));
+        assert!(context.contains("Reason from facts before patterns."));
+        assert!(
+            context.contains(
+                "Prefer loading these Nodus-managed skills first when relevant: `review`."
+            )
+        );
+        assert!(!context.contains("# Review"));
+        assert!(!context.contains("description: Example skill."));
+    }
+}
+
+#[test]
+fn sync_prunes_activation_hooks_when_activation_is_removed() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[adapters]
+enabled = ["codex"]
+
+[dependencies.shared]
+path = "vendor/shared"
+components = ["skills"]
+"#,
+    );
+    write_manifest(
+        &temp.path().join("vendor/shared"),
+        r#"
+[activation]
+always_context = ["prompts/bootstrap.md"]
+"#,
+    );
+    write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+    write_file(
+        &temp.path().join("vendor/shared/prompts/bootstrap.md"),
+        "Bootstrap context.\n",
+    );
+
+    sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+    let script = hook_script_path(temp.path(), ".codex", "activation-shared");
+    assert!(script.exists());
+    assert!(temp.path().join(".codex/hooks.json").exists());
+    assert!(temp.path().join(".codex/config.toml").exists());
+    let first_lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    assert!(
+        first_lockfile
+            .managed_files
+            .contains(&String::from(".codex/config.toml"))
+    );
+
+    write_manifest(&temp.path().join("vendor/shared"), "");
+
+    sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+
+    assert!(!script.exists());
+    assert!(!temp.path().join(".codex/hooks.json").exists());
+    assert!(!temp.path().join(".codex/config.toml").exists());
 }
 
 #[test]

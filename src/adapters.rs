@@ -34,6 +34,12 @@ pub(crate) struct ManagedHookSpec {
     pub hook: HookSpec,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ManagedActivationHook {
+    pub package_alias: String,
+    pub context: String,
+}
+
 pub(crate) fn hook_event_supported_by_adapter(adapter: Adapter, event: HookEvent) -> bool {
     profile::hook_event_supported(adapter, event)
 }
@@ -464,6 +470,23 @@ pub fn managed_skill_id(
     skill_id: &str,
 ) -> String {
     names.managed_skill_id(package, skill_id)
+}
+
+pub(crate) fn managed_runtime_skill_id(
+    names: &ManagedArtifactNames,
+    adapter: Adapter,
+    package: &ResolvedPackage,
+    skill_id: &str,
+) -> String {
+    let local_names;
+    let names = if preferred_surface(adapter) == PreferredSurface::PackagePluginWorkspaceMarketplace
+    {
+        local_names = ManagedArtifactNames::from_resolved_packages([package]);
+        &local_names
+    } else {
+        names
+    };
+    managed_skill_id(names, package, skill_id)
 }
 
 pub fn managed_artifact_id(
