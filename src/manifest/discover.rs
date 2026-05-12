@@ -1666,6 +1666,13 @@ fn discover_skills_in_dir(
         }
         let name = entry.file_name().to_string_lossy().to_string();
         let relative = current_relative_dir.join(&name);
+        if fs::metadata(&path)
+            .map(|metadata| metadata.is_file())
+            .unwrap_or(false)
+            && !path_points_to_directory(&path)
+        {
+            continue;
+        }
         let skill_dir = canonicalize_existing_directory_path(&path).map_err(|_| {
             anyhow!(
                 "`{}` entries must be directories",
@@ -2080,7 +2087,14 @@ fn validate_skill_directory(skill_dir: &Path, fallback_name: &str) -> Result<()>
     let skill_file = skill_dir.join("SKILL.md");
     let contents = fs::read_to_string(&skill_file)
         .with_context(|| format!("failed to read {}", skill_file.display()))?;
-    let frontmatter = parse_skill_frontmatter(&contents)?;
+    let frontmatter = match parse_skill_frontmatter(&contents) {
+        Ok(frontmatter) => frontmatter,
+        Err(_) if !has_yaml_frontmatter_start(&contents) => SkillFrontmatter {
+            name: None,
+            description: fallback_skill_description(&contents, fallback_name),
+        },
+        Err(error) => return Err(error),
+    };
     let resolved_name = frontmatter
         .name
         .as_deref()
@@ -2094,6 +2108,24 @@ fn validate_skill_directory(skill_dir: &Path, fallback_name: &str) -> Result<()>
         bail!("`SKILL.md` frontmatter field `description` must not be empty");
     }
     Ok(())
+}
+
+fn has_yaml_frontmatter_start(contents: &str) -> bool {
+    contents.starts_with("---\n") || contents.starts_with("---\r\n")
+}
+
+fn fallback_skill_description(contents: &str, fallback_name: &str) -> String {
+    contents
+        .lines()
+        .map(str::trim)
+        .find(|line| {
+            !line.is_empty()
+                && !line.starts_with('#')
+                && !line.starts_with('|')
+                && !line.starts_with("```")
+        })
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("Use the {fallback_name} skill."))
 }
 
 fn parse_skill_frontmatter(contents: &str) -> Result<SkillFrontmatter> {

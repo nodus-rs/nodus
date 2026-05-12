@@ -2263,6 +2263,64 @@ fn accepts_dependency_repo_with_codex_marketplace_wrapper() {
 }
 
 #[test]
+fn accepts_codex_marketplace_plugins_with_loose_skill_docs_and_markdown_only_skills() {
+    let temp = TempDir::new().unwrap();
+    write_codex_marketplace(
+        temp.path(),
+        r#"{
+  "name": "workspace-plugins",
+  "plugins": [
+    {
+      "name": "Vercel",
+      "source": {
+        "source": "local",
+        "path": "./plugins/vercel"
+      }
+    },
+    {
+      "name": "Twilio Developer Kit",
+      "source": {
+        "source": "local",
+        "path": "./plugins/twilio-developer-kit"
+      }
+    }
+  ]
+}"#,
+    );
+    write_codex_plugin_json(&temp.path().join("plugins/vercel"), "0.21.0", None);
+    write_file(
+        &temp.path().join("plugins/vercel/skills/_chain-audit.md"),
+        "# Chain Audit\n\nInternal notes.\n",
+    );
+    write_file(
+        &temp.path().join("plugins/vercel/skills/nextjs/SKILL.md"),
+        "---\nname: nextjs\ndescription: Build Next.js apps.\n---\n# Next.js\n",
+    );
+    write_codex_plugin_json(
+        &temp.path().join("plugins/twilio-developer-kit"),
+        "0.1.0",
+        None,
+    );
+    write_file(
+        &temp
+            .path()
+            .join("plugins/twilio-developer-kit/skills/twilio/twilio-agent-connect/SKILL.md"),
+        "# Twilio Agent Connect\n\nUse TAC to connect agent applications to Twilio services.\n",
+    );
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    assert!(loaded.warnings.is_empty());
+    assert!(loaded.manifest.dependencies.contains_key("vercel"));
+    assert!(
+        loaded
+            .manifest
+            .dependencies
+            .contains_key("twilio_developer_kit")
+    );
+}
+
+#[test]
 fn ignores_codex_marketplace_plugin_source_that_points_at_package_root() {
     let temp = TempDir::new().unwrap();
     write_codex_marketplace(
@@ -2714,6 +2772,7 @@ fn ignores_readme_and_dotfiles_in_discovery_directories() {
     write_valid_skill(temp.path());
     write_file(&temp.path().join("skills/README.md"), "# Skills\n");
     write_file(&temp.path().join("skills/.DS_Store"), "binary\n");
+    write_file(&temp.path().join("skills/_chain-audit.md"), "# Audit\n");
     write_file(&temp.path().join("agents/.DS_Store"), "binary\n");
     write_file(&temp.path().join("agents/README.md"), "# Agents\n");
     write_file(&temp.path().join("agents/security.md"), "# Security\n");
@@ -2724,6 +2783,25 @@ fn ignores_readme_and_dotfiles_in_discovery_directories() {
     assert_eq!(loaded.discovered.skills[0].id, "review");
     assert_eq!(loaded.discovered.agents.len(), 1);
     assert_eq!(loaded.discovered.agents[0].id, "security");
+}
+
+#[test]
+fn accepts_markdown_only_skill_file_with_fallback_metadata() {
+    let temp = TempDir::new().unwrap();
+    write_file(
+        &temp
+            .path()
+            .join("skills/twilio/twilio-agent-connect/SKILL.md"),
+        "# Twilio Agent Connect\n\nUse TAC to connect agent applications to Twilio services.\n",
+    );
+
+    let loaded = load_root_from_dir(temp.path()).unwrap();
+
+    assert_eq!(loaded.discovered.skills.len(), 1);
+    assert_eq!(
+        loaded.discovered.skills[0].id,
+        "twilio__twilio-agent-connect"
+    );
 }
 
 #[test]
