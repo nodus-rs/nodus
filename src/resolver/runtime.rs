@@ -19,7 +19,8 @@ use self::support::{
 #[cfg(test)]
 use self::support::{prune_empty_parent_dirs, write_managed_files};
 use crate::adapters::{
-    Adapter, Adapters, ArtifactKind, ManagedFile, build_output_plan, codex_user_plugin_config_file,
+    Adapter, Adapters, ArtifactKind, ManagedFile, OutputPlanOptions,
+    build_output_plan_with_options, codex_user_plugin_config_file,
 };
 use crate::execution::ExecutionMode;
 use crate::install_paths::{InstallPaths, InstallScope};
@@ -711,12 +712,16 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
             })
             .collect::<Result<Vec<_>>>()?;
         let selected_adapters = Adapters::from_slice(&selection.adapters);
-        let output_plan = build_output_plan(
+        let codex_native_plugins_auto_enabled = install_paths.codex_user_config.is_some();
+        let output_plan = build_output_plan_with_options(
             &install_paths.runtime_root,
             &package_snapshots,
             selected_adapters,
             existing_lockfile.as_ref(),
-            true,
+            OutputPlanOptions {
+                merge_existing_mcp: true,
+                codex_native_plugins_auto_enabled,
+            },
         )?;
         let mut external_files = Vec::new();
         if selected_adapters.contains(Adapter::Codex)
@@ -730,8 +735,11 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
             external_files.push(file);
         }
         let mut planned_files = output_plan.files.clone();
-        let mut desired_paths =
-            resolution.managed_paths(&install_paths.runtime_root, selected_adapters)?;
+        let mut desired_paths = resolution.managed_paths_with_options(
+            &install_paths.runtime_root,
+            selected_adapters,
+            codex_native_plugins_auto_enabled,
+        )?;
         let workspace_marketplace_files =
             planned_workspace_marketplace_files(&root, &install_paths.runtime_root)?;
         desired_paths.extend(
@@ -740,7 +748,11 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
                 .map(|file| file.path.clone()),
         );
         planned_files.extend(workspace_marketplace_files);
-        let lockfile = resolution.to_lockfile(selected_adapters, &install_paths.runtime_root)?;
+        let lockfile = resolution.to_lockfile_with_options(
+            selected_adapters,
+            &install_paths.runtime_root,
+            codex_native_plugins_auto_enabled,
+        )?;
         let mut owned_paths =
             load_owned_paths(&install_paths.runtime_root, existing_lockfile.as_ref())?;
         if existing_lockfile.is_none() {
@@ -1008,10 +1020,20 @@ impl Resolution {
         &self.managed_migrations
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn to_lockfile(
         &self,
         selected_adapters: Adapters,
         runtime_root: &Path,
+    ) -> Result<Lockfile> {
+        self.to_lockfile_with_options(selected_adapters, runtime_root, false)
+    }
+
+    pub fn to_lockfile_with_options(
+        &self,
+        selected_adapters: Adapters,
+        runtime_root: &Path,
+        codex_native_plugins_auto_enabled: bool,
     ) -> Result<Lockfile> {
         let mut packages = Vec::new();
 
@@ -1124,16 +1146,34 @@ impl Resolution {
 
         Ok(Lockfile::new(
             packages,
-            self.lockfile_managed_files(selected_adapters, runtime_root)?,
+            self.lockfile_managed_files(
+                selected_adapters,
+                runtime_root,
+                codex_native_plugins_auto_enabled,
+            )?,
         ))
     }
 
+    #[allow(dead_code)]
     pub fn managed_paths(
         &self,
         runtime_root: &Path,
         selected_adapters: Adapters,
     ) -> Result<HashSet<PathBuf>> {
-        let lockfile = self.to_lockfile(selected_adapters, runtime_root)?;
+        self.managed_paths_with_options(runtime_root, selected_adapters, false)
+    }
+
+    pub fn managed_paths_with_options(
+        &self,
+        runtime_root: &Path,
+        selected_adapters: Adapters,
+        codex_native_plugins_auto_enabled: bool,
+    ) -> Result<HashSet<PathBuf>> {
+        let lockfile = self.to_lockfile_with_options(
+            selected_adapters,
+            runtime_root,
+            codex_native_plugins_auto_enabled,
+        )?;
         lockfile.managed_paths(runtime_root)
     }
 
@@ -1141,14 +1181,23 @@ impl Resolution {
         &self,
         selected_adapters: Adapters,
         runtime_root: &Path,
+        codex_native_plugins_auto_enabled: bool,
     ) -> Result<Vec<String>> {
         let package_roots = self
             .packages
             .iter()
             .map(|package| (package.clone(), package.root.clone()))
             .collect::<Vec<_>>();
-        let output_plan =
-            build_output_plan(runtime_root, &package_roots, selected_adapters, None, false)?;
+        let output_plan = build_output_plan_with_options(
+            runtime_root,
+            &package_roots,
+            selected_adapters,
+            None,
+            OutputPlanOptions {
+                merge_existing_mcp: false,
+                codex_native_plugins_auto_enabled,
+            },
+        )?;
         let mut managed_files = compress_lockfile_managed_files(
             self,
             selected_adapters,

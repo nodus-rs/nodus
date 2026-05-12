@@ -7,7 +7,7 @@ use tempfile::TempDir;
 use walkdir::WalkDir;
 
 use super::*;
-use crate::adapters::{Adapter, Adapters, ArtifactKind, ManagedArtifactNames};
+use crate::adapters::{Adapter, Adapters, ArtifactKind, ManagedArtifactNames, build_output_plan};
 use crate::git::{
     AddDependencyOptions, AddSummary, RemoveSummary, add_dependency_at_paths_with_adapters,
     add_dependency_in_dir_with_adapters as add_dependency_in_dir_with_adapters_impl,
@@ -5554,6 +5554,71 @@ X-Figma-Region = "us-east-1"
     assert_eq!(
         config["mcp_servers"]["firebase__figma"]["http_headers"]["X-Figma-Region"].as_str(),
         Some("us-east-1")
+    );
+}
+
+#[test]
+fn sync_prunes_codex_project_mcp_when_native_plugin_auto_enabled() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    let codex_home = TempDir::new().unwrap();
+    let codex_config = codex_home.path().join("config.toml");
+    write_manifest(
+        temp.path(),
+        r#"
+name = "Yoki iOS"
+
+[dependencies.firebase]
+path = "vendor/firebase"
+"#,
+    );
+    write_manifest(
+        &temp.path().join("vendor/firebase"),
+        r#"
+[mcp_servers.firebase]
+command = "npx"
+args = ["-y", "firebase-tools", "mcp", "--dir", "."]
+"#,
+    );
+
+    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
+    assert!(temp.path().join(".codex/config.toml").exists());
+
+    let reporter = Reporter::silent();
+    let install_paths =
+        InstallPaths::project(temp.path()).with_codex_user_config(Some(codex_config.clone()));
+    super::sync_in_dir_with_adapters_mode(
+        &install_paths,
+        cache.path(),
+        SyncMode::Normal,
+        false,
+        false,
+        &[Adapter::Codex],
+        false,
+        ExecutionMode::Apply,
+        None,
+        DependencyFailureMode::Graceful,
+        &reporter,
+    )
+    .unwrap();
+
+    assert!(
+        !temp.path().join(".codex/config.toml").exists(),
+        "Codex native plugin MCP should replace the stale project-level MCP config"
+    );
+    assert!(
+        temp.path()
+            .join(".nodus/packages/firebase/codex-plugin/.mcp.json")
+            .exists()
+    );
+    let user_config = fs::read_to_string(codex_config).unwrap();
+    assert!(user_config.contains(r#"[plugins."firebase@yoki-ios"]"#));
+    assert!(user_config.contains("enabled = true"));
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    assert!(
+        !lockfile
+            .managed_files
+            .contains(&String::from(".codex/config.toml"))
     );
 }
 

@@ -25,6 +25,12 @@ pub(crate) struct OutputPlan {
     pub warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct OutputPlanOptions {
+    pub merge_existing_mcp: bool,
+    pub codex_native_plugins_auto_enabled: bool,
+}
+
 #[derive(Debug, Default)]
 struct OutputAccumulator {
     files: BTreeMap<PathBuf, Vec<u8>>,
@@ -131,12 +137,32 @@ fn collected_hooks(packages: &[(ResolvedPackage, PathBuf)]) -> Vec<ManagedHookSp
     hooks
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn build_output_plan(
     project_root: &Path,
     packages: &[(ResolvedPackage, PathBuf)],
     selected_adapters: Adapters,
     existing_lockfile: Option<&Lockfile>,
     merge_existing_mcp: bool,
+) -> Result<OutputPlan> {
+    build_output_plan_with_options(
+        project_root,
+        packages,
+        selected_adapters,
+        existing_lockfile,
+        OutputPlanOptions {
+            merge_existing_mcp,
+            codex_native_plugins_auto_enabled: false,
+        },
+    )
+}
+
+pub(crate) fn build_output_plan_with_options(
+    project_root: &Path,
+    packages: &[(ResolvedPackage, PathBuf)],
+    selected_adapters: Adapters,
+    existing_lockfile: Option<&Lockfile>,
+    options: OutputPlanOptions,
 ) -> Result<OutputPlan> {
     let mut plan = OutputAccumulator::default();
     let managed_names =
@@ -562,7 +588,7 @@ pub(crate) fn build_output_plan(
         packages,
         selected_adapters,
         existing_lockfile,
-        merge_existing_mcp,
+        options.merge_existing_mcp,
     )? {
         plan.managed_files
             .insert(display_relative(project_root, &file.path));
@@ -572,8 +598,10 @@ pub(crate) fn build_output_plan(
         && let Some(file) = codex_mcp_config_file(
             project_root,
             packages,
+            selected_adapters,
+            options.codex_native_plugins_auto_enabled,
             existing_lockfile,
-            merge_existing_mcp,
+            options.merge_existing_mcp,
             emit_codex_hooks,
         )?
     {
@@ -586,7 +614,7 @@ pub(crate) fn build_output_plan(
             project_root,
             packages,
             existing_lockfile,
-            merge_existing_mcp,
+            options.merge_existing_mcp,
             &mut plan.warnings,
         )?
     {
@@ -623,7 +651,7 @@ pub(crate) fn build_output_plan(
             &hooks,
             &managed_names,
             selected_adapters,
-            merge_existing_mcp,
+            options.merge_existing_mcp,
             &mut plan.warnings,
         )? {
             plan.managed_files
@@ -1467,7 +1495,7 @@ fn mcp_config_file(
         if !package_has_mcp_servers(package) {
             continue;
         }
-        if mcp_servers_are_emitted_by_claude_native_plugin(package, selected_adapters) {
+        if mcp_servers_are_emitted_by_native_plugin(Adapter::Claude, package, selected_adapters) {
             continue;
         }
         has_direct_mcp_package = true;
@@ -1525,14 +1553,15 @@ fn mcp_config_file(
     Ok(Some(ManagedFile { path, contents }))
 }
 
-fn mcp_servers_are_emitted_by_claude_native_plugin(
+fn mcp_servers_are_emitted_by_native_plugin(
+    adapter: Adapter,
     package: &ResolvedPackage,
     selected_adapters: Adapters,
 ) -> bool {
-    selected_adapters.contains(Adapter::Claude)
-        && preferred_surface(Adapter::Claude) == PreferredSurface::PackagePluginWorkspaceMarketplace
+    selected_adapters.contains(adapter)
+        && preferred_surface(adapter) == PreferredSurface::PackagePluginWorkspaceMarketplace
         && !matches!(package.source, PackageSource::Root)
-        && native_package_plugin_has_content(Adapter::Claude, package)
+        && native_package_plugin_has_content(adapter, package)
         && package_has_mcp_servers(package)
 }
 
@@ -1546,6 +1575,8 @@ fn read_project_mcp_config(path: &Path) -> Result<ProjectMcpConfig> {
 fn codex_mcp_config_file(
     project_root: &Path,
     packages: &[(ResolvedPackage, PathBuf)],
+    selected_adapters: Adapters,
+    codex_native_plugins_auto_enabled: bool,
     existing_lockfile: Option<&Lockfile>,
     merge_existing_mcp: bool,
     emit_launch_sync: bool,
@@ -1554,10 +1585,22 @@ fn codex_mcp_config_file(
     let previously_managed =
         previously_managed_mcp_servers(existing_lockfile, ".codex/config.toml");
     let mut desired_servers = BTreeMap::new();
+    let mut has_direct_mcp_package = false;
     for (package, _) in packages {
-        if !package_selects_mcp(package) {
+        let has_direct_mcp_signal = if codex_native_plugins_auto_enabled {
+            package_has_mcp_servers(package)
+        } else {
+            package_selects_mcp(package)
+        };
+        if !has_direct_mcp_signal {
             continue;
         }
+        if codex_native_plugins_auto_enabled
+            && mcp_servers_are_emitted_by_native_plugin(Adapter::Codex, package, selected_adapters)
+        {
+            continue;
+        }
+        has_direct_mcp_package = true;
 
         for (server_id, server) in &package.manifest.manifest.mcp_servers {
             if !server.enabled {
@@ -1570,7 +1613,7 @@ fn codex_mcp_config_file(
         }
     }
 
-    if should_auto_register_nodus_mcp(packages) {
+    if has_direct_mcp_package {
         let nodus_command = managed_nodus_command();
         let mut table = toml::map::Map::new();
         table.insert("command".into(), TomlValue::String(nodus_command));

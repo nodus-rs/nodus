@@ -16,8 +16,9 @@ use super::support::{
 use super::{
     DependencyFailureMode, Resolution, ResolveMode, SyncMode, lockfile_out_of_date_message,
 };
-use crate::adapters::{Adapters, ManagedFile, build_output_plan};
+use crate::adapters::{Adapters, ManagedFile, OutputPlanOptions, build_output_plan_with_options};
 use crate::execution::ExecutionMode;
+use crate::install_paths::InstallPaths;
 use crate::lockfile::{LOCKFILE_NAME, Lockfile};
 use crate::manifest::{LoadedManifest, load_root_from_dir};
 use crate::paths::display_path;
@@ -111,6 +112,7 @@ struct LockfileInspection<'a> {
     cwd: &'a Path,
     resolution: &'a Resolution,
     selected_adapters: Adapters,
+    codex_native_plugins_auto_enabled: bool,
     lockfile_path: &'a Path,
     existing_lockfile: Option<&'a Lockfile>,
     owned_paths: &'a HashSet<PathBuf>,
@@ -208,16 +210,24 @@ fn inspect_doctor_state(
     } else {
         None
     };
-    let desired_paths = resolution.managed_paths(cwd, selected_adapters)?;
     let mut owned_paths = load_owned_paths(cwd, existing_lockfile.as_ref())?;
     let workspace_marketplace_files = planned_workspace_marketplace_files(&root, cwd)?;
     let mut invalid_owned_outputs = Vec::new();
-    let output_plan = match build_output_plan(
+    let codex_native_plugins_auto_enabled = InstallPaths::project(cwd).codex_user_config.is_some();
+    let desired_paths = resolution.managed_paths_with_options(
+        cwd,
+        selected_adapters,
+        codex_native_plugins_auto_enabled,
+    )?;
+    let output_plan = match build_output_plan_with_options(
         cwd,
         &package_roots,
         selected_adapters,
         existing_lockfile.as_ref(),
-        true,
+        OutputPlanOptions {
+            merge_existing_mcp: true,
+            codex_native_plugins_auto_enabled,
+        },
     ) {
         Ok(plan) => plan,
         Err(error) => {
@@ -225,12 +235,15 @@ fn inspect_doctor_state(
                 return Err(error);
             };
             invalid_owned_outputs.push(path);
-            build_output_plan(
+            build_output_plan_with_options(
                 cwd,
                 &package_roots,
                 selected_adapters,
                 existing_lockfile.as_ref(),
-                false,
+                OutputPlanOptions {
+                    merge_existing_mcp: false,
+                    codex_native_plugins_auto_enabled,
+                },
             )?
         }
     };
@@ -263,6 +276,7 @@ fn inspect_doctor_state(
         cwd,
         resolution: &resolution,
         selected_adapters,
+        codex_native_plugins_auto_enabled,
         lockfile_path: &lockfile_path,
         existing_lockfile: existing_lockfile.as_ref(),
         owned_paths: &owned_paths,
@@ -278,7 +292,11 @@ fn inspect_doctor_state(
         original_root: root.clone(),
         working_root: root,
         lockfile_path,
-        expected_lockfile: resolution.to_lockfile(selected_adapters, cwd)?,
+        expected_lockfile: resolution.to_lockfile_with_options(
+            selected_adapters,
+            cwd,
+            codex_native_plugins_auto_enabled,
+        )?,
         runtime_root: cwd.to_path_buf(),
         owned_paths,
         desired_paths,
@@ -306,9 +324,11 @@ impl LockfileInspection<'_> {
         let mut has_missing_managed_files = false;
 
         if let Some(existing_lockfile) = self.existing_lockfile {
-            let expected_lockfile = self
-                .resolution
-                .to_lockfile(self.selected_adapters, self.cwd)?;
+            let expected_lockfile = self.resolution.to_lockfile_with_options(
+                self.selected_adapters,
+                self.cwd,
+                self.codex_native_plugins_auto_enabled,
+            )?;
             if *existing_lockfile != expected_lockfile {
                 findings.push(DoctorFinding {
                     kind: DoctorFindingKind::SafeAutoFix,
