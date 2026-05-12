@@ -521,7 +521,7 @@ fn settings_contents(
             serde_json::json!({
                 "source": {
                     "source": "directory",
-                    "path": "."
+                    "path": "./"
                 }
             }),
         );

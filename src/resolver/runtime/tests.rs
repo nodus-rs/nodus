@@ -1663,7 +1663,7 @@ version = "1.2.3"
     );
     assert_eq!(
         settings["extraKnownMarketplaces"][marketplace_name]["source"]["path"].as_str(),
-        Some(".")
+        Some("./")
     );
     assert_eq!(
         settings["enabledPlugins"]
