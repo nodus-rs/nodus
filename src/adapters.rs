@@ -19,7 +19,7 @@ pub mod cursor;
 pub mod opencode;
 
 pub(crate) use output::build_output_plan;
-pub(crate) use profile::artifact_supported;
+pub(crate) use profile::{PreferredSurface, artifact_supported, preferred_surface};
 
 #[derive(Debug, Clone)]
 pub struct ManagedFile {

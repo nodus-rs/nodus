@@ -9,7 +9,7 @@ use toml::Value as TomlValue;
 
 use super::{
     Adapter, Adapters, ArtifactKind, ManagedArtifactNames, ManagedFile, ManagedHookSpec,
-    artifact_supported, hook_supported_by_adapter,
+    PreferredSurface, artifact_supported, hook_supported_by_adapter, preferred_surface,
 };
 use crate::lockfile::{Lockfile, managed_mcp_server_name};
 use crate::manifest::{DependencyComponent, HookSpec, McpServerConfig};
@@ -140,7 +140,10 @@ pub(crate) fn build_output_plan(
     let managed_names =
         ManagedArtifactNames::from_resolved_packages(packages.iter().map(|(package, _)| package));
     let hooks = collected_hooks(packages);
+    let codex_prefers_native_plugins =
+        preferred_surface(Adapter::Codex) == PreferredSurface::PackagePluginWorkspaceMarketplace;
     let emit_codex_hooks = selected_adapters.contains(Adapter::Codex)
+        && codex_prefers_native_plugins
         && hooks
             .iter()
             .any(|hook| hook_targets_adapter(&hook.hook, selected_adapters, Adapter::Codex));

@@ -4,8 +4,15 @@ use crate::manifest::{HookEvent, HookSessionSource, HookTool};
 pub(crate) struct AdapterProfile {
     adapter: Adapter,
     runtime_root: &'static str,
+    preferred_surface: PreferredSurface,
     artifacts: &'static [ArtifactKind],
     hooks: HookSupport,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PreferredSurface {
+    DirectManagedOutput,
+    PackagePluginWorkspaceMarketplace,
 }
 
 struct HookSupport {
@@ -128,6 +135,7 @@ const NO_HOOK_SUPPORT: HookSupport = HookSupport {
 const AGENTS_PROFILE: AdapterProfile = AdapterProfile {
     adapter: Adapter::Agents,
     runtime_root: ".agents",
+    preferred_surface: PreferredSurface::DirectManagedOutput,
     artifacts: AGENTS_ARTIFACTS,
     hooks: NO_HOOK_SUPPORT,
 };
@@ -135,6 +143,7 @@ const AGENTS_PROFILE: AdapterProfile = AdapterProfile {
 const CLAUDE_PROFILE: AdapterProfile = AdapterProfile {
     adapter: Adapter::Claude,
     runtime_root: ".claude",
+    preferred_surface: PreferredSurface::PackagePluginWorkspaceMarketplace,
     artifacts: ALL_SKILL_ARTIFACTS,
     hooks: HookSupport {
         events: ALL_HOOK_EVENTS_EXCEPT_PERMISSION_REQUEST,
@@ -146,6 +155,7 @@ const CLAUDE_PROFILE: AdapterProfile = AdapterProfile {
 const CODEX_PROFILE: AdapterProfile = AdapterProfile {
     adapter: Adapter::Codex,
     runtime_root: ".codex",
+    preferred_surface: PreferredSurface::PackagePluginWorkspaceMarketplace,
     artifacts: CODEX_ARTIFACTS,
     hooks: HookSupport {
         events: CODEX_HOOK_EVENTS,
@@ -157,6 +167,7 @@ const CODEX_PROFILE: AdapterProfile = AdapterProfile {
 const COPILOT_PROFILE: AdapterProfile = AdapterProfile {
     adapter: Adapter::Copilot,
     runtime_root: ".github",
+    preferred_surface: PreferredSurface::DirectManagedOutput,
     artifacts: COPILOT_ARTIFACTS,
     hooks: HookSupport {
         events: COPILOT_HOOK_EVENTS,
@@ -168,6 +179,7 @@ const COPILOT_PROFILE: AdapterProfile = AdapterProfile {
 const CURSOR_PROFILE: AdapterProfile = AdapterProfile {
     adapter: Adapter::Cursor,
     runtime_root: ".cursor",
+    preferred_surface: PreferredSurface::DirectManagedOutput,
     artifacts: CURSOR_ARTIFACTS,
     hooks: NO_HOOK_SUPPORT,
 };
@@ -175,6 +187,7 @@ const CURSOR_PROFILE: AdapterProfile = AdapterProfile {
 const OPENCODE_PROFILE: AdapterProfile = AdapterProfile {
     adapter: Adapter::OpenCode,
     runtime_root: ".opencode",
+    preferred_surface: PreferredSurface::DirectManagedOutput,
     artifacts: OPENCODE_ARTIFACTS,
     hooks: HookSupport {
         events: OPENCODE_HOOK_EVENTS,
@@ -232,6 +245,10 @@ pub(crate) fn runtime_root_name(adapter: Adapter) -> &'static str {
     adapter_profile(adapter).runtime_root
 }
 
+pub(crate) fn preferred_surface(adapter: Adapter) -> PreferredSurface {
+    adapter_profile(adapter).preferred_surface
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,6 +282,30 @@ mod tests {
                 Adapter::OpenCode
             ]
         );
+    }
+
+    #[test]
+    fn native_plugin_adapters_prefer_package_plugin_surface() {
+        assert_eq!(
+            preferred_surface(Adapter::Claude),
+            PreferredSurface::PackagePluginWorkspaceMarketplace
+        );
+        assert_eq!(
+            preferred_surface(Adapter::Codex),
+            PreferredSurface::PackagePluginWorkspaceMarketplace
+        );
+
+        for adapter in [
+            Adapter::Agents,
+            Adapter::Copilot,
+            Adapter::Cursor,
+            Adapter::OpenCode,
+        ] {
+            assert_eq!(
+                preferred_surface(adapter),
+                PreferredSurface::DirectManagedOutput
+            );
+        }
     }
 
     #[test]
