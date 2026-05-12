@@ -1037,7 +1037,7 @@ mod tests {
     use std::fs;
     use std::io::{self, Write};
     use std::process::Command;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, MutexGuard};
     use std::thread;
     use std::time::Duration;
 
@@ -1050,6 +1050,8 @@ mod tests {
 
     #[derive(Clone, Default)]
     struct SharedBuffer(Arc<Mutex<Vec<u8>>>);
+
+    static RELAY_WATCH_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     impl SharedBuffer {
         fn contents(&self) -> String {
@@ -1203,6 +1205,12 @@ mod tests {
             thread::sleep(Duration::from_millis(20));
         }
         panic!("{message}");
+    }
+
+    fn relay_watch_test_guard() -> MutexGuard<'static, ()> {
+        RELAY_WATCH_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn run_git(path: &Path, args: &[&str]) {
@@ -3044,6 +3052,7 @@ tag = "v0.2.0"
 
     #[test]
     fn relay_watch_syncs_follow_up_managed_edits() {
+        let _watch_guard = relay_watch_test_guard();
         let (_remote_root, remote_repo) = create_remote_dependency();
         let linked = clone_linked_repo(&remote_repo);
         let linked_repo = linked.path().join("linked");
@@ -3117,6 +3126,7 @@ tag = "v0.2.0"
 
     #[test]
     fn relay_watch_syncs_multiple_follow_up_edits_to_same_file() {
+        let _watch_guard = relay_watch_test_guard();
         let (_remote_root, remote_repo) = create_remote_dependency();
         let linked = clone_linked_repo(&remote_repo);
         let linked_repo = linked.path().join("linked");
@@ -3209,6 +3219,7 @@ tag = "v0.2.0"
 
     #[test]
     fn relay_watch_syncs_follow_up_managed_edits_for_multiple_dependencies() {
+        let _watch_guard = relay_watch_test_guard();
         let (_remote_root_one, remote_repo_one) = create_remote_dependency_named("playbook-ios");
         let (_remote_root_two, remote_repo_two) = create_remote_dependency_named("docs-kit");
         append_file(
