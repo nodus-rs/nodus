@@ -31,6 +31,7 @@ pub(super) fn build_sync_execution_plan(
     owned_paths: &HashSet<PathBuf>,
     desired_paths: &HashSet<PathBuf>,
     planned_files: &[ManagedFile],
+    external_files: Vec<ManagedFile>,
     warnings: Vec<String>,
     summary: SyncSummary,
     sync_mode: SyncMode,
@@ -56,6 +57,7 @@ pub(super) fn build_sync_execution_plan(
         manifest_write,
         removals,
         managed_writes: planned_files.to_vec(),
+        external_writes: external_files,
         lockfile_write,
         warnings,
         summary,
@@ -85,6 +87,17 @@ pub(super) fn execute_sync_plan(
                 reporter.preview(&change)?;
             }
         }
+        if !plan.external_writes.is_empty() {
+            reporter.status("Preview", "managed user config")?;
+            for file in &plan.external_writes {
+                let change = if file.path.exists() {
+                    PreviewChange::Write(file.path.clone())
+                } else {
+                    PreviewChange::Create(file.path.clone())
+                };
+                reporter.preview(&change)?;
+            }
+        }
         if let Some(write) = &plan.lockfile_write {
             reporter.preview(&planned_write_preview_change(write))?;
         }
@@ -99,6 +112,10 @@ pub(super) fn execute_sync_plan(
         }
         reporter.status("Writing", "managed runtime outputs")?;
         write_managed_files(&plan.managed_writes)?;
+        if !plan.external_writes.is_empty() {
+            reporter.status("Writing", "managed user config")?;
+            write_managed_files(&plan.external_writes)?;
+        }
         if let Some(write) = &plan.lockfile_write {
             reporter.status("Writing", write.path.display())?;
             write_atomic(&write.path, &write.contents)?;

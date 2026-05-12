@@ -1745,6 +1745,114 @@ args = ["figma-developer-mcp"]
 }
 
 #[test]
+fn sync_enables_codex_native_plugins_in_user_config() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    let codex_home = TempDir::new().unwrap();
+    let codex_config = codex_home.path().join("config.toml");
+    write_manifest(
+        temp.path(),
+        r#"
+name = "Yoki iOS"
+
+[adapters]
+enabled = ["codex"]
+
+[dependencies]
+grapha = { path = "vendor/grapha" }
+playbook_ios = { path = "vendor/playbook-ios" }
+"#,
+    );
+    write_manifest(
+        &temp.path().join("vendor/grapha"),
+        r#"
+name = "Grapha"
+"#,
+    );
+    write_manifest(
+        &temp.path().join("vendor/playbook-ios"),
+        r#"
+name = "Playbook iOS"
+"#,
+    );
+    write_skill(
+        &temp.path().join("vendor/grapha/skills/grapha-search"),
+        "Grapha Search",
+    );
+    write_skill(
+        &temp.path().join("vendor/playbook-ios/skills/ios-testing"),
+        "iOS Testing",
+    );
+    write_file(
+        &codex_config,
+        r#"# codex user config
+model = "gpt-5"
+
+[plugins."manual@other"]
+enabled = false
+
+[plugins."grapha@yoki-ios"]
+enabled = false
+"#,
+    );
+
+    let reporter = Reporter::silent();
+    let install_paths =
+        InstallPaths::project(temp.path()).with_codex_user_config(Some(codex_config.clone()));
+    super::sync_in_dir_with_adapters_mode(
+        &install_paths,
+        cache.path(),
+        SyncMode::Normal,
+        false,
+        false,
+        &[Adapter::Codex],
+        false,
+        ExecutionMode::Apply,
+        None,
+        DependencyFailureMode::Graceful,
+        &reporter,
+    )
+    .unwrap();
+
+    let contents = fs::read_to_string(&codex_config).unwrap();
+    assert!(contents.contains("# codex user config"));
+    assert!(contents.contains(r#"model = "gpt-5""#));
+    let config: toml::Value = toml::from_str(&contents).unwrap();
+    let plugins = config
+        .get("plugins")
+        .and_then(toml::Value::as_table)
+        .expect("plugins table");
+    assert_eq!(
+        plugins
+            .get("grapha@yoki-ios")
+            .and_then(|plugin| plugin.get("enabled"))
+            .and_then(toml::Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        plugins
+            .get("playbook-ios@yoki-ios")
+            .and_then(|plugin| plugin.get("enabled"))
+            .and_then(toml::Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        plugins
+            .get("manual@other")
+            .and_then(|plugin| plugin.get("enabled"))
+            .and_then(toml::Value::as_bool),
+        Some(false)
+    );
+    assert!(
+        !Lockfile::read(&temp.path().join(LOCKFILE_NAME))
+            .unwrap()
+            .managed_files
+            .iter()
+            .any(|path| Path::new(path) == codex_config.as_path())
+    );
+}
+
+#[test]
 fn sync_migrates_owned_direct_claude_codex_outputs_to_native_plugins() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();

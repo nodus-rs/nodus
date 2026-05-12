@@ -6,6 +6,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use toml::Value as TomlValue;
+use toml_edit::{DocumentMut, Item as EditableTomlItem, Table as EditableTomlTable};
 
 use super::{
     Adapter, Adapters, ArtifactKind, ManagedActivationHook, ManagedArtifactNames, ManagedFile,
@@ -872,6 +873,74 @@ fn native_package_plugin_keys(
         .map(|plugin| format!("{plugin}@{marketplace}"))
         .collect::<Vec<_>>();
     Some((marketplace, keys))
+}
+
+pub(crate) fn codex_user_plugin_config_file(
+    path: &Path,
+    project_root: &Path,
+    packages: &[(ResolvedPackage, PathBuf)],
+) -> Result<Option<ManagedFile>> {
+    let Some((_, plugin_keys)) = native_package_plugin_keys(project_root, packages, Adapter::Codex)
+    else {
+        return Ok(None);
+    };
+    let existing = if path.exists() {
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?
+    } else {
+        String::new()
+    };
+    let contents = codex_user_plugin_config_contents(&existing, &plugin_keys, path)?;
+    if contents == existing.as_bytes() {
+        return Ok(None);
+    }
+
+    Ok(Some(ManagedFile {
+        path: path.to_path_buf(),
+        contents,
+    }))
+}
+
+fn codex_user_plugin_config_contents(
+    existing: &str,
+    plugin_keys: &[String],
+    path: &Path,
+) -> Result<Vec<u8>> {
+    let mut document = if existing.trim().is_empty() {
+        DocumentMut::new()
+    } else {
+        existing
+            .parse::<DocumentMut>()
+            .with_context(|| format!("failed to parse Codex user config {}", path.display()))?
+    };
+    let plugins = document
+        .entry("plugins")
+        .or_insert_with(|| EditableTomlItem::Table(EditableTomlTable::new()));
+    let Some(plugins) = plugins.as_table_mut() else {
+        bail!(
+            "failed to merge Codex user config {}; `plugins` must be a TOML table",
+            path.display()
+        );
+    };
+
+    for plugin_key in plugin_keys {
+        let plugin = plugins
+            .entry(plugin_key)
+            .or_insert_with(|| EditableTomlItem::Table(EditableTomlTable::new()));
+        let Some(plugin) = plugin.as_table_mut() else {
+            bail!(
+                "failed to merge Codex user config {}; `plugins.{}` must be a TOML table",
+                path.display(),
+                plugin_key
+            );
+        };
+        plugin["enabled"] = toml_edit::value(true);
+    }
+
+    let mut contents = document.to_string().into_bytes();
+    if !contents.ends_with(b"\n") {
+        contents.push(b'\n');
+    }
+    Ok(contents)
 }
 
 fn emit_native_package_plugins(

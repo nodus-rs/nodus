@@ -499,6 +499,7 @@ fn execute_safe_repairs(
         &inspection.owned_paths,
         &inspection.desired_paths,
         &inspection.planned_files,
+        Vec::new(),
         inspection.warnings.clone(),
         inspection.sync_summary.clone(),
         SyncMode::Normal,

@@ -17,27 +17,38 @@ pub struct InstallPaths {
     pub config_root: PathBuf,
     pub runtime_root: PathBuf,
     pub adapter_detection_root: PathBuf,
+    pub codex_user_config: Option<PathBuf>,
 }
 
 impl InstallPaths {
     pub fn project(root: &Path) -> Self {
         let root = root.to_path_buf();
+        #[cfg(test)]
+        let codex_user_config = None;
+        #[cfg(not(test))]
+        let codex_user_config = resolve_codex_user_config_path();
         Self {
             scope: InstallScope::Project,
             config_root: root.clone(),
             runtime_root: root.clone(),
             adapter_detection_root: root,
+            codex_user_config,
         }
     }
 
     pub fn global(store_root: &Path) -> Result<Self> {
         let home = resolve_home_dir()?;
+        #[cfg(test)]
+        let codex_user_config = None;
+        #[cfg(not(test))]
+        let codex_user_config = resolve_codex_user_config_path();
         Ok(Self::new(
             InstallScope::Global,
             store_root.join("global"),
             home.clone(),
             home,
-        ))
+        )
+        .with_codex_user_config(codex_user_config))
     }
 
     pub fn new(
@@ -51,12 +62,29 @@ impl InstallPaths {
             config_root,
             runtime_root,
             adapter_detection_root,
+            codex_user_config: None,
         }
+    }
+
+    pub fn with_codex_user_config(mut self, path: Option<PathBuf>) -> Self {
+        self.codex_user_config = path;
+        self
     }
 
     pub const fn is_global(&self) -> bool {
         matches!(self.scope, InstallScope::Global)
     }
+}
+
+#[cfg(not(test))]
+fn resolve_codex_user_config_path() -> Option<PathBuf> {
+    if let Some(home) = env::var_os("CODEX_HOME") {
+        return Some(PathBuf::from(home).join("config.toml"));
+    }
+
+    resolve_home_dir()
+        .ok()
+        .map(|home| home.join(".codex").join("config.toml"))
 }
 
 fn resolve_home_dir() -> Result<PathBuf> {
@@ -92,6 +120,7 @@ mod tests {
         assert_eq!(paths.config_root, root);
         assert_eq!(paths.runtime_root, root);
         assert_eq!(paths.adapter_detection_root, root);
+        assert_eq!(paths.codex_user_config, None);
     }
 
     #[test]
@@ -109,5 +138,6 @@ mod tests {
         assert_eq!(paths.config_root, PathBuf::from("/tmp/nodus-store/global"));
         assert_eq!(paths.runtime_root, home);
         assert_eq!(paths.adapter_detection_root, PathBuf::from("/tmp/home"));
+        assert_eq!(paths.codex_user_config, None);
     }
 }

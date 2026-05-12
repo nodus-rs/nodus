@@ -18,7 +18,9 @@ use self::support::{
 };
 #[cfg(test)]
 use self::support::{prune_empty_parent_dirs, write_managed_files};
-use crate::adapters::{Adapter, Adapters, ArtifactKind, ManagedFile, build_output_plan};
+use crate::adapters::{
+    Adapter, Adapters, ArtifactKind, ManagedFile, build_output_plan, codex_user_plugin_config_file,
+};
 use crate::execution::ExecutionMode;
 use crate::install_paths::{InstallPaths, InstallScope};
 use crate::lockfile::{LOCKFILE_NAME, LockedPackage, LockedSource, Lockfile};
@@ -199,6 +201,7 @@ struct SyncExecutionPlan {
     manifest_write: Option<PlannedFileWrite>,
     removals: Vec<PathBuf>,
     managed_writes: Vec<ManagedFile>,
+    external_writes: Vec<ManagedFile>,
     lockfile_write: Option<PlannedFileWrite>,
     warnings: Vec<String>,
     summary: SyncSummary,
@@ -715,6 +718,17 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
             existing_lockfile.as_ref(),
             true,
         )?;
+        let mut external_files = Vec::new();
+        if selected_adapters.contains(Adapter::Codex)
+            && let Some(path) = &install_paths.codex_user_config
+            && let Some(file) = codex_user_plugin_config_file(
+                path,
+                &install_paths.runtime_root,
+                &package_snapshots,
+            )?
+        {
+            external_files.push(file);
+        }
         let mut planned_files = output_plan.files.clone();
         let mut desired_paths =
             resolution.managed_paths(&install_paths.runtime_root, selected_adapters)?;
@@ -865,6 +879,7 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
             &owned_paths,
             &desired_paths,
             &planned_files,
+            external_files,
             resolution
                 .warnings
                 .iter()
