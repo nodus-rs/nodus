@@ -14,6 +14,7 @@ use super::{
     ManagedHookSpec, PreferredSurface, artifact_supported, hook_supported_by_adapter,
     managed_runtime_skill_id, preferred_surface,
 };
+use super::profile::runtime_root_name;
 use crate::lockfile::{Lockfile, managed_mcp_server_name};
 use crate::manifest::{DependencyComponent, HookSpec, McpServerConfig};
 use crate::paths::{display_path, strip_path_prefix};
@@ -1179,6 +1180,9 @@ fn register_native_package_plugin_root(
         {
             managed_files.insert(display_relative(project_root, &runtime_root.join("rules")));
         }
+        if package_has_mcp_servers(package) {
+            managed_files.insert(display_relative(project_root, &project_root.join(".mcp.json")));
+        }
     } else {
         managed_files.insert(display_relative(project_root, plugin_root));
     }
@@ -1314,11 +1318,15 @@ fn claude_native_package_plugin_json(
     package: &ResolvedPackage,
 ) -> Result<Vec<u8>> {
     let mut root = native_plugin_metadata_base(package);
+    let prefix = native_package_plugin_artifact_prefix(Adapter::Claude, package);
 
     if package.selects_component(DependencyComponent::Skills)
         && !package.manifest.discovered.skills.is_empty()
     {
-        root.insert("skills".into(), JsonValue::String("./skills/".to_string()));
+        root.insert(
+            "skills".into(),
+            JsonValue::String(format!("{prefix}skills/")),
+        );
     }
 
     if package.selects_component(DependencyComponent::Agents) {
@@ -1329,7 +1337,7 @@ fn claude_native_package_plugin_json(
             .into_iter()
             .map(|agent| {
                 JsonValue::String(format!(
-                    "./agents/{}",
+                    "{prefix}agents/{}",
                     super::managed_file_name(names, package, ArtifactKind::Agent, &agent.id, "md")
                 ))
             })
@@ -1351,7 +1359,7 @@ fn claude_native_package_plugin_json(
                     JsonValue::Object(JsonMap::from_iter([(
                         "source".to_string(),
                         JsonValue::String(format!(
-                            "./commands/{}",
+                            "{prefix}commands/{}",
                             super::managed_file_name(
                                 names,
                                 package,
@@ -1381,12 +1389,16 @@ fn claude_native_package_plugin_json(
 
 fn codex_native_package_plugin_json(package: &ResolvedPackage) -> Result<Vec<u8>> {
     let mut root = native_plugin_metadata_base(package);
+    let prefix = native_package_plugin_artifact_prefix(Adapter::Codex, package);
     if package.selects_component(DependencyComponent::Skills)
         && (!package.manifest.discovered.skills.is_empty()
             || (package.selects_component(DependencyComponent::Commands)
                 && !package.manifest.discovered.commands.is_empty()))
     {
-        root.insert("skills".into(), JsonValue::String("./skills/".to_string()));
+        root.insert(
+            "skills".into(),
+            JsonValue::String(format!("{prefix}skills/")),
+        );
     }
     if package_has_mcp_servers(package) {
         root.insert(
@@ -1395,6 +1407,14 @@ fn codex_native_package_plugin_json(package: &ResolvedPackage) -> Result<Vec<u8>
         );
     }
     json_bytes(root)
+}
+
+fn native_package_plugin_artifact_prefix(adapter: Adapter, package: &ResolvedPackage) -> String {
+    if matches!(package.source, PackageSource::Root) {
+        format!("./{}/", runtime_root_name(adapter))
+    } else {
+        "./".to_string()
+    }
 }
 
 fn native_package_mcp_json(package: &ResolvedPackage) -> Result<Vec<u8>> {
@@ -1624,7 +1644,7 @@ fn mcp_servers_are_emitted_by_native_plugin(
 ) -> bool {
     selected_adapters.contains(adapter)
         && preferred_surface(adapter) == PreferredSurface::PackagePluginWorkspaceMarketplace
-        && !matches!(package.source, PackageSource::Root)
+        && package.emits_runtime_outputs()
         && native_package_plugin_has_content(adapter, package)
         && package_has_mcp_servers(package)
 }

@@ -3573,3 +3573,120 @@ enabled = false
     );
     assert_eq!(args, vec!["mcp", "serve"]);
 }
+
+#[test]
+fn sync_does_not_double_emit_mcp_json_for_published_root() {
+    let temp = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    write_file(
+        &temp.path().join("nodus.toml"),
+        r#"
+publish_root = true
+
+[mcp_servers.nodus]
+command = "nodus"
+args = ["mcp", "serve"]
+"#,
+    );
+
+    let sync_command = || Command::Sync {
+        locked: false,
+        frozen: false,
+        allow_high_sensitivity: false,
+        strict: false,
+        force: false,
+        adapter: vec![Adapter::Claude],
+        sync_on_launch: false,
+        no_sync_on_launch: false,
+        dry_run: false,
+    };
+
+    run_command_in_dir(
+        sync_command(),
+        temp.path(),
+        cache.path(),
+        &Reporter::silent(),
+    )
+    .unwrap();
+
+    let mcp_path = temp.path().join(".mcp.json");
+    assert!(mcp_path.exists(), ".mcp.json should exist after sync");
+    let json: Value = serde_json::from_str(&fs::read_to_string(&mcp_path).unwrap()).unwrap();
+    let servers = json["mcpServers"]
+        .as_object()
+        .expect("mcpServers object should be present");
+    assert!(
+        servers.contains_key("nodus"),
+        "root-declared `nodus` MCP server should appear unprefixed: {servers:?}"
+    );
+    assert!(
+        !servers.contains_key("root__nodus"),
+        "root MCP server should not be re-emitted with the managed prefix: {servers:?}"
+    );
+
+    // Re-sync should remain idempotent and not raise the "multiple packages" merge conflict.
+    run_command_in_dir(
+        sync_command(),
+        temp.path(),
+        cache.path(),
+        &Reporter::silent(),
+    )
+    .expect("re-sync should be idempotent");
+}
+
+#[test]
+fn sync_emits_published_root_claude_plugin_with_runtime_paths() {
+    let temp = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    write_file(
+        &temp.path().join("nodus.toml"),
+        r#"
+publish_root = true
+"#,
+    );
+    write_skill(&temp.path().join("skills/review"), "Review");
+    write_file(
+        &temp.path().join("commands/launch.md"),
+        "# launch\nDo the thing.\n",
+    );
+
+    run_command_in_dir(
+        Command::Sync {
+            locked: false,
+            frozen: false,
+            allow_high_sensitivity: false,
+            strict: false,
+            force: false,
+            adapter: vec![Adapter::Claude],
+            sync_on_launch: false,
+            no_sync_on_launch: false,
+            dry_run: false,
+        },
+        temp.path(),
+        cache.path(),
+        &Reporter::silent(),
+    )
+    .unwrap();
+
+    let plugin_json_path = temp.path().join(".claude-plugin/plugin.json");
+    let plugin_json: Value =
+        serde_json::from_str(&fs::read_to_string(&plugin_json_path).unwrap()).unwrap();
+    assert_eq!(
+        plugin_json["skills"].as_str(),
+        Some("./.claude/skills/"),
+        "published root skill path should point under .claude/"
+    );
+    let command_source = plugin_json["commands"]["launch"]["source"]
+        .as_str()
+        .expect("commands.launch.source should be present");
+    assert!(
+        command_source.starts_with("./.claude/commands/"),
+        "published root command source should resolve under .claude/, got {command_source}"
+    );
+    let resolved_command_path = temp.path().join(command_source.trim_start_matches("./"));
+    assert!(
+        resolved_command_path.exists(),
+        "plugin.json command path should resolve to an existing file: {}",
+        resolved_command_path.display()
+    );
+}
