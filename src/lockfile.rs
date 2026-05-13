@@ -20,8 +20,6 @@ pub struct Lockfile {
     pub packages: Vec<LockedPackage>,
     #[serde(default)]
     pub managed_files: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub managed_outputs: Vec<LockedManagedOutput>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,51 +63,6 @@ pub struct LockedSource {
     pub rev: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LockedManagedOutput {
-    pub path: String,
-    pub adapter: LockedManagedOutputAdapter,
-    pub kind: LockedManagedOutputKind,
-    pub digest: String,
-    #[serde(default)]
-    pub origins: Vec<LockedManagedOutputOrigin>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum LockedManagedOutputAdapter {
-    Agents,
-    Claude,
-    Codex,
-    Copilot,
-    Cursor,
-    OpenCode,
-    Project,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LockedManagedOutputKind {
-    Skill,
-    Agent,
-    Rule,
-    Command,
-    Hook,
-    McpConfig,
-    ManagedExport,
-    RuntimeGitignore,
-    WorkspaceMarketplace,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LockedManagedOutputOrigin {
-    pub package: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub artifact: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<String>,
-}
-
 impl Lockfile {
     pub fn new(mut packages: Vec<LockedPackage>, mut managed_files: Vec<String>) -> Self {
         packages.sort_by(|left, right| {
@@ -129,7 +82,6 @@ impl Lockfile {
             version: LOCKFILE_VERSION,
             packages,
             managed_files,
-            managed_outputs: Vec::new(),
         }
     }
 
@@ -685,49 +637,6 @@ mod tests {
     }
 
     #[test]
-    fn lockfile_without_managed_outputs_defaults_to_empty() {
-        let decoded: Lockfile = toml::from_str(&format!(
-            r#"
-version = {LOCKFILE_VERSION}
-packages = []
-managed_files = []
-"#
-        ))
-        .unwrap();
-
-        assert!(decoded.managed_outputs.is_empty());
-    }
-
-    #[test]
-    fn round_trips_managed_outputs_as_toml() {
-        let lockfile = Lockfile {
-            version: LOCKFILE_VERSION,
-            packages: Vec::new(),
-            managed_files: vec![".mcp.json".into()],
-            managed_outputs: vec![LockedManagedOutput {
-                path: ".mcp.json".into(),
-                adapter: LockedManagedOutputAdapter::Project,
-                kind: LockedManagedOutputKind::McpConfig,
-                digest: "blake3:abc123".into(),
-                origins: vec![LockedManagedOutputOrigin {
-                    package: "firebase_tools".into(),
-                    artifact: Some("firebase".into()),
-                    source: Some("mcp_servers.firebase".into()),
-                }],
-            }],
-        };
-
-        let encoded = toml::to_string_pretty(&lockfile).unwrap();
-        assert!(encoded.contains("[[managed_outputs]]"));
-        assert!(encoded.contains("adapter = \"project\""));
-        assert!(encoded.contains("kind = \"mcp_config\""));
-        assert!(encoded.contains("[[managed_outputs.origins]]"));
-
-        let decoded: Lockfile = toml::from_str(&encoded).unwrap();
-        assert_eq!(decoded, lockfile);
-    }
-
-    #[test]
     fn rejects_unsupported_lockfile_versions() {
         let temp = TempDir::new().unwrap();
         let path = temp.path().join(LOCKFILE_NAME);
@@ -796,7 +705,6 @@ managed_files = []
                 ".claude/agents/security.md".into(),
                 ".opencode/commands/build.md".into(),
             ],
-            managed_outputs: Vec::new(),
         };
 
         let managed_paths = lockfile
@@ -1052,7 +960,6 @@ managed_files = []
                 capabilities: vec![],
             }],
             managed_files: vec![".github/agents/security.agent.md".into()],
-            managed_outputs: Vec::new(),
         };
 
         let managed_paths = lockfile
@@ -1094,7 +1001,6 @@ managed_files = []
                 capabilities: vec![],
             }],
             managed_files: vec![".mcp.json".into()],
-            managed_outputs: Vec::new(),
         };
 
         assert_eq!(

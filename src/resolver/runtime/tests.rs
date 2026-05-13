@@ -368,7 +368,6 @@ fn simulate_legacy_direct_claude_codex_skill_outputs(project_root: &Path) {
         ".claude/skills/review".into(),
         ".codex/skills/review".into(),
     ];
-    lockfile.managed_outputs.clear();
     lockfile.write(&project_root.join(LOCKFILE_NAME)).unwrap();
 }
 
@@ -6140,7 +6139,6 @@ shared = { path = "vendor/shared" }
         version: 8,
         packages: current_lockfile.packages,
         managed_files: current_lockfile.managed_files,
-        managed_outputs: current_lockfile.managed_outputs,
     }
     .write(&temp.path().join(LOCKFILE_NAME))
     .unwrap();

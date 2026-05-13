@@ -34,6 +34,25 @@ but are not a replacement for command hooks that need to run arbitrary logic.
 Adapters without supported session-start context injection skip activation and
 emit a sync warning.
 
+## Codex user-level config
+
+Codex can auto-discover the workspace marketplace through
+`~/.codex/config.toml` (or `$CODEX_HOME/config.toml`). Nodus knows how to
+merge marketplace and plugin entries into that file, but the write is
+**opt-in** because Nodus does not yet track which entries it authored, so
+package removal can leave stale entries behind.
+
+Enable per command with:
+
+```bash
+NODUS_ENABLE_CODEX_USER_CONFIG=1 nodus sync
+```
+
+Accepted values are `1` and `true` (case-insensitive). Any other value, or
+the variable being unset, leaves `~/.codex/config.toml` untouched. Full
+provenance and pruning for the user-level write is tracked in
+`docs/specs/2026-05-13-pre-0.15-followups.md` and lands in 0.16.0.
+
 ## Event catalog
 
 These are the eight events the nodus manifest recognizes. The value on the

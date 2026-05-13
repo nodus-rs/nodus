@@ -765,7 +765,7 @@ fn native_marketplace_plugin_entry(
         return None;
     }
 
-    let plugin_root = native_package_plugin_root(project_root, adapter, package);
+    let plugin_root = super::native_package_plugin_root(project_root, adapter, package);
     let source_path = super::native_marketplace_plugin_source_path(project_root, &plugin_root);
     let mut entry = JsonMap::from_iter([(
         "name".to_string(),
@@ -1073,7 +1073,7 @@ fn emit_native_package_plugins(
         && preferred_surface(Adapter::Claude) == PreferredSurface::PackagePluginWorkspaceMarketplace
         && native_package_plugin_has_content(Adapter::Claude, package)
     {
-        let plugin_root = native_package_plugin_root(project_root, Adapter::Claude, package);
+        let plugin_root = super::native_package_plugin_root(project_root, Adapter::Claude, package);
         merge_files(
             &mut plan.files,
             claude_native_package_plugin_files(&plugin_root, package, snapshot_root)?,
@@ -1091,7 +1091,7 @@ fn emit_native_package_plugins(
         && preferred_surface(Adapter::Codex) == PreferredSurface::PackagePluginWorkspaceMarketplace
         && native_package_plugin_has_content(Adapter::Codex, package)
     {
-        let plugin_root = native_package_plugin_root(project_root, Adapter::Codex, package);
+        let plugin_root = super::native_package_plugin_root(project_root, Adapter::Codex, package);
         merge_files(
             &mut plan.files,
             codex_native_package_plugin_files(&plugin_root, package, snapshot_root)?,
@@ -1123,28 +1123,6 @@ fn native_package_plugin_has_content(adapter: Adapter, package: &ResolvedPackage
             && artifact_supported(adapter, ArtifactKind::Rule)
             && !manifest.discovered.rules.is_empty())
         || package_has_mcp_servers(package)
-}
-
-fn native_package_plugin_root(
-    project_root: &Path,
-    adapter: Adapter,
-    package: &ResolvedPackage,
-) -> PathBuf {
-    if matches!(package.source, PackageSource::Root) {
-        return project_root.to_path_buf();
-    }
-
-    project_root
-        .join(".nodus")
-        .join("packages")
-        .join(&package.alias)
-        .join(match adapter {
-            Adapter::Claude => "claude-plugin",
-            Adapter::Codex => "codex-plugin",
-            Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => {
-                unreachable!("only native plugin adapters have package plugin roots")
-            }
-        })
 }
 
 fn register_native_package_plugin_root(

@@ -113,6 +113,20 @@ If the package publishes `mcp_servers`, Nodus now carries that MCP config into t
 runtime outputs as well. Today that includes the legacy project `.mcp.json`, Codex
 `.codex/config.toml`, and OpenCode `opencode.json`.
 
+### Codex user-level config (opt-in)
+
+Nodus can also write to the user-level Codex config at `~/.codex/config.toml`
+(or `$CODEX_HOME/config.toml`) so Codex auto-discovers the workspace
+marketplace. This write is **off by default** because Nodus does not yet
+prune entries on package removal; opt in with:
+
+```bash
+NODUS_ENABLE_CODEX_USER_CONFIG=1 nodus sync
+```
+
+Full provenance and cleanup for user-level Codex config is a 0.16.0
+milestone — see `docs/specs/2026-05-13-pre-0.15-followups.md`.
+
 Packages can also declare activation context that is injected at session start
 for adapters with native support:
 

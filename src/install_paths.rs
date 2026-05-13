@@ -78,6 +78,10 @@ impl InstallPaths {
 
 #[cfg(not(test))]
 fn resolve_codex_user_config_path() -> Option<PathBuf> {
+    if !codex_user_config_enabled(env::var_os("NODUS_ENABLE_CODEX_USER_CONFIG").as_deref()) {
+        return None;
+    }
+
     if let Some(home) = env::var_os("CODEX_HOME") {
         return Some(PathBuf::from(home).join("config.toml"));
     }
@@ -85,6 +89,10 @@ fn resolve_codex_user_config_path() -> Option<PathBuf> {
     resolve_home_dir()
         .ok()
         .map(|home| home.join(".codex").join("config.toml"))
+}
+
+fn codex_user_config_enabled(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|raw| raw == "1" || raw.eq_ignore_ascii_case("true"))
 }
 
 fn resolve_home_dir() -> Result<PathBuf> {
@@ -110,6 +118,7 @@ fn resolve_home_dir() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsStr;
 
     #[test]
     fn project_scope_reuses_the_same_root_for_all_paths() {
@@ -121,6 +130,27 @@ mod tests {
         assert_eq!(paths.runtime_root, root);
         assert_eq!(paths.adapter_detection_root, root);
         assert_eq!(paths.codex_user_config, None);
+    }
+
+    #[test]
+    fn codex_user_config_is_disabled_by_default() {
+        assert!(!codex_user_config_enabled(None));
+    }
+
+    #[test]
+    fn codex_user_config_enabled_for_truthy_values() {
+        assert!(codex_user_config_enabled(Some(OsStr::new("1"))));
+        assert!(codex_user_config_enabled(Some(OsStr::new("true"))));
+        assert!(codex_user_config_enabled(Some(OsStr::new("TRUE"))));
+        assert!(codex_user_config_enabled(Some(OsStr::new("True"))));
+    }
+
+    #[test]
+    fn codex_user_config_disabled_for_other_values() {
+        assert!(!codex_user_config_enabled(Some(OsStr::new("0"))));
+        assert!(!codex_user_config_enabled(Some(OsStr::new("false"))));
+        assert!(!codex_user_config_enabled(Some(OsStr::new(""))));
+        assert!(!codex_user_config_enabled(Some(OsStr::new("yes"))));
     }
 
     #[test]
