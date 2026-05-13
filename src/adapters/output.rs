@@ -346,22 +346,19 @@ pub(crate) fn build_output_plan_with_options(
             }
 
             if selected_adapters.contains(Adapter::Codex)
-                && adapter_uses_direct_runtime_outputs(Adapter::Codex)
                 && artifact_supported(Adapter::Codex, ArtifactKind::Agent)
             {
                 for agent in package.manifest.discovered.selected_agents(Adapter::Codex) {
-                    merge_file(
-                        &mut plan.files,
-                        super::codex::agent_file(
-                            &managed_names,
-                            project_root,
-                            package,
-                            snapshot_root,
-                            agent,
-                        )?,
+                    let agent_file = super::codex::agent_file(
+                        &managed_names,
+                        project_root,
+                        package,
+                        snapshot_root,
+                        agent,
                     )?;
-                    plan.managed_files
-                        .insert(format!(".codex/agents/{}.toml", agent.id));
+                    let managed_entry = display_relative(project_root, &agent_file.path);
+                    merge_file(&mut plan.files, agent_file)?;
+                    plan.managed_files.insert(managed_entry);
                 }
             }
 
@@ -1269,14 +1266,8 @@ fn codex_native_package_plugin_files(
         }
     }
 
-    if package.selects_component(DependencyComponent::Agents) {
-        for agent in package.manifest.discovered.selected_agents(Adapter::Codex) {
-            merge_file(
-                &mut files,
-                super::codex::agent_file(&names, plugin_root, package, snapshot_root, agent)?,
-            )?;
-        }
-    }
+    // Codex's plugin format does not declare agents; they are emitted directly
+    // under `.codex/agents/` by `build_output_plan` instead.
 
     if package.selects_component(DependencyComponent::Commands) {
         for command in &package.manifest.discovered.commands {

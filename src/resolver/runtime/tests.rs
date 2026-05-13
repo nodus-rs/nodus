@@ -1791,7 +1791,11 @@ args = ["figma-developer-mcp"]
 
     let plugin_root = temp.path().join(".nodus/packages/shared/codex-plugin");
     assert!(plugin_root.join("skills/review/SKILL.md").exists());
-    assert!(plugin_root.join("agents/security.toml").exists());
+    // Codex plugins do not declare agents in plugin.json, so agents are emitted
+    // under the project-level `.codex/agents/` runtime root rather than inside
+    // the plugin folder.
+    assert!(!plugin_root.join("agents").exists());
+    assert!(temp.path().join(".codex/agents/security.toml").exists());
     assert!(plugin_root.join("skills/__cmd_build/SKILL.md").exists());
 
     let plugin: serde_json::Value = serde_json::from_str(
@@ -8281,8 +8285,10 @@ shared = { path = "vendor/shared", components = ["agents"] }
     let summary =
         sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex])
             .unwrap();
-    // The package selects only agents, so MCP config is not emitted.
-    assert_eq!(summary.managed_file_count, 3);
+    // The package selects only agents, so MCP config is not emitted. Codex
+    // agents live under the project-level `.codex/agents/` runtime root, which
+    // adds one tracked managed entry on top of the marketplace + plugin pair.
+    assert_eq!(summary.managed_file_count, 4);
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     let shared = lockfile
@@ -8294,7 +8300,8 @@ shared = { path = "vendor/shared", components = ["agents"] }
         shared.selected_components,
         Some(vec![DependencyComponent::Agents])
     );
-    assert_eq!(lockfile.managed_files.len(), 3);
+    assert_eq!(lockfile.managed_files.len(), 4);
+    assert!(lockfile.managed_files.contains(&String::from(".codex/agents")));
     assert!(!lockfile.managed_files.contains(&String::from(".mcp.json")));
     assert!(runtime_file_exists(
         temp.path(),

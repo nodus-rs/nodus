@@ -3690,3 +3690,68 @@ publish_root = true
         resolved_command_path.display()
     );
 }
+
+#[test]
+fn sync_emits_codex_agents_under_project_runtime_root() {
+    // Codex's plugin format does not declare agents, so they must be written
+    // under `.codex/agents/` (where Codex actually loads them) rather than
+    // inside the plugin folder, for both root and dependency packages.
+    let temp = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    write_file(
+        &temp.path().join("nodus.toml"),
+        r#"
+publish_root = true
+
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+    );
+    write_file(
+        &temp.path().join("agents/root-agent.md"),
+        "# Root agent\n",
+    );
+    write_file(
+        &temp.path().join("vendor/shared/nodus.toml"),
+        "name = \"shared\"\n",
+    );
+    write_file(
+        &temp.path().join("vendor/shared/agents/dep-agent.md"),
+        "# Dep agent\n",
+    );
+
+    run_command_in_dir(
+        Command::Sync {
+            locked: false,
+            frozen: false,
+            allow_high_sensitivity: false,
+            strict: false,
+            force: false,
+            adapter: vec![Adapter::Codex],
+            sync_on_launch: false,
+            no_sync_on_launch: false,
+            dry_run: false,
+        },
+        temp.path(),
+        cache.path(),
+        &Reporter::silent(),
+    )
+    .unwrap();
+
+    assert!(
+        temp.path().join(".codex/agents/root-agent.toml").exists(),
+        "root-published Codex agent should land in .codex/agents/"
+    );
+    assert!(
+        temp.path().join(".codex/agents/dep-agent.toml").exists(),
+        "dependency Codex agent should also land in .codex/agents/"
+    );
+    let dep_plugin_agents = temp
+        .path()
+        .join(".nodus/packages/shared/codex-plugin/agents");
+    assert!(
+        !dep_plugin_agents.exists(),
+        "Codex agents should not be written inside the plugin folder: {}",
+        dep_plugin_agents.display()
+    );
+}

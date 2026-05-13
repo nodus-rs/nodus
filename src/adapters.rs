@@ -654,15 +654,25 @@ pub fn managed_artifact_path(
     package: &ResolvedPackage,
     artifact_id: &str,
 ) -> Option<PathBuf> {
+    // Codex's native plugin format does not declare agents in plugin.json, so
+    // agents must be emitted under the project's `.codex/agents/` runtime root
+    // (and tracked with globally-unique names) regardless of Codex's preferred
+    // marketplace surface.
+    let codex_agent_override = matches!((adapter, kind), (Adapter::Codex, ArtifactKind::Agent));
     let local_names;
-    let names = if preferred_surface(adapter) == PreferredSurface::PackagePluginWorkspaceMarketplace
+    let names = if !codex_agent_override
+        && preferred_surface(adapter) == PreferredSurface::PackagePluginWorkspaceMarketplace
     {
         local_names = ManagedArtifactNames::from_resolved_packages([package]);
         &local_names
     } else {
         names
     };
-    let runtime_root = managed_runtime_root(project_root, adapter, package);
+    let runtime_root = if codex_agent_override {
+        runtime_root(project_root, adapter)
+    } else {
+        managed_runtime_root(project_root, adapter, package)
+    };
     match (adapter, kind) {
         (Adapter::Agents, ArtifactKind::Command) => {
             Some(runtime_root.join("commands").join(managed_file_name(

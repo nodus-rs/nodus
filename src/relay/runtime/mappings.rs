@@ -420,7 +420,14 @@ fn build_missing_mappings_for_adapter(
                     })
             })
             .collect::<std::collections::BTreeSet<_>>();
-        let agents_root = runtime_root.join("agents");
+        // Codex emits agents under the project-level runtime root rather than
+        // inside the plugin folder, because Codex's plugin format does not
+        // declare agents.
+        let agents_root = if adapter == Adapter::Codex {
+            crate::adapters::runtime_root(project_root, adapter).join("agents")
+        } else {
+            runtime_root.join("agents")
+        };
         if agents_root.is_dir() {
             for entry in fs::read_dir(&agents_root)
                 .with_context(|| format!("failed to read {}", agents_root.display()))?
