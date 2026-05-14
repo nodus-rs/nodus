@@ -8301,7 +8301,11 @@ shared = { path = "vendor/shared", components = ["agents"] }
         Some(vec![DependencyComponent::Agents])
     );
     assert_eq!(lockfile.managed_files.len(), 4);
-    assert!(lockfile.managed_files.contains(&String::from(".codex/agents")));
+    assert!(
+        lockfile
+            .managed_files
+            .contains(&String::from(".codex/agents"))
+    );
     assert!(!lockfile.managed_files.contains(&String::from(".mcp.json")));
     assert!(runtime_file_exists(
         temp.path(),

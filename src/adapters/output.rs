@@ -9,12 +9,12 @@ use serde_json::{Map as JsonMap, Value as JsonValue};
 use toml::Value as TomlValue;
 use toml_edit::{DocumentMut, Item as EditableTomlItem, Table as EditableTomlTable};
 
+use super::profile::runtime_root_name;
 use super::{
     Adapter, Adapters, ArtifactKind, ManagedActivationHook, ManagedArtifactNames, ManagedFile,
     ManagedHookSpec, PreferredSurface, artifact_supported, hook_supported_by_adapter,
     managed_runtime_skill_id, preferred_surface,
 };
-use super::profile::runtime_root_name;
 use crate::lockfile::{Lockfile, managed_mcp_server_name};
 use crate::manifest::{DependencyComponent, HookSpec, McpServerConfig};
 use crate::paths::{display_path, strip_path_prefix};
@@ -1178,7 +1178,10 @@ fn register_native_package_plugin_root(
             managed_files.insert(display_relative(project_root, &runtime_root.join("rules")));
         }
         if package_has_mcp_servers(package) {
-            managed_files.insert(display_relative(project_root, &project_root.join(".mcp.json")));
+            managed_files.insert(display_relative(
+                project_root,
+                &project_root.join(".mcp.json"),
+            ));
         }
     } else {
         managed_files.insert(display_relative(project_root, plugin_root));
