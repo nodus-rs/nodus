@@ -3707,10 +3707,7 @@ publish_root = true
 shared = { path = "vendor/shared" }
 "#,
     );
-    write_file(
-        &temp.path().join("agents/root-agent.md"),
-        "# Root agent\n",
-    );
+    write_file(&temp.path().join("agents/root-agent.md"), "# Root agent\n");
     write_file(
         &temp.path().join("vendor/shared/nodus.toml"),
         "name = \"shared\"\n",
