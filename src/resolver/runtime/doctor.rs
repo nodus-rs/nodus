@@ -19,7 +19,7 @@ use super::{
 use crate::adapters::{Adapters, ManagedFile, OutputPlanOptions, build_output_plan_with_options};
 use crate::execution::ExecutionMode;
 use crate::install_paths::InstallPaths;
-use crate::lockfile::{LOCKFILE_NAME, Lockfile};
+use crate::lockfile::{LOCKFILE_NAME, Lockfile, OwnedSet};
 use crate::manifest::{LoadedManifest, load_root_from_dir};
 use crate::paths::display_path;
 use crate::report::Reporter;
@@ -98,7 +98,7 @@ struct DoctorInspection {
     lockfile_path: PathBuf,
     expected_lockfile: Lockfile,
     runtime_root: PathBuf,
-    owned_paths: HashSet<PathBuf>,
+    owned_paths: OwnedSet,
     desired_paths: HashSet<PathBuf>,
     planned_files: Vec<ManagedFile>,
     sync_summary: super::SyncSummary,
@@ -115,7 +115,7 @@ struct LockfileInspection<'a> {
     codex_native_plugins_auto_enabled: bool,
     lockfile_path: &'a Path,
     existing_lockfile: Option<&'a Lockfile>,
-    owned_paths: &'a HashSet<PathBuf>,
+    owned_paths: &'a OwnedSet,
     planned_files: &'a [ManagedFile],
     desired_paths: &'a HashSet<PathBuf>,
 }
@@ -257,11 +257,13 @@ fn inspect_doctor_state(
     planned_files.extend(workspace_marketplace_files);
     let managed_file_count = planned_files.len();
     if existing_lockfile.is_none() {
-        owned_paths.extend(recover_runtime_owned_paths_from_disk(
-            cwd,
-            &desired_paths,
-            &planned_files,
-        ));
+        owned_paths
+            .exact
+            .extend(recover_runtime_owned_paths_from_disk(
+                cwd,
+                &desired_paths,
+                &planned_files,
+            ));
     }
     let mut warnings = resolution
         .warnings
@@ -560,7 +562,7 @@ fn doctor_status(
 
 fn unmanaged_missing_lockfile_merge_collisions(
     runtime_root: &Path,
-    owned_paths: &HashSet<PathBuf>,
+    owned_paths: &OwnedSet,
     planned_files: &[ManagedFile],
 ) -> Vec<PathBuf> {
     let managed_merge_paths = managed_merge_paths(runtime_root);
@@ -578,7 +580,7 @@ fn unmanaged_missing_lockfile_merge_collisions(
 fn invalid_owned_output_path(
     error: &anyhow::Error,
     runtime_root: &Path,
-    owned_paths: &HashSet<PathBuf>,
+    owned_paths: &OwnedSet,
 ) -> Option<PathBuf> {
     [
         (

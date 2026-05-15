@@ -90,6 +90,71 @@ pub struct OwnedPrefix {
     pub prefix: String,
 }
 
+/// In-memory ownership view derived from a [`Lockfile`]. Combines exact paths,
+/// subtree roots, and filename-prefix rules so callers can answer "does Nodus
+/// own this path?" without re-parsing the lockfile each call.
+///
+/// Slice 1 stored ownership claims as raw lockfile fields; this slice exposes
+/// them through a single richer type that the sync/clean paths consult.
+#[derive(Debug, Default, Clone)]
+pub struct OwnedSet {
+    /// Concrete owned paths. Sourced from per-package `owned_files`, the v9
+    /// `legacy_managed_files` expansion, and the existing artifact-root
+    /// expansion in [`Lockfile::managed_paths`].
+    pub exact: HashSet<PathBuf>,
+    /// Subtree roots — Nodus owns the root and everything nested under it.
+    /// Sourced from per-package `owned_subtrees`.
+    pub subtrees: Vec<PathBuf>,
+    /// Filename-prefix rules — Nodus owns files in `dir` whose `file_name`
+    /// starts with `prefix`. Strict prefix match, no globs, no recursion.
+    pub prefixes: Vec<OwnedPrefixPath>,
+}
+
+/// Resolved (project-root-joined) form of [`OwnedPrefix`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedPrefixPath {
+    pub dir: PathBuf,
+    pub prefix: String,
+}
+
+impl OwnedSet {
+    /// True if `path` is owned by any of the exact paths, subtree roots, or
+    /// filename-prefix rules in this set.
+    ///
+    /// Exact-path matching also honors `starts_with` semantics so that a
+    /// directory entry in `exact` covers everything nested under it. This
+    /// matches the legacy [`Lockfile::managed_paths`] consumers, which today
+    /// receive directory roots (e.g. `.agents/skills/review`) and rely on
+    /// `path.starts_with(owned)` to claim child files. Slice 3's emission
+    /// rewrite will move those roots into [`OwnedSet::subtrees`] explicitly.
+    pub fn contains(&self, path: &Path) -> bool {
+        if self.exact.contains(path) {
+            return true;
+        }
+        for owned in &self.exact {
+            if path.starts_with(owned) {
+                return true;
+            }
+        }
+        for subtree in &self.subtrees {
+            if path == subtree.as_path() || path.starts_with(subtree) {
+                return true;
+            }
+        }
+        for rule in &self.prefixes {
+            if path.parent() == Some(rule.dir.as_path())
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(&rule.prefix))
+            {
+                return true;
+            }
+        }
+        false
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LockedSource {
     pub kind: String,
@@ -156,6 +221,136 @@ impl Lockfile {
 
     pub const fn uses_current_schema(&self) -> bool {
         self.version == LOCKFILE_VERSION
+    }
+
+    /// Build the strict (v10) ownership view: per-package `owned_files`,
+    /// `owned_subtrees`, `owned_prefixes`, plus the artifact-root expansion in
+    /// [`Lockfile::managed_paths`] (which itself draws on `legacy_managed_files`
+    /// today and is the bridge being torn out in Slice 3).
+    ///
+    /// Validates that:
+    /// - Empty filename prefixes are rejected (use `owned_subtrees`).
+    /// - Two packages cannot claim the same subtree root.
+    /// - Two packages cannot claim the same `(dir, prefix)` rule.
+    ///
+    /// Redundant claims (a `prefix` rule whose `dir` is inside an owned
+    /// `subtree`, or an `owned_files` entry inside an owned `subtree`) are
+    /// reported via `eprintln!` and otherwise ignored.
+    pub fn owned_set(&self, project_root: &Path) -> Result<OwnedSet> {
+        let mut set = OwnedSet {
+            exact: self.managed_paths(project_root)?,
+            subtrees: Vec::new(),
+            prefixes: Vec::new(),
+        };
+
+        // Track first claimant for each subtree/prefix rule so we can produce
+        // helpful conflict messages when a second package collides.
+        let mut subtree_owners: std::collections::HashMap<PathBuf, String> =
+            std::collections::HashMap::new();
+        let mut prefix_owners: std::collections::HashMap<(PathBuf, String), String> =
+            std::collections::HashMap::new();
+
+        for package in &self.packages {
+            for relative in &package.owned_files {
+                let validated = Self::validate_managed_relative(relative, project_root)?;
+                set.exact.insert(project_root.join(validated));
+            }
+            for relative in &package.owned_subtrees {
+                let validated = Self::validate_managed_relative(relative, project_root)?;
+                let subtree = project_root.join(validated);
+                if let Some(existing) = subtree_owners.get(&subtree) {
+                    if existing != &package.alias {
+                        bail!(
+                            "packages `{}` and `{}` both declare ownership of subtree `{}`",
+                            existing,
+                            package.alias,
+                            relative
+                        );
+                    }
+                } else {
+                    subtree_owners.insert(subtree.clone(), package.alias.clone());
+                    set.subtrees.push(subtree);
+                }
+            }
+            for rule in &package.owned_prefixes {
+                if rule.prefix.is_empty() {
+                    bail!(
+                        "package `{}` declares an empty filename prefix for `{}`; use owned_subtrees instead",
+                        package.alias,
+                        rule.dir
+                    );
+                }
+                let validated_dir = Self::validate_managed_relative(&rule.dir, project_root)?;
+                let dir = project_root.join(validated_dir);
+                let key = (dir.clone(), rule.prefix.clone());
+                if let Some(existing) = prefix_owners.get(&key) {
+                    if existing != &package.alias {
+                        bail!(
+                            "packages `{}` and `{}` both declare ownership of prefix `{}` in `{}`",
+                            existing,
+                            package.alias,
+                            rule.prefix,
+                            rule.dir
+                        );
+                    }
+                } else {
+                    prefix_owners.insert(key, package.alias.clone());
+                    set.prefixes.push(OwnedPrefixPath {
+                        dir,
+                        prefix: rule.prefix.clone(),
+                    });
+                }
+            }
+        }
+
+        // Stable ordering for downstream deletion / iteration.
+        set.subtrees.sort();
+        set.subtrees.dedup();
+        set.prefixes
+            .sort_by(|a, b| a.dir.cmp(&b.dir).then(a.prefix.cmp(&b.prefix)));
+        set.prefixes.dedup();
+
+        // Warn about redundant claims that the subtree rules already cover.
+        // Slice 5's review can route these through Reporter; today eprintln! is
+        // good enough so tests can capture the warning behavior loosely.
+        for rule in &set.prefixes {
+            if set
+                .subtrees
+                .iter()
+                .any(|subtree| rule.dir.starts_with(subtree))
+            {
+                eprintln!(
+                    "warning: filename-prefix rule `{}` in `{}` is redundant; covered by an owned subtree",
+                    rule.prefix,
+                    rule.dir.display()
+                );
+            }
+        }
+        for owned in &set.exact {
+            if set
+                .subtrees
+                .iter()
+                .any(|subtree| owned != subtree.as_path() && owned.starts_with(subtree))
+            {
+                eprintln!(
+                    "warning: owned file `{}` is redundant; covered by an owned subtree",
+                    owned.display()
+                );
+            }
+        }
+
+        Ok(set)
+    }
+
+    /// Like [`Lockfile::owned_set`] but additionally folds the legacy v9
+    /// expansion into `exact` for pre-current-schema lockfiles, mirroring the
+    /// existing [`Lockfile::managed_paths_for_sync`] posture.
+    pub fn owned_set_for_sync(&self, project_root: &Path) -> Result<OwnedSet> {
+        let mut set = self.owned_set(project_root)?;
+        if !self.uses_current_schema() {
+            set.exact.extend(self.managed_paths_for_sync(project_root)?);
+        }
+        Ok(set)
     }
 
     pub fn managed_paths_for_sync(&self, project_root: &Path) -> Result<HashSet<PathBuf>> {
@@ -1325,6 +1520,100 @@ managed_files = []
         assert!(
             encoded.contains("version = 10"),
             "v10 marker must be present; got:\n{encoded}"
+        );
+    }
+
+    #[test]
+    fn owned_set_collects_owned_files_from_all_packages() {
+        let mut alpha = minimal_package("alpha");
+        alpha.owned_files = vec![".claude/agents/security.md".into()];
+        let mut beta = minimal_package("beta");
+        beta.owned_files = vec![".codex/rules/default.md".into()];
+        let lockfile = Lockfile::new(vec![alpha, beta]);
+
+        let owned = lockfile.owned_set(Path::new("/tmp/project")).unwrap();
+
+        assert!(
+            owned
+                .exact
+                .contains(&PathBuf::from("/tmp/project/.claude/agents/security.md"))
+        );
+        assert!(
+            owned
+                .exact
+                .contains(&PathBuf::from("/tmp/project/.codex/rules/default.md"))
+        );
+    }
+
+    #[test]
+    fn owned_set_collects_subtrees_and_supports_starts_with_match() {
+        let mut pkg = minimal_package("foo");
+        pkg.owned_subtrees = vec![".nodus/packages/foo".into()];
+        let lockfile = Lockfile::new(vec![pkg]);
+
+        let owned = lockfile.owned_set(Path::new("/tmp/project")).unwrap();
+
+        assert!(owned.contains(Path::new("/tmp/project/.nodus/packages/foo/bar.rs")));
+        assert!(owned.contains(Path::new("/tmp/project/.nodus/packages/foo")));
+        assert!(!owned.contains(Path::new("/tmp/project/.nodus/packages/bar/x.rs")));
+    }
+
+    #[test]
+    fn owned_set_filename_prefix_match_is_direct_children_only() {
+        let mut pkg = minimal_package("hooks");
+        pkg.owned_prefixes = vec![OwnedPrefix {
+            dir: ".claude/hooks".into(),
+            prefix: "nodus-hook-".into(),
+        }];
+        let lockfile = Lockfile::new(vec![pkg]);
+
+        let owned = lockfile.owned_set(Path::new("/tmp/project")).unwrap();
+
+        assert!(owned.contains(Path::new("/tmp/project/.claude/hooks/nodus-hook-foo.sh")));
+        assert!(!owned.contains(Path::new("/tmp/project/.claude/hooks/user-thing.sh")));
+        assert!(!owned.contains(Path::new(
+            "/tmp/project/.claude/hooks/subdir/nodus-hook-foo.sh"
+        )));
+    }
+
+    #[test]
+    fn owned_set_rejects_empty_prefix() {
+        let mut pkg = minimal_package("bad");
+        pkg.owned_prefixes = vec![OwnedPrefix {
+            dir: ".x".into(),
+            prefix: String::new(),
+        }];
+        let lockfile = Lockfile::new(vec![pkg]);
+
+        let error = lockfile
+            .owned_set(Path::new("/tmp/project"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("empty filename prefix"),
+            "expected error about empty prefix, got: {error}"
+        );
+    }
+
+    #[test]
+    fn owned_set_rejects_overlapping_subtree_claims() {
+        let mut alpha = minimal_package("alpha");
+        alpha.owned_subtrees = vec![".shared/dir".into()];
+        let mut beta = minimal_package("beta");
+        beta.owned_subtrees = vec![".shared/dir".into()];
+        let lockfile = Lockfile::new(vec![alpha, beta]);
+
+        let error = lockfile
+            .owned_set(Path::new("/tmp/project"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("alpha") && error.contains("beta"),
+            "expected error to mention both aliases, got: {error}"
+        );
+        assert!(
+            error.contains(".shared/dir"),
+            "expected error to mention the conflicting subtree, got: {error}"
         );
     }
 

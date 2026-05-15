@@ -756,17 +756,21 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
         let mut owned_paths =
             load_owned_paths(&install_paths.runtime_root, existing_lockfile.as_ref())?;
         if existing_lockfile.is_none() {
-            owned_paths.extend(recover_runtime_owned_paths(
+            owned_paths.exact.extend(recover_runtime_owned_paths(
                 &install_paths.runtime_root,
                 &desired_paths,
             ));
         }
-        owned_paths.extend(recover_runtime_owned_paths_from_disk(
-            &install_paths.runtime_root,
-            &desired_paths,
-            &planned_files,
-        ));
-        owned_paths.extend(adopted_owned_paths.iter().cloned());
+        owned_paths
+            .exact
+            .extend(recover_runtime_owned_paths_from_disk(
+                &install_paths.runtime_root,
+                &desired_paths,
+                &planned_files,
+            ));
+        owned_paths
+            .exact
+            .extend(adopted_owned_paths.iter().cloned());
 
         if sync_mode.checks_lockfile() {
             let Some(existing) = existing_lockfile.as_ref() else {

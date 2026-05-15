@@ -14,7 +14,7 @@ use super::{
 };
 use crate::adapters::{Adapter, ManagedFile};
 use crate::execution::{ExecutionMode, PreviewChange};
-use crate::lockfile::Lockfile;
+use crate::lockfile::{Lockfile, OwnedSet};
 use crate::manifest::{LoadedManifest, load_dependency_from_dir};
 use crate::paths::{display_path, strip_path_prefix};
 use crate::report::Reporter;
@@ -28,7 +28,7 @@ pub(super) fn build_sync_execution_plan(
     lockfile_path: &Path,
     lockfile: &Lockfile,
     runtime_root: &Path,
-    owned_paths: &HashSet<PathBuf>,
+    owned_paths: &OwnedSet,
     desired_paths: &HashSet<PathBuf>,
     planned_files: &[ManagedFile],
     external_files: Vec<ManagedFile>,
@@ -37,7 +37,7 @@ pub(super) fn build_sync_execution_plan(
     sync_mode: SyncMode,
 ) -> Result<SyncExecutionPlan> {
     let manifest_write = planned_manifest_write(original_root, working_root)?;
-    let mut removals = planned_stale_paths(owned_paths, desired_paths);
+    let mut removals = planned_stale_paths(owned_paths, desired_paths)?;
     removals.extend(planned_paths_to_replace(
         planned_files,
         owned_paths,
@@ -174,21 +174,126 @@ fn planned_lockfile_write(path: &Path, lockfile: &Lockfile) -> Result<PlannedFil
 }
 
 fn planned_stale_paths(
-    owned_paths: &HashSet<PathBuf>,
+    owned_paths: &OwnedSet,
     desired_paths: &HashSet<PathBuf>,
-) -> Vec<PathBuf> {
-    let mut removals = owned_paths
+) -> Result<Vec<PathBuf>> {
+    let mut removals: HashSet<PathBuf> = owned_paths
+        .exact
         .difference(desired_paths)
         .filter(|path| fs::symlink_metadata(path).is_ok())
         .cloned()
-        .collect::<Vec<_>>();
+        .collect();
+
+    // For each owned subtree root, walk on-disk and queue every file that no
+    // longer corresponds to a desired path. Subtree roots that themselves no
+    // longer have any desired content are queued as well so the directory
+    // disappears at the end of the sweep.
+    for subtree in &owned_paths.subtrees {
+        if !subtree.exists() {
+            continue;
+        }
+        let entries = walk_subtree_files(subtree)?;
+        for entry in entries {
+            if !desired_paths.contains(&entry) {
+                removals.insert(entry);
+            }
+        }
+        // The subtree root itself is queued only when no desired path lives
+        // under it (otherwise removing the root would also remove desired
+        // children). When the root is queued, the executor's recursive remove
+        // takes the entire tree.
+        let root_still_wanted = desired_paths
+            .iter()
+            .any(|desired| desired == subtree.as_path() || desired.starts_with(subtree));
+        if !root_still_wanted {
+            removals.insert(subtree.clone());
+        }
+    }
+
+    // For each filename-prefix rule, list the directory and queue matching
+    // files not in desired_paths. Non-recursive by construction.
+    for rule in &owned_paths.prefixes {
+        if !rule.dir.exists() {
+            continue;
+        }
+        let read_dir = match fs::read_dir(&rule.dir) {
+            Ok(iter) => iter,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to read managed directory {}", rule.dir.display())
+                });
+            }
+        };
+        for entry in read_dir {
+            let entry = entry.with_context(|| {
+                format!("failed to inspect managed directory {}", rule.dir.display())
+            })?;
+            let file_type = entry.file_type().with_context(|| {
+                format!("failed to read metadata for {}", entry.path().display())
+            })?;
+            if !file_type.is_file() {
+                continue;
+            }
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if !name.starts_with(&rule.prefix) {
+                continue;
+            }
+            let path = entry.path();
+            if !desired_paths.contains(&path) {
+                removals.insert(path);
+            }
+        }
+    }
+
+    let mut removals: Vec<PathBuf> = removals.into_iter().collect();
     removals.sort();
-    removals
+    Ok(removals)
+}
+
+fn walk_subtree_files(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut found = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(current) = pending.pop() {
+        let metadata = match fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to inspect managed path {}", current.display())
+                });
+            }
+        };
+        if metadata.file_type().is_symlink() {
+            // Treat symlinks as opaque entries — record them so the removal
+            // pass clears the link without recursing through it.
+            found.push(current);
+            continue;
+        }
+        if metadata.is_file() {
+            found.push(current);
+            continue;
+        }
+        if metadata.is_dir() {
+            for entry in fs::read_dir(&current).with_context(|| {
+                format!("failed to read managed directory {}", current.display())
+            })? {
+                let entry = entry.with_context(|| {
+                    format!("failed to inspect managed directory {}", current.display())
+                })?;
+                pending.push(entry.path());
+            }
+        }
+    }
+    Ok(found)
 }
 
 fn planned_paths_to_replace(
     planned_files: &[ManagedFile],
-    owned_paths: &HashSet<PathBuf>,
+    owned_paths: &OwnedSet,
     desired_paths: &HashSet<PathBuf>,
     project_root: &Path,
 ) -> Result<Vec<PathBuf>> {
@@ -273,7 +378,7 @@ pub(super) fn enforce_capabilities(
 
 pub(super) fn find_unmanaged_collision(
     planned_files: &[ManagedFile],
-    owned_paths: &HashSet<PathBuf>,
+    owned_paths: &OwnedSet,
     project_root: &Path,
 ) -> Option<UnmanagedCollision> {
     for file in planned_files {
@@ -687,15 +792,18 @@ pub(super) fn remove_path_and_empty_parents(path: &Path, project_root: &Path) ->
 }
 
 pub(super) fn validate_state_consistency(
-    owned_paths: &HashSet<PathBuf>,
+    owned_paths: &OwnedSet,
     desired_paths: &HashSet<PathBuf>,
     planned_files: &[ManagedFile],
 ) -> Result<()> {
-    if let Some(path) = owned_paths.difference(desired_paths).next() {
+    // Stale-entry detection operates on the concrete exact set only; subtree
+    // and prefix rules describe regions whose membership is on-disk-state
+    // dependent, so they cannot be compared directly against desired_paths.
+    if let Some(path) = owned_paths.exact.difference(desired_paths).next() {
         bail!("stale managed state entry for {}", path.display());
     }
 
-    for path in desired_paths.intersection(owned_paths) {
+    for path in desired_paths.intersection(&owned_paths.exact) {
         if !path.exists() {
             bail!("managed file is missing from disk: {}", path.display());
         }
@@ -710,28 +818,26 @@ pub(super) fn validate_state_consistency(
     Ok(())
 }
 
-fn path_is_owned(path: &Path, owned_paths: &HashSet<PathBuf>) -> bool {
-    owned_paths
-        .iter()
-        .any(|owned| path == owned || path.starts_with(owned))
+fn path_is_owned(path: &Path, owned_paths: &OwnedSet) -> bool {
+    owned_paths.contains(path)
 }
 
 pub(super) fn load_owned_paths(
     project_root: &Path,
     lockfile: Option<&Lockfile>,
-) -> Result<HashSet<PathBuf>> {
+) -> Result<OwnedSet> {
     if let Some(lockfile) = lockfile {
         return if lockfile.uses_current_schema() {
-            lockfile.managed_paths(project_root)
+            lockfile.owned_set(project_root)
         } else {
-            lockfile.managed_paths_for_sync(project_root)
+            lockfile.owned_set_for_sync(project_root)
         };
     }
 
-    Ok(HashSet::new())
+    Ok(OwnedSet::default())
 }
 
-pub(super) fn managed_path_is_owned(path: &Path, owned_paths: &HashSet<PathBuf>) -> bool {
+pub(super) fn managed_path_is_owned(path: &Path, owned_paths: &OwnedSet) -> bool {
     path_is_owned(path, owned_paths)
 }
 
