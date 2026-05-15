@@ -1,13 +1,38 @@
 # Hooks
 
 Nodus lets a package declare portable hook intents in `nodus.toml`, then emits
-adapter-specific wiring (Claude `settings.json`, Codex `config.toml`, OpenCode
-`plugins/nodus-hooks.js`, GitHub Copilot `.github/hooks/nodus-hooks.json`)
-during `nodus sync`. Hooks that an adapter cannot express are silently
-filtered out — the manifest stays portable and the generated output stays
-valid.
+adapter-specific wiring (Claude plugin `hooks/hooks.json`, Codex `config.toml`,
+OpenCode `plugins/nodus-hooks.js`, GitHub Copilot
+`.github/hooks/nodus-hooks.json`) during `nodus sync`. Hooks that an adapter
+cannot express are silently filtered out — the manifest stays portable and the
+generated output stays valid.
 
 This page is the source of truth for what each adapter supports today.
+
+## Claude: workspace settings vs. plugin hooks
+
+The Claude adapter emits hooks in two places depending on where they came
+from:
+
+- **Root manifest hooks** (declared in the consumer workspace's own
+  `nodus.toml`) land in `.claude/settings.json` under `"hooks"`, alongside
+  the marketplace and `enabledPlugins` records Nodus already manages there.
+- **Dependency package hooks** ride inside each package's generated Claude
+  plugin at `.nodus/packages/<alias>/claude-plugin/`. Nodus writes
+  `hooks/hooks.json` plus per-hook scripts under `hooks/scripts/`, and the
+  plugin's `.claude-plugin/plugin.json` gains a `"hooks":
+  "./hooks/hooks.json"` pointer so Claude Code loads it whenever the plugin
+  is enabled.
+
+This split keeps the workspace settings file readable — adding, updating, or
+removing a dependency only churns files under the plugin folder, not the
+project-level Claude config. Dependency activation context (see below) flows
+through the same plugin `hooks/hooks.json` for the same reason.
+
+Generated plugin hook scripts use `${CLAUDE_PLUGIN_ROOT}` to reference
+themselves, and `${CLAUDE_PROJECT_DIR}` (with a `git rev-parse` fallback) for
+`cwd = "git_root"`. They still export `NODUS_HOOK_ID`, `NODUS_HOOK_EVENT`,
+and `NODUS_HOOK_TIMEOUT_SEC` before running the declared command.
 
 ## Activation context
 
@@ -27,6 +52,11 @@ Nodus fully reads each `always_context` UTF-8 file into the hook's
 short `prefer_skills` instruction using the managed runtime skill names. The
 listed skill bodies are not embedded unless a package also names them in
 `always_context`.
+
+For Claude, dependency-package activation flows through the same per-plugin
+`hooks/hooks.json` as portable `[[hooks]]` — see the workspace-vs-plugin
+split above. Codex still emits activation into the shared workspace
+`.codex/hooks.json`.
 
 Activation hooks are generated separately from package-authored `[[hooks]]`.
 They reuse the same managed hook files, merge behavior, and stale-file pruning,

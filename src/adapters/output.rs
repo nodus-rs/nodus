@@ -561,12 +561,21 @@ pub(crate) fn build_output_plan_with_options(
             }
         }
 
+        let package_claude_plugin_hooks = if selected_adapters.contains(Adapter::Claude)
+            && package_emits_claude_plugin_hooks(package)
+        {
+            hooks_for_package_and_adapter(&hooks, &package.alias, Adapter::Claude)
+        } else {
+            Vec::new()
+        };
         emit_native_package_plugins(
             &mut plan,
             project_root,
             package,
             snapshot_root,
             selected_adapters,
+            &managed_names,
+            &package_claude_plugin_hooks,
         )?;
 
         merge_files(
@@ -1062,6 +1071,8 @@ fn emit_native_package_plugins(
     package: &ResolvedPackage,
     snapshot_root: &Path,
     selected_adapters: Adapters,
+    managed_names: &ManagedArtifactNames,
+    claude_plugin_hooks: &[ManagedHookSpec],
 ) -> Result<()> {
     if !package.emits_runtime_outputs() {
         return Ok(());
@@ -1072,9 +1083,30 @@ fn emit_native_package_plugins(
         && native_package_plugin_has_content(Adapter::Claude, package)
     {
         let plugin_root = super::native_package_plugin_root(project_root, Adapter::Claude, package);
+        let activation_hook = if package_emits_claude_plugin_hooks(package)
+            && package.manifest.manifest.activation_enabled()
+        {
+            Some(ManagedActivationHook {
+                package_alias: package.alias.clone(),
+                context: activation_context_text(
+                    package,
+                    snapshot_root,
+                    managed_names,
+                    Adapter::Claude,
+                )?,
+            })
+        } else {
+            None
+        };
         merge_files(
             &mut plan.files,
-            claude_native_package_plugin_files(&plugin_root, package, snapshot_root)?,
+            claude_native_package_plugin_files(
+                &plugin_root,
+                package,
+                snapshot_root,
+                claude_plugin_hooks,
+                activation_hook.as_ref(),
+            )?,
         )?;
         register_native_package_plugin_root(
             project_root,
@@ -1121,6 +1153,59 @@ fn native_package_plugin_has_content(adapter: Adapter, package: &ResolvedPackage
             && artifact_supported(adapter, ArtifactKind::Rule)
             && !manifest.discovered.rules.is_empty())
         || package_has_mcp_servers(package)
+        || (adapter == Adapter::Claude
+            && !matches!(package.source, PackageSource::Root)
+            && (package_has_claude_targeted_hooks(package)
+                || package.manifest.manifest.activation_enabled()))
+}
+
+/// True when a non-root package's portable hooks (and activation context)
+/// should be emitted inside its Claude plugin folder instead of the workspace
+/// `.claude/settings.json`.
+///
+/// Root manifests describe the workspace itself, so their hooks continue to
+/// live in workspace settings even though Nodus also publishes the root as a
+/// Claude plugin.
+fn package_emits_claude_plugin_hooks(package: &ResolvedPackage) -> bool {
+    if matches!(package.source, PackageSource::Root) {
+        return false;
+    }
+    if !package.emits_runtime_outputs() {
+        return false;
+    }
+    if preferred_surface(Adapter::Claude) != PreferredSurface::PackagePluginWorkspaceMarketplace {
+        return false;
+    }
+    native_package_plugin_has_content(Adapter::Claude, package)
+        && (package_has_claude_targeted_hooks(package)
+            || package.manifest.manifest.activation_enabled())
+}
+
+fn package_has_claude_targeted_hooks(package: &ResolvedPackage) -> bool {
+    package
+        .manifest
+        .manifest
+        .hooks
+        .iter()
+        .any(|hook| hook_targets_claude(hook) && hook_supported_by_adapter(hook, Adapter::Claude))
+}
+
+fn hook_targets_claude(hook: &HookSpec) -> bool {
+    hook.adapters.is_empty() || hook.adapters.contains(&Adapter::Claude)
+}
+
+fn hooks_for_package_and_adapter(
+    hooks: &[ManagedHookSpec],
+    package_alias: &str,
+    adapter: Adapter,
+) -> Vec<ManagedHookSpec> {
+    hooks
+        .iter()
+        .filter(|hook| hook.package_alias == package_alias && !hook.emitted_from_root)
+        .filter(|hook| hook.hook.adapters.is_empty() || hook.hook.adapters.contains(&adapter))
+        .filter(|hook| hook_supported_by_adapter(&hook.hook, adapter))
+        .cloned()
+        .collect()
 }
 
 fn register_native_package_plugin_root(
@@ -1192,6 +1277,8 @@ fn claude_native_package_plugin_files(
     plugin_root: &Path,
     package: &ResolvedPackage,
     snapshot_root: &Path,
+    hooks: &[ManagedHookSpec],
+    activation_hook: Option<&ManagedActivationHook>,
 ) -> Result<Vec<ManagedFile>> {
     let names = ManagedArtifactNames::from_resolved_packages([package]);
     let mut files = BTreeMap::new();
@@ -1242,11 +1329,21 @@ fn claude_native_package_plugin_files(
         )?;
     }
 
+    let hook_emission =
+        super::claude::plugin_native_hook_files(plugin_root, package, hooks, activation_hook)?;
+    for file in hook_emission.files {
+        merge_file(&mut files, file)?;
+    }
+
     merge_file(
         &mut files,
         ManagedFile {
             path: plugin_root.join(".claude-plugin/plugin.json"),
-            contents: claude_native_package_plugin_json(&names, package)?,
+            contents: claude_native_package_plugin_json(
+                &names,
+                package,
+                hook_emission.has_hooks_json,
+            )?,
         },
     )?;
     Ok(managed_files_from_map(files))
@@ -1310,9 +1407,17 @@ fn codex_native_package_plugin_files(
 fn claude_native_package_plugin_json(
     names: &ManagedArtifactNames,
     package: &ResolvedPackage,
+    has_plugin_hooks_json: bool,
 ) -> Result<Vec<u8>> {
     let mut root = native_plugin_metadata_base(package);
     let prefix = native_package_plugin_artifact_prefix(Adapter::Claude, package);
+
+    if has_plugin_hooks_json {
+        root.insert(
+            "hooks".into(),
+            JsonValue::String(format!("{prefix}{}", super::claude::PLUGIN_HOOKS_JSON_PATH)),
+        );
+    }
 
     if package.selects_component(DependencyComponent::Skills)
         && !package.manifest.discovered.skills.is_empty()
@@ -2282,9 +2387,25 @@ fn hook_files(
 ) -> Result<Vec<ManagedFile>> {
     let mut files = Vec::new();
 
-    let claude_hooks = hooks_for_adapter(hooks, selected_adapters, Adapter::Claude);
+    let claude_plugin_hook_packages: BTreeSet<String> = packages
+        .iter()
+        .filter(|(package, _)| package_emits_claude_plugin_hooks(package))
+        .map(|(package, _)| package.alias.clone())
+        .collect();
+    let claude_hooks = hooks_for_adapter(hooks, selected_adapters, Adapter::Claude)
+        .into_iter()
+        .filter(|hook| {
+            // Non-root hooks for packages that emit their own plugin hooks.json
+            // are owned by the plugin; skip them here so they don't double up
+            // in the workspace `.claude/settings.json`.
+            hook.emitted_from_root || !claude_plugin_hook_packages.contains(&hook.package_alias)
+        })
+        .collect::<Vec<_>>();
     let claude_activation_hooks = if selected_adapters.contains(Adapter::Claude) {
         activation_hooks_for_adapter(packages, managed_names, Adapter::Claude)?
+            .into_iter()
+            .filter(|hook| !claude_plugin_hook_packages.contains(&hook.package_alias))
+            .collect::<Vec<_>>()
     } else {
         Vec::new()
     };

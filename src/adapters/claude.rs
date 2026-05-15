@@ -109,6 +109,11 @@ pub fn rule_file(
     )
 }
 
+/// Relative path inside a Claude plugin where Nodus emits the generated
+/// `hooks.json`. The plugin's `plugin.json` references this path via its
+/// `hooks` field.
+pub const PLUGIN_HOOKS_JSON_PATH: &str = "hooks/hooks.json";
+
 pub fn hook_files(
     project_root: &Path,
     hooks: &[ManagedHookSpec],
@@ -457,6 +462,208 @@ exec sh -lc {command}
     .into_bytes()
 }
 
+/// Emit Nodus-managed portable hooks for a single package inside its Claude
+/// plugin root.
+///
+/// Returns the list of files (per-hook shell wrappers and the generated
+/// `hooks.json`) and any warnings. The plugin's `plugin.json` must reference
+/// the emitted `hooks.json` via [`PLUGIN_HOOKS_JSON_PATH`]; pass
+/// `plugin_has_hooks_emitted` from [`PluginHookEmission::has_hooks_json`] to
+/// decide whether to set that field.
+pub fn plugin_native_hook_files(
+    plugin_root: &Path,
+    package: &ResolvedPackage,
+    hooks: &[ManagedHookSpec],
+    activation_hook: Option<&ManagedActivationHook>,
+) -> Result<PluginHookEmission> {
+    debug_assert!(
+        hooks.iter().all(|hook| hook.package_alias == package.alias),
+        "plugin_native_hook_files expects hooks belonging to `{}`",
+        package.alias,
+    );
+
+    if hooks.is_empty() && activation_hook.is_none() {
+        return Ok(PluginHookEmission::default());
+    }
+
+    let mut files = Vec::new();
+    let mut entries: Vec<ManagedSettingsEntry> = Vec::new();
+
+    for hook in hooks {
+        let script_relative = plugin_managed_script_relative_path(hook);
+        files.push(ManagedFile {
+            path: plugin_root.join(&script_relative),
+            contents: plugin_managed_hook_script_contents(hook),
+        });
+        entries.push(ManagedSettingsEntry {
+            event: event_name(hook).to_string(),
+            entry: plugin_hook_entry(hook, &script_relative),
+        });
+    }
+
+    if let Some(activation_hook) = activation_hook {
+        let script_relative = plugin_activation_script_relative_path(activation_hook);
+        files.push(ManagedFile {
+            path: plugin_root.join(&script_relative),
+            contents: activation_script_contents(activation_hook)?,
+        });
+        entries.push(ManagedSettingsEntry {
+            event: "SessionStart".to_string(),
+            entry: plugin_activation_hook_entry(&script_relative),
+        });
+    }
+
+    let hooks_json_path = plugin_root.join(PLUGIN_HOOKS_JSON_PATH);
+    files.push(ManagedFile {
+        path: hooks_json_path,
+        contents: plugin_hooks_json_contents(&entries)?,
+    });
+
+    Ok(PluginHookEmission {
+        files,
+        has_hooks_json: true,
+    })
+}
+
+/// Result of [`plugin_native_hook_files`].
+#[derive(Debug, Default)]
+pub struct PluginHookEmission {
+    /// Managed files to write inside the plugin root.
+    pub files: Vec<ManagedFile>,
+    /// True when a `hooks.json` was emitted; the caller should set the
+    /// plugin manifest's `hooks` field accordingly.
+    pub has_hooks_json: bool,
+}
+
+fn plugin_hooks_json_contents(entries: &[ManagedSettingsEntry]) -> Result<Vec<u8>> {
+    let mut hooks_object: Map<String, Value> = Map::new();
+    for entry in entries {
+        hooks_object
+            .entry(entry.event.clone())
+            .or_insert_with(|| Value::Array(Vec::new()))
+            .as_array_mut()
+            .expect("event array initialized as array")
+            .push(entry.entry.clone());
+    }
+    let mut root = Map::new();
+    root.insert("hooks".to_string(), Value::Object(hooks_object));
+    let mut contents = serde_json::to_vec_pretty(&Value::Object(root))
+        .context("failed to serialize Claude plugin hooks")?;
+    contents.push(b'\n');
+    Ok(contents)
+}
+
+fn plugin_managed_hook_script_contents(hook: &ManagedHookSpec) -> Vec<u8> {
+    debug_assert!(matches!(
+        hook.hook.handler.handler_type,
+        HookHandlerType::Command
+    ));
+    format!(
+        r#"#!/bin/sh
+set -eu
+
+project_root="${{CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
+if [ {cwd} = "git_root" ]; then
+  cd "$project_root"
+fi
+
+export NODUS_HOOK_ID={hook_id}
+export NODUS_HOOK_EVENT={hook_event}
+{timeout_export}
+if [ {blocking} = "true" ]; then
+  exec sh -lc {command}
+fi
+
+if ! sh -lc {command}; then
+  echo "nodus hook {hook_label} failed" >&2
+fi
+"#,
+        cwd = shell_quote(match hook.hook.handler.cwd {
+            crate::manifest::HookWorkingDirectory::GitRoot => "git_root",
+            crate::manifest::HookWorkingDirectory::Session => "session",
+        }),
+        hook_id = shell_quote(&hook.hook.id),
+        hook_event = shell_quote(hook.hook.event.as_str()),
+        timeout_export = hook
+            .hook
+            .timeout_sec
+            .map(|timeout_sec| format!(
+                "export NODUS_HOOK_TIMEOUT_SEC={}\n",
+                shell_quote(&timeout_sec.to_string())
+            ))
+            .unwrap_or_default(),
+        blocking = shell_quote(if hook.hook.blocking { "true" } else { "false" }),
+        command = shell_quote(&hook.hook.handler.command),
+        hook_label = hook.hook.id,
+    )
+    .into_bytes()
+}
+
+fn plugin_hook_entry(hook: &ManagedHookSpec, script_relative: &str) -> Value {
+    let hook_value = json!({
+        "type": "command",
+        "command": plugin_hook_command(script_relative),
+    });
+    if let Some(matcher) = matcher_string(hook) {
+        json!({
+            "matcher": matcher,
+            "hooks": [hook_value],
+        })
+    } else {
+        json!({
+            "hooks": [hook_value],
+        })
+    }
+}
+
+fn plugin_activation_hook_entry(script_relative: &str) -> Value {
+    json!({
+        "matcher": "startup|resume",
+        "hooks": [{
+            "type": "command",
+            "command": plugin_hook_command(script_relative),
+        }],
+    })
+}
+
+fn plugin_hook_command(script_relative: &str) -> String {
+    // `${CLAUDE_PLUGIN_ROOT}` is exported by Claude Code when a plugin's hooks
+    // fire, pointing at the plugin's root. Quote the path so it survives shell
+    // splitting if a user places the workspace under a directory with spaces.
+    format!(
+        "sh \"${{CLAUDE_PLUGIN_ROOT}}/{}\"",
+        script_relative.replace('"', "\\\"")
+    )
+}
+
+fn plugin_managed_script_relative_path(hook: &ManagedHookSpec) -> String {
+    format!("hooks/scripts/{}.sh", plugin_managed_script_stem(hook))
+}
+
+fn plugin_activation_script_relative_path(hook: &ManagedActivationHook) -> String {
+    format!("hooks/scripts/{}.sh", plugin_activation_script_stem(hook))
+}
+
+fn plugin_managed_script_stem(hook: &ManagedHookSpec) -> String {
+    // Hook ids inside a plugin folder are already scoped by the plugin root,
+    // so we don't need to prefix with the package alias the way workspace
+    // scripts do. We keep a short digest of the id so two hooks that sanitize
+    // to the same stem (e.g. `foo.bar` and `foo-bar`) still get distinct
+    // file names.
+    let sanitized = sanitized_script_segment(&hook.hook.id);
+    format!(
+        "nodus-hook-{sanitized}-{}",
+        &blake3_hex(hook.hook.id.as_bytes())[..8]
+    )
+}
+
+fn plugin_activation_script_stem(hook: &ManagedActivationHook) -> String {
+    format!(
+        "nodus-hook-activation-{}",
+        &blake3_hex(format!("activation:{}", hook.package_alias).as_bytes())[..8]
+    )
+}
+
 fn plugin_install_root(project_root: &Path, package: &ResolvedPackage) -> std::path::PathBuf {
     project_root.join(plugin_install_root_relative(package))
 }
@@ -602,6 +809,10 @@ fn remove_managed_hook_entries(hooks: &mut Map<String, Value>) {
     for entries in hooks.values_mut().filter_map(Value::as_array_mut) {
         entries.retain(|entry| !entry_is_managed(entry));
     }
+    // Drop event keys whose arrays became empty after the prune so the
+    // workspace settings file doesn't accumulate dead `"PostToolUse": []`
+    // entries when dependency hooks migrate into their own plugin folders.
+    hooks.retain(|_, value| !value.as_array().is_some_and(|entries| entries.is_empty()));
 }
 
 fn entry_is_managed(entry: &Value) -> bool {

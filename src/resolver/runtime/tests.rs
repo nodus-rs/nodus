@@ -305,6 +305,38 @@ fn hook_script_path(project_root: &Path, runtime_dir: &str, name_fragment: &str)
     matches.into_iter().next().unwrap()
 }
 
+fn plugin_hook_script_path(
+    project_root: &Path,
+    package_alias: &str,
+    name_fragment: &str,
+) -> PathBuf {
+    let scripts_dir = project_root
+        .join(".nodus/packages")
+        .join(package_alias)
+        .join("claude-plugin/hooks/scripts");
+    let matches = fs::read_dir(&scripts_dir)
+        .unwrap_or_else(|err| {
+            panic!(
+                "expected plugin scripts dir at {}: {err}",
+                scripts_dir.display()
+            )
+        })
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.contains(name_fragment))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        matches.len(),
+        1,
+        "expected one plugin hook script containing `{name_fragment}` in {}",
+        scripts_dir.display()
+    );
+    matches.into_iter().next().unwrap()
+}
+
 fn activation_context_from_script(script: &str) -> String {
     let json_line = script
         .lines()
@@ -3258,40 +3290,65 @@ command = "./scripts/format-code.sh"
 
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Claude]).unwrap();
 
+    // The native `[[hooks]]` win over the plugin-hook compat surface: the
+    // dependency's hook ends up inside its Claude plugin's `hooks.json` (not
+    // the workspace settings, not the `nodus-plugin-hook-*` compat wrappers).
+    let plugin_root = temp
+        .path()
+        .join(".nodus/packages/hook_plugin/claude-plugin");
+    assert!(
+        plugin_root.exists(),
+        "expected Claude plugin folder at {}",
+        plugin_root.display(),
+    );
+    let plugin_hooks: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(plugin_root.join("hooks/hooks.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        plugin_hooks["hooks"]["PostToolUse"][0]["matcher"].as_str(),
+        Some("Bash"),
+    );
+    let command = plugin_hooks["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap();
+    assert!(
+        command.contains("${CLAUDE_PLUGIN_ROOT}/hooks/scripts/"),
+        "expected plugin-root reference, got `{command}`",
+    );
+
+    // The workspace `.claude/settings.json` carries no `nodus-hook-` or
+    // `nodus-plugin-hook-` entries for this dependency.
     let settings: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(temp.path().join(".claude/settings.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(
-        settings["hooks"]["PostToolUse"][0]["matcher"].as_str(),
-        Some("Bash")
-    );
-    let command = settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
-        .as_str()
-        .unwrap();
-    assert!(command.contains("./.claude/hooks/nodus-hook-"));
-    assert!(!command.contains("nodus-plugin-hook-"));
-
-    let wrapper_script = fs::read_to_string(
-        temp.path()
-            .join(".claude/hooks")
-            .read_dir()
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path(),
-    )
-    .unwrap();
-    assert!(!wrapper_script.contains("CLAUDE_PLUGIN_ROOT"));
-    assert!(wrapper_script.contains("./scripts/format-code.sh"));
-
+    let workspace_commands: Vec<&str> = settings["hooks"]
+        .as_object()
+        .into_iter()
+        .flat_map(|events| events.values())
+        .flat_map(|entries| entries.as_array().into_iter().flatten())
+        .flat_map(|entry| entry["hooks"].as_array().into_iter().flatten())
+        .filter_map(|hook| hook["command"].as_str())
+        .filter(|command| {
+            command.contains("./.claude/hooks/nodus-hook-")
+                || command.contains("./.claude/hooks/nodus-plugin-hook-")
+        })
+        .collect();
     assert!(
-        !temp
-            .path()
-            .join(".nodus/packages/hook_plugin/claude-plugin")
-            .exists()
+        workspace_commands.is_empty(),
+        "workspace settings should not carry dependency hook entries: {workspace_commands:?}",
     );
+
+    // The plugin script uses ${CLAUDE_PLUGIN_ROOT} semantics and runs the
+    // user's command as declared.
+    let scripts_dir = plugin_root.join("hooks/scripts");
+    let wrapper_script_path = fs::read_dir(&scripts_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .next()
+        .expect("expected at least one wrapper script");
+    let wrapper_script = fs::read_to_string(&wrapper_script_path).unwrap();
+    assert!(wrapper_script.contains("./scripts/format-code.sh"));
 }
 
 #[test]
@@ -3822,7 +3879,7 @@ fn add_dependency_accepts_modern_claude_mcp_only_package_and_syncs_mcp_metadata(
 }
 
 #[test]
-fn add_dependency_accepts_manifest_only_hook_package_and_syncs_claude_settings() {
+fn add_dependency_accepts_manifest_only_hook_package_and_syncs_claude_plugin_hooks() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();
 
@@ -3882,7 +3939,7 @@ command = "fuli integration claude hook session-end"
     init_git_repo(package.path());
     rename_current_branch(package.path(), "main");
 
-    add_dependency_in_dir_with_adapters(
+    let add_summary = add_dependency_in_dir_with_adapters(
         temp.path(),
         cache.path(),
         &package.path().to_string_lossy(),
@@ -3891,44 +3948,88 @@ command = "fuli integration claude hook session-end"
         &[],
     )
     .unwrap();
+    let alias = add_summary.alias;
 
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Claude]).unwrap();
 
+    // Workspace `.claude/settings.json` no longer carries dependency hook
+    // entries — they now live inside the plugin folder.
     let settings: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(temp.path().join(".claude/settings.json")).unwrap(),
     )
     .unwrap();
+    let workspace_hook_entries_for_dep: Vec<&str> = settings["hooks"]
+        .as_object()
+        .into_iter()
+        .flat_map(|events| events.values())
+        .flat_map(|entries| entries.as_array().into_iter().flatten())
+        .flat_map(|entry| entry["hooks"].as_array().into_iter().flatten())
+        .filter_map(|hook| hook["command"].as_str())
+        .filter(|command| command.contains("./.claude/hooks/nodus-hook-"))
+        .collect();
+    assert!(
+        workspace_hook_entries_for_dep.is_empty(),
+        "dependency hooks should not appear in workspace settings: {workspace_hook_entries_for_dep:?}",
+    );
 
-    let session_start = settings["hooks"]["SessionStart"].as_array().unwrap();
+    // The plugin is enabled in the workspace marketplace.
+    let enabled_plugins = settings["enabledPlugins"]
+        .as_object()
+        .expect("enabledPlugins object");
+    assert!(
+        enabled_plugins
+            .keys()
+            .any(|key| key.starts_with(&format!("{alias}@"))),
+        "enabledPlugins should reference `{alias}`: {enabled_plugins:?}",
+    );
+
+    // The plugin's own `hooks/hooks.json` carries every declared event.
+    let plugin_root = temp
+        .path()
+        .join(format!(".nodus/packages/{alias}/claude-plugin"));
+    let plugin_hooks: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(plugin_root.join("hooks/hooks.json")).unwrap())
+            .unwrap();
+
+    let session_start = plugin_hooks["hooks"]["SessionStart"].as_array().unwrap();
     assert!(session_start.iter().any(|entry| {
         entry["matcher"].as_str() == Some("startup|resume|clear|compact")
             && entry["hooks"].as_array().is_some_and(|hooks| {
                 hooks.iter().any(|hook| {
                     hook["command"]
                         .as_str()
-                        .is_some_and(|command| command.contains("./.claude/hooks/nodus-hook-"))
+                        .is_some_and(|command| command.contains("${CLAUDE_PLUGIN_ROOT}"))
                 })
             })
     }));
-    assert!(
-        settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+    for event in ["UserPromptSubmit", "PostToolUse", "Stop", "SessionEnd"] {
+        let command = plugin_hooks["hooks"][event][0]["hooks"][0]["command"]
             .as_str()
-            .is_some_and(|command| command.contains("./.claude/hooks/nodus-hook-"))
+            .unwrap_or_else(|| panic!("missing command for {event}"));
+        assert!(
+            command.contains("${CLAUDE_PLUGIN_ROOT}/hooks/scripts/"),
+            "expected plugin-root reference for {event}, got `{command}`",
+        );
+    }
+
+    // The plugin manifest references the generated hooks file.
+    let plugin_manifest: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(plugin_root.join(".claude-plugin/plugin.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        plugin_manifest["hooks"].as_str(),
+        Some("./hooks/hooks.json"),
     );
-    assert!(
-        settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
-            .as_str()
-            .is_some_and(|command| command.contains("./.claude/hooks/nodus-hook-"))
-    );
-    assert!(
-        settings["hooks"]["Stop"][0]["hooks"][0]["command"]
-            .as_str()
-            .is_some_and(|command| command.contains("./.claude/hooks/nodus-hook-"))
-    );
-    assert!(
-        settings["hooks"]["SessionEnd"][0]["hooks"][0]["command"]
-            .as_str()
-            .is_some_and(|command| command.contains("./.claude/hooks/nodus-hook-"))
+
+    // Hook scripts live inside the plugin root.
+    let scripts_dir = plugin_root.join("hooks/scripts");
+    let script_count = fs::read_dir(&scripts_dir).unwrap().count();
+    assert_eq!(
+        script_count,
+        5,
+        "expected one script per declared hook in {}",
+        scripts_dir.display(),
     );
 }
 
@@ -6317,21 +6418,43 @@ prefer_skills = ["review"]
 
     sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
 
-    let claude_settings: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(temp.path().join(".claude/settings.json")).unwrap(),
+    // Claude routes the dependency's activation context through the plugin's
+    // `hooks/hooks.json` rather than the workspace settings file.
+    let claude_plugin_hooks: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(
+            temp.path()
+                .join(".nodus/packages/shared/claude-plugin/hooks/hooks.json"),
+        )
+        .unwrap(),
     )
     .unwrap();
-    let claude_session_start = claude_settings["hooks"]["SessionStart"].as_array().unwrap();
+    let claude_session_start = claude_plugin_hooks["hooks"]["SessionStart"]
+        .as_array()
+        .unwrap();
     assert_eq!(claude_session_start.len(), 1);
     assert_eq!(
         claude_session_start[0]["matcher"].as_str(),
-        Some("startup|resume")
+        Some("startup|resume"),
     );
     assert!(
         claude_session_start[0]["hooks"][0]["command"]
             .as_str()
             .unwrap()
-            .contains("./.claude/hooks/nodus-hook-activation-shared-")
+            .contains("${CLAUDE_PLUGIN_ROOT}/hooks/scripts/nodus-hook-activation-")
+    );
+
+    // Workspace `.claude/settings.json` has no SessionStart entries from
+    // dependency activation now that the plugin owns them.
+    let claude_settings: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(temp.path().join(".claude/settings.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        claude_settings["hooks"]["SessionStart"]
+            .as_array()
+            .is_none_or(|entries| entries.is_empty()),
+        "workspace SessionStart should be empty, got {:?}",
+        claude_settings["hooks"]["SessionStart"],
     );
 
     let codex_hooks: serde_json::Value =
@@ -6352,12 +6475,8 @@ prefer_skills = ["review"]
             .unwrap();
     assert_eq!(codex_config["features"]["hooks"].as_bool(), Some(true));
 
-    let claude_script = fs::read_to_string(hook_script_path(
-        temp.path(),
-        ".claude",
-        "activation-shared",
-    ))
-    .unwrap();
+    let claude_script =
+        fs::read_to_string(plugin_hook_script_path(temp.path(), "shared", "activation")).unwrap();
     let codex_script =
         fs::read_to_string(hook_script_path(temp.path(), ".codex", "activation-shared")).unwrap();
     for context in [
