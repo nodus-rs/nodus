@@ -4,6 +4,8 @@ nodus.lock
 opencode.json
 .claude
 .codex
+.claude-plugin
+.codex-plugin
 
 .fuli
 .nodus
