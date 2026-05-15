@@ -1080,7 +1080,9 @@ impl Resolution {
 
             packages.push(LockedPackage {
                 alias: package.alias.clone(),
-                name: package.manifest.effective_name(),
+                name: package
+                    .manifest
+                    .effective_name_for_role(package_role == PackageRole::Root),
                 version_tag: match &package.source {
                     PackageSource::Git { tag, .. } => package
                         .manifest
@@ -1141,17 +1143,27 @@ impl Resolution {
                 ),
                 dependencies,
                 capabilities: package.manifest.manifest.capabilities.clone(),
+                // Slice 3 owns emission of these per-package ownership fields.
+                owned_subtrees: Vec::new(),
+                owned_prefixes: Vec::new(),
+                owned_files: Vec::new(),
+                install_digest: None,
             });
         }
 
-        Ok(Lockfile::new(
-            packages,
-            self.lockfile_managed_files(
-                selected_adapters,
-                runtime_root,
-                codex_native_plugins_auto_enabled,
-            )?,
-        ))
+        let mut lockfile = Lockfile::new(packages);
+        // Slice 1 bridge: the v10 schema replaces the top-level `managed_files`
+        // list with per-package ownership rules
+        // (`owned_subtrees`/`owned_prefixes`/`owned_files`). Slice 3 will move
+        // the emission below into those per-package fields. Until then, we
+        // continue to populate the legacy field so the existing read-path
+        // expansion (and the inline resolver tests) keep working.
+        lockfile.legacy_managed_files = self.lockfile_managed_files(
+            selected_adapters,
+            runtime_root,
+            codex_native_plugins_auto_enabled,
+        )?;
+        Ok(lockfile)
     }
 
     #[allow(dead_code)]

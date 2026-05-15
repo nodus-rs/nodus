@@ -26,10 +26,13 @@ impl LoadedManifest {
         {
             bail!("manifest field `api_version` must not be empty");
         }
-        if let Some(name) = &self.manifest.name
-            && name.trim().is_empty()
-        {
-            bail!("manifest field `name` must not be empty");
+        if let Some(name) = &self.manifest.name {
+            if name.trim().is_empty() {
+                bail!("manifest field `name` must not be empty");
+            }
+            if name.contains('<') || name.contains('>') {
+                bail!("package name `{name}` is reserved; remove `<` and `>` from the name");
+            }
         }
         let normalized_content_roots = self.manifest.normalized_content_roots()?;
         for content_root in &normalized_content_roots {
@@ -175,6 +178,18 @@ impl LoadedManifest {
             .name
             .clone()
             .unwrap_or_else(|| default_package_name(&self.root))
+    }
+
+    /// Same as [`Self::effective_name`] for non-root packages. For the root
+    /// package, returns [`crate::lockfile::ROOT_PACKAGE_NAME_SENTINEL`] when
+    /// the manifest does not declare a `name` — that keeps the lockfile (and
+    /// the root digest) stable across folder renames.
+    pub fn effective_name_for_role(&self, is_root: bool) -> String {
+        if is_root && self.manifest.name.is_none() {
+            crate::lockfile::ROOT_PACKAGE_NAME_SENTINEL.to_string()
+        } else {
+            self.effective_name()
+        }
     }
 
     pub fn effective_version(&self) -> Option<Version> {

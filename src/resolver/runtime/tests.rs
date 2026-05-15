@@ -396,7 +396,7 @@ fn simulate_legacy_direct_claude_codex_skill_outputs(project_root: &Path) {
     );
 
     let mut lockfile = Lockfile::read(&project_root.join(LOCKFILE_NAME)).unwrap();
-    lockfile.managed_files = vec![
+    lockfile.legacy_managed_files = vec![
         ".claude/skills/review".into(),
         ".codex/skills/review".into(),
     ];
@@ -997,12 +997,12 @@ shared = { path = "vendor/shared" }
     assert_eq!(lockfile.packages[1].alias, "shared");
     assert!(
         !lockfile
-            .managed_files
+            .legacy_managed_files
             .contains(&".claude/skills/review".into())
     );
     assert!(
         lockfile
-            .managed_files
+            .legacy_managed_files
             .contains(&".nodus/packages/shared/claude-plugin".into())
     );
 }
@@ -1117,7 +1117,7 @@ fn add_dependency_clones_repo_and_updates_manifest() {
     assert!(manifest.contains("tag = \"v0.1.0\""));
     assert!(manifest.contains("url = "));
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
-    assert!(!lockfile.managed_files.is_empty());
+    assert!(!lockfile.legacy_managed_files.is_empty());
     let dependency_package = lockfile
         .packages
         .iter()
@@ -1630,12 +1630,12 @@ fn sync_generates_workspace_marketplace_files() {
     let lockfile = Lockfile::read(&repo.path().join(LOCKFILE_NAME)).unwrap();
     assert!(
         lockfile
-            .managed_files
+            .legacy_managed_files
             .contains(&String::from(".nodus/.claude-plugin/marketplace.json"))
     );
     assert!(
         lockfile
-            .managed_files
+            .legacy_managed_files
             .contains(&String::from(".nodus/.agents/plugins/marketplace.json"))
     );
 }
@@ -1781,7 +1781,7 @@ version = "1.2.3"
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert!(
         lockfile
-            .managed_files
+            .legacy_managed_files
             .contains(&String::from(".nodus/packages/shared/claude-plugin"))
     );
 }
@@ -1858,7 +1858,7 @@ args = ["figma-developer-mcp"]
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert!(
         lockfile
-            .managed_files
+            .legacy_managed_files
             .contains(&String::from(".nodus/packages/shared/codex-plugin"))
     );
 }
@@ -1993,7 +1993,7 @@ custom = "kept"
     assert!(
         !Lockfile::read(&temp.path().join(LOCKFILE_NAME))
             .unwrap()
-            .managed_files
+            .legacy_managed_files
             .iter()
             .any(|path| Path::new(path) == codex_config.as_path())
     );
@@ -2040,22 +2040,22 @@ shared = { path = "vendor/shared" }
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert!(
         lockfile
-            .managed_files
+            .legacy_managed_files
             .contains(&".nodus/packages/shared/claude-plugin".into())
     );
     assert!(
         lockfile
-            .managed_files
+            .legacy_managed_files
             .contains(&".nodus/packages/shared/codex-plugin".into())
     );
     assert!(
         !lockfile
-            .managed_files
+            .legacy_managed_files
             .contains(&".claude/skills/review".into())
     );
     assert!(
         !lockfile
-            .managed_files
+            .legacy_managed_files
             .contains(&".codex/skills/review".into())
     );
 }
@@ -4975,12 +4975,12 @@ shared = { path = "vendor/shared", components = ["skills"] }
     );
     assert!(
         lockfile
-            .managed_files
+            .legacy_managed_files
             .contains(&".nodus/packages/shared/claude-plugin".into())
     );
     assert!(
         !lockfile
-            .managed_files
+            .legacy_managed_files
             .contains(&".claude/agents/shared.md".into())
     );
 }
@@ -5034,12 +5034,12 @@ fn sync_does_not_publish_root_assets_by_default() {
     ));
     assert!(
         !lockfile
-            .managed_files
+            .legacy_managed_files
             .contains(&".claude/skills/review".into())
     );
     assert!(
         !lockfile
-            .managed_files
+            .legacy_managed_files
             .contains(&".codex/skills/review".into())
     );
 }
@@ -5094,8 +5094,16 @@ publish_root = true
         Adapter::Codex,
         &managed_skill_id
     ));
-    assert!(lockfile.managed_files.contains(&".claude/skills".into()));
-    assert!(lockfile.managed_files.contains(&".codex/skills".into()));
+    assert!(
+        lockfile
+            .legacy_managed_files
+            .contains(&".claude/skills".into())
+    );
+    assert!(
+        lockfile
+            .legacy_managed_files
+            .contains(&".codex/skills".into())
+    );
 }
 
 #[test]
@@ -5195,7 +5203,7 @@ shared = { path = "vendor/shared", components = ["commands"] }
     assert_eq!(shared.commands, vec!["build"]);
     assert!(
         lockfile
-            .managed_files
+            .legacy_managed_files
             .contains(&".nodus/packages/shared/codex-plugin".into())
     );
 }
@@ -5292,7 +5300,7 @@ shared = { path = "vendor/shared" }
     assert!(managed_skill_path.exists());
     assert!(
         lockfile
-            .managed_files
+            .legacy_managed_files
             .iter()
             .any(|path| path == ".nodus/packages/shared/codex-plugin")
     );
@@ -5343,7 +5351,7 @@ shared = { path = "vendor/shared" }
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert!(
         lockfile
-            .managed_files
+            .legacy_managed_files
             .contains(&".nodus/packages/shared/claude-plugin".into())
     );
 }
@@ -5428,7 +5436,7 @@ shared = { path = "vendor/shared" }
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert!(
         !lockfile
-            .managed_files
+            .legacy_managed_files
             .iter()
             .any(|path| path.starts_with(".nodus/packages/shared/codex-plugin/skills/"))
     );
@@ -5474,7 +5482,7 @@ target = ".cursor/.gitignore"
     assert!(gitignore.contains(&format!("skills/{managed_skill_id}")));
     assert!(
         lockfile
-            .managed_files
+            .legacy_managed_files
             .contains(&".cursor/.gitignore".into())
     );
 }
@@ -5514,7 +5522,7 @@ shared = { path = "vendor/shared" }
     assert!(gitignore.contains(&format!("skills/{managed_skill_id}")));
     assert!(
         lockfile
-            .managed_files
+            .legacy_managed_files
             .contains(&String::from(".cursor/.gitignore"))
     );
 }
@@ -5554,7 +5562,11 @@ IS_FIREBASE_MCP = "true"
         .unwrap();
 
     assert_eq!(firebase_package.mcp_servers, vec!["firebase"]);
-    assert!(lockfile.managed_files.contains(&String::from(".mcp.json")));
+    assert!(
+        lockfile
+            .legacy_managed_files
+            .contains(&String::from(".mcp.json"))
+    );
     assert_eq!(
         json["mcpServers"]["firebase__firebase"]["command"].as_str(),
         Some("npx")
@@ -5622,7 +5634,11 @@ args = ["-y", "firebase-tools", "mcp", "--dir", "."]
     let codex_config = fs::read_to_string(temp.path().join(".codex/config.toml")).unwrap();
     assert!(codex_config.contains("firebase__firebase"));
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
-    assert!(!lockfile.managed_files.contains(&String::from(".mcp.json")));
+    assert!(
+        !lockfile
+            .legacy_managed_files
+            .contains(&String::from(".mcp.json"))
+    );
 }
 
 #[test]
@@ -5665,10 +5681,14 @@ args = ["-y", "firebase-tools", "mcp", "--dir", "."]
             DependencyComponent::Commands
         ])
     );
-    assert!(!lockfile.managed_files.contains(&String::from(".mcp.json")));
     assert!(
         !lockfile
-            .managed_files
+            .legacy_managed_files
+            .contains(&String::from(".mcp.json"))
+    );
+    assert!(
+        !lockfile
+            .legacy_managed_files
             .contains(&String::from(".codex/config.toml"))
     );
     assert!(!temp.path().join(".mcp.json").exists());
@@ -5721,7 +5741,7 @@ X-Figma-Region = "us-east-1"
     assert_eq!(firebase_package.mcp_servers, vec!["figma", "firebase"]);
     assert!(
         lockfile
-            .managed_files
+            .legacy_managed_files
             .contains(&String::from(".codex/config.toml"))
     );
     assert_eq!(
@@ -5820,7 +5840,7 @@ args = ["-y", "firebase-tools", "mcp", "--dir", "."]
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert!(
         !lockfile
-            .managed_files
+            .legacy_managed_files
             .contains(&String::from(".codex/config.toml"))
     );
 }
@@ -5877,7 +5897,7 @@ X-Figma-Region = "us-east-1"
     assert_eq!(firebase_package.mcp_servers, vec!["figma", "firebase"]);
     assert!(
         lockfile
-            .managed_files
+            .legacy_managed_files
             .contains(&String::from("opencode.json"))
     );
     assert_eq!(
@@ -5985,7 +6005,11 @@ enabled = false
         .find(|package| package.alias == "xcode")
         .unwrap();
     assert_eq!(xcode_package.mcp_servers, vec!["xcode"]);
-    assert!(lockfile.managed_files.contains(&String::from(".mcp.json")));
+    assert!(
+        lockfile
+            .legacy_managed_files
+            .contains(&String::from(".mcp.json"))
+    );
 }
 
 #[test]
@@ -6085,7 +6109,11 @@ command = "npx"
         Some("node")
     );
     assert!(json["mcpServers"].get("nodus").is_none());
-    assert!(!lockfile.managed_files.contains(&String::from(".mcp.json")));
+    assert!(
+        !lockfile
+            .legacy_managed_files
+            .contains(&String::from(".mcp.json"))
+    );
 }
 
 #[test]
@@ -6243,7 +6271,7 @@ shared = { path = "vendor/shared" }
     Lockfile {
         version: 8,
         packages: current_lockfile.packages,
-        managed_files: current_lockfile.managed_files,
+        legacy_managed_files: current_lockfile.legacy_managed_files,
     }
     .write(&temp.path().join(LOCKFILE_NAME))
     .unwrap();
@@ -6532,7 +6560,7 @@ always_context = ["prompts/bootstrap.md"]
     let first_lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert!(
         first_lockfile
-            .managed_files
+            .legacy_managed_files
             .contains(&String::from(".codex/config.toml"))
     );
 
@@ -8372,14 +8400,22 @@ shared = { path = "vendor/shared" }
 
     assert!(
         lockfile
-            .managed_files
+            .legacy_managed_files
             .contains(&".nodus/packages/shared/claude-plugin".into())
     );
-    assert!(lockfile.managed_files.contains(&".github/skills".into()));
-    assert!(lockfile.managed_files.contains(&".opencode/skills".into()));
+    assert!(
+        lockfile
+            .legacy_managed_files
+            .contains(&".github/skills".into())
+    );
+    assert!(
+        lockfile
+            .legacy_managed_files
+            .contains(&".opencode/skills".into())
+    );
     assert!(
         !lockfile
-            .managed_files
+            .legacy_managed_files
             .iter()
             .any(|path| path.contains("iframe-ad"))
     );
@@ -8419,13 +8455,17 @@ shared = { path = "vendor/shared", components = ["agents"] }
         shared.selected_components,
         Some(vec![DependencyComponent::Agents])
     );
-    assert_eq!(lockfile.managed_files.len(), 4);
+    assert_eq!(lockfile.legacy_managed_files.len(), 4);
     assert!(
         lockfile
-            .managed_files
+            .legacy_managed_files
             .contains(&String::from(".codex/agents"))
     );
-    assert!(!lockfile.managed_files.contains(&String::from(".mcp.json")));
+    assert!(
+        !lockfile
+            .legacy_managed_files
+            .contains(&String::from(".mcp.json"))
+    );
     assert!(runtime_file_exists(
         temp.path(),
         Adapter::Codex,
@@ -8546,7 +8586,7 @@ target = ".github/prompts/review.md"
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert!(
         lockfile
-            .managed_files
+            .legacy_managed_files
             .contains(&".github/prompts/review.md".into())
     );
 }
@@ -8589,7 +8629,7 @@ target = "learnings"
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert!(
         lockfile
-            .managed_files
+            .legacy_managed_files
             .contains(&".nodus/packages/shared/learnings".into())
     );
 }
@@ -8628,10 +8668,14 @@ placement = "project"
     );
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
-    assert!(lockfile.managed_files.contains(&String::from("learnings")));
+    assert!(
+        lockfile
+            .legacy_managed_files
+            .contains(&String::from("learnings"))
+    );
     assert!(
         !lockfile
-            .managed_files
+            .legacy_managed_files
             .contains(&String::from("learnings/review.md"))
     );
 }
@@ -9022,7 +9066,7 @@ target = ".github/prompts/review.md"
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert!(
         lockfile
-            .managed_files
+            .legacy_managed_files
             .contains(&".github/prompts/review.md".into())
     );
 }
@@ -9061,7 +9105,7 @@ target = ".github/prompts/review.md"
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert!(
         lockfile
-            .managed_files
+            .legacy_managed_files
             .contains(&".github/prompts/review.md".into())
     );
 }
@@ -9107,7 +9151,7 @@ target = ".github/prompts/review.md"
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert!(
         !lockfile
-            .managed_files
+            .legacy_managed_files
             .contains(&".github/prompts/review.md".into())
     );
 }

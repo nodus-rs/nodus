@@ -1109,3 +1109,53 @@ fn compute_package_digest(
         .collect();
     Ok(content_digest(&entries))
 }
+
+#[cfg(test)]
+mod digest_tests {
+    use super::*;
+    use crate::manifest::load_root_from_dir;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn write_minimal_root_skill(dir: &Path) {
+        let skill_dir = dir.join("skills/example");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: Example\ndescription: example skill\n---\n# Example\n",
+        )
+        .unwrap();
+        // Minimal manifest without a `name` field — this is the case Slice 1's
+        // sentinel covers: the root name would otherwise be derived from the
+        // folder name and change when the folder is renamed.
+        fs::write(dir.join("nodus.toml"), "api_version = \"0.1\"\n").unwrap();
+    }
+
+    #[test]
+    fn root_digest_is_stable_across_folder_renames() {
+        let temp_a = TempDir::new().unwrap();
+        let temp_b = TempDir::new().unwrap();
+        let dir_a = temp_a.path().join("foo");
+        let dir_b = temp_b.path().join("bar");
+        fs::create_dir_all(&dir_a).unwrap();
+        fs::create_dir_all(&dir_b).unwrap();
+
+        write_minimal_root_skill(&dir_a);
+        write_minimal_root_skill(&dir_b);
+
+        let manifest_a = load_root_from_dir(&dir_a).unwrap();
+        let manifest_b = load_root_from_dir(&dir_b).unwrap();
+
+        // Sanity check: the folder-derived names differ — this is exactly the
+        // pre-v10 instability we want the digest to be immune to.
+        assert_ne!(manifest_a.effective_name(), manifest_b.effective_name());
+
+        let digest_a = compute_package_digest(&manifest_a, &[]).unwrap();
+        let digest_b = compute_package_digest(&manifest_b, &[]).unwrap();
+
+        assert_eq!(
+            digest_a, digest_b,
+            "root digest must not depend on the folder name"
+        );
+    }
+}

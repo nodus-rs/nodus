@@ -2064,7 +2064,7 @@ fn previously_managed_mcp_servers(
         .unwrap_or_default();
     if existing_lockfile.is_some_and(|lockfile| {
         lockfile
-            .managed_files
+            .legacy_managed_files
             .iter()
             .any(|managed_file| managed_file == config_path)
     }) {

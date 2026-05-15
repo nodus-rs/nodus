@@ -476,7 +476,7 @@ fn load_workspace_if_linked(
 
 fn adapters_from_lockfile(lockfile: &Lockfile) -> Adapters {
     lockfile
-        .managed_files
+        .legacy_managed_files
         .iter()
         .filter_map(|path| {
             if path.starts_with(".agents/") {
