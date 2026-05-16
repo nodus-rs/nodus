@@ -59,6 +59,18 @@ pub(crate) struct OutputPlanOptions {
     pub codex_native_plugins_auto_enabled: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct NativePackagePluginHooks<'a> {
+    claude: &'a [ManagedHookSpec],
+    codex: &'a [ManagedHookSpec],
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CodexFeatureRequirements {
+    hooks: bool,
+    plugin_hooks: bool,
+}
+
 #[derive(Debug, Default)]
 struct OutputAccumulator {
     files: BTreeMap<PathBuf, Vec<u8>>,
@@ -1350,6 +1362,7 @@ fn native_package_plugin_has_content(adapter: Adapter, package: &ResolvedPackage
             && artifact_supported(adapter, ArtifactKind::Rule)
             && !manifest.discovered.rules.is_empty())
         || package_has_mcp_servers(package)
+        || (adapter == Adapter::Claude && !manifest.claude_plugin_native_components().is_empty())
         || (adapter == Adapter::Claude
             && !matches!(package.source, PackageSource::Root)
             && (package_has_claude_targeted_hooks(package)
@@ -1572,6 +1585,11 @@ fn claude_native_package_plugin_files(
         )?;
     }
 
+    merge_files(
+        &mut files,
+        claude_native_passthrough_files(plugin_root, package, snapshot_root)?,
+    )?;
+
     let hook_emission =
         super::claude::plugin_native_hook_files(plugin_root, package, hooks, activation_hook)?;
     for file in hook_emission.files {
@@ -1590,6 +1608,40 @@ fn claude_native_package_plugin_files(
         },
     )?;
     Ok(managed_files_from_map(files))
+}
+
+fn claude_native_passthrough_files(
+    plugin_root: &Path,
+    package: &ResolvedPackage,
+    snapshot_root: &Path,
+) -> Result<Vec<ManagedFile>> {
+    let native_components = package.manifest.claude_plugin_native_components();
+    if native_components.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut files = Vec::new();
+    for package_file in package.manifest.package_files()? {
+        let relative = strip_path_prefix(&package_file, &package.manifest.root)
+            .with_context(|| format!("failed to make {} relative", package_file.display()))?;
+        if !native_components
+            .iter()
+            .any(|component| relative == component || relative.starts_with(component))
+        {
+            continue;
+        }
+        files.push(ManagedFile {
+            path: plugin_root.join(relative),
+            contents: fs::read(snapshot_root.join(relative)).with_context(|| {
+                format!(
+                    "failed to read snapshot file {}",
+                    snapshot_root.join(relative).display()
+                )
+            })?,
+        });
+    }
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(files)
 }
 
 fn codex_native_package_plugin_files(

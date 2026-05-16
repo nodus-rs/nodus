@@ -1864,6 +1864,63 @@ version = "1.2.3"
 }
 
 #[test]
+fn sync_preserves_claude_native_passthrough_components() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+    );
+    let package_root = temp.path().join("vendor/shared");
+    write_modern_claude_plugin_json(&package_root, "1.0.0");
+    write_file(&package_root.join(".lsp.json"), "{ \"servers\": {} }\n");
+    write_file(&package_root.join("monitors/status.json"), "{}\n");
+    write_file(&package_root.join("bin/run.sh"), "#!/bin/sh\n");
+    write_file(&package_root.join("settings.json"), "{}\n");
+    write_file(
+        &package_root.join("output-styles/default.md"),
+        "# Default\n",
+    );
+    write_file(&package_root.join("themes/dark.json"), "{}\n");
+
+    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Claude]).unwrap();
+
+    let plugin_root = temp.path().join(".nodus/packages/shared/claude-plugin");
+    for relative in [
+        ".lsp.json",
+        "monitors/status.json",
+        "bin/run.sh",
+        "settings.json",
+        "output-styles/default.md",
+        "themes/dark.json",
+    ] {
+        assert!(
+            plugin_root.join(relative).exists(),
+            "missing generated plugin file {relative}"
+        );
+    }
+    let plugin: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(plugin_root.join(".claude-plugin/plugin.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(plugin["name"].as_str(), Some("shared"));
+    assert_eq!(plugin["version"].as_str(), Some("1.0.0"));
+
+    let marketplace: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(generated_claude_marketplace_path(temp.path())).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(marketplace["plugins"][0]["name"].as_str(), Some("shared"));
+    assert_eq!(
+        marketplace["plugins"][0]["source"].as_str(),
+        Some("./packages/shared/claude-plugin")
+    );
+}
+
+#[test]
 fn sync_emits_codex_native_plugin_layout_for_dependency_package() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();

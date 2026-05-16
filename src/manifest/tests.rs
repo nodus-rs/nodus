@@ -1354,6 +1354,38 @@ fn accepts_dependency_repo_with_only_modern_claude_plugin_metadata_and_flat_mcp_
 }
 
 #[test]
+fn tracks_modern_claude_plugin_native_passthrough_components() {
+    let temp = TempDir::new().unwrap();
+    write_modern_claude_plugin_json(temp.path(), Some("2.34.0"));
+    write_file(&temp.path().join(".lsp.json"), "{ \"servers\": {} }\n");
+    write_file(&temp.path().join("monitors/status.json"), "{}\n");
+    write_file(&temp.path().join("bin/run.sh"), "#!/bin/sh\n");
+    write_file(&temp.path().join("settings.json"), "{}\n");
+    write_file(&temp.path().join("output-styles/default.md"), "# Default\n");
+    write_file(&temp.path().join("themes/dark.json"), "{}\n");
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    assert!(loaded.discovered.is_empty());
+    assert!(loaded.manifest.mcp_servers.is_empty());
+    let package_files = loaded.package_files().unwrap();
+    for relative in [
+        ".claude-plugin/plugin.json",
+        ".lsp.json",
+        "monitors/status.json",
+        "bin/run.sh",
+        "settings.json",
+        "output-styles/default.md",
+        "themes/dark.json",
+    ] {
+        assert!(
+            package_files.contains(&canonicalize_path(&temp.path().join(relative)).unwrap()),
+            "missing {relative} from {package_files:?}"
+        );
+    }
+}
+
+#[test]
 fn discovers_modern_claude_plugin_extra_component_paths_outside_standard_roots() {
     let temp = TempDir::new().unwrap();
     write_modern_claude_plugin_json_with_fields(
@@ -2277,7 +2309,7 @@ fn accepts_marketplace_with_hook_only_claude_plugin_source() {
 }
 
 #[test]
-fn ignores_marketplace_with_mcp_server_path_indirection() {
+fn imports_marketplace_mcp_server_path_indirection() {
     let temp = TempDir::new().unwrap();
     write_marketplace(
         temp.path(),
@@ -2291,15 +2323,30 @@ fn ignores_marketplace_with_mcp_server_path_indirection() {
   ]
 }"#,
     );
+    write_file(
+        &temp.path().join("mcp.json"),
+        r#"{
+  "mcpServers": {
+    "firebase": {
+      "command": "firebase",
+      "args": ["mcp"]
+    }
+  }
+}
+"#,
+    );
 
     let loaded = load_dependency_from_dir(temp.path()).unwrap();
     assert!(loaded.manifest.dependencies.is_empty());
-    assert!(
-        loaded
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("unsupported `mcpServers` path"))
-    );
+    assert!(loaded.warnings.is_empty());
+    let firebase = loaded.manifest.mcp_servers.get("firebase").unwrap();
+    assert_eq!(firebase.command.as_deref(), Some("firebase"));
+    assert_eq!(firebase.args, vec![String::from("mcp")]);
+    let package_files = loaded.package_files().unwrap();
+    assert!(package_files.contains(
+        &canonicalize_path(&temp.path().join(".claude-plugin/marketplace.json")).unwrap()
+    ));
+    assert!(package_files.contains(&canonicalize_path(&temp.path().join("mcp.json")).unwrap()));
 }
 
 #[test]

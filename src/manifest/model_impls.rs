@@ -203,6 +203,13 @@ impl LoadedManifest {
             .unwrap_or(&[])
     }
 
+    pub fn claude_plugin_native_components(&self) -> &[PathBuf] {
+        self.claude_plugin
+            .as_ref()
+            .map(|plugin| plugin.native_components.as_slice())
+            .unwrap_or(&[])
+    }
+
     fn validate_activation(&self) -> Result<()> {
         let Some(activation) = &self.manifest.activation else {
             return Ok(());
