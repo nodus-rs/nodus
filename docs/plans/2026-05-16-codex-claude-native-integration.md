@@ -294,19 +294,19 @@ Make the new behavior understandable for package consumers and authors.
 
 After all tracks are merged:
 
-- [ ] `cargo fmt --check`
-- [ ] `cargo test --workspace --all-features`
-- [ ] `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-- [ ] `cargo test --doc --workspace`
-- [ ] Manual generated-output inspection with a fixture package that has:
+- [x] `cargo fmt --check`
+- [x] `cargo test --workspace --all-features`
+- [x] `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- [x] `cargo test --doc --workspace`
+- [x] Manual generated-output inspection with a fixture package that has:
       - Codex hooks
       - Claude hooks
       - activation context
       - MCP server
       - command-as-skill
-- [ ] Confirm no unintended user-level `~/.codex/config.toml` write occurs
+- [x] Confirm no unintended user-level `~/.codex/config.toml` write occurs
       without opt-in or provenance.
-- [ ] Confirm lockfile-owned paths cover all generated plugin hook files.
+- [x] Confirm lockfile-owned paths cover all generated plugin hook files.
 
 ## Suggested agent launch set
 
