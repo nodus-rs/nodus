@@ -113,6 +113,11 @@ If the package publishes `mcp_servers`, Nodus now carries that MCP config into t
 runtime outputs as well. Today that includes the legacy project `.mcp.json`, Codex
 `.codex/config.toml`, and OpenCode `opencode.json`.
 
+`nodus info .` now includes a `native-integration` section after sync. It shows
+the generated Claude and Codex marketplace files, plugin keys and roots, hook
+locations, Codex `features.hooks` / `features.plugin_hooks`, Codex user-config
+opt-in state, and Claude `enabledPlugins` state.
+
 ### Codex user-level config (opt-in)
 
 Nodus can also write to the user-level Codex config at `~/.codex/config.toml`
@@ -163,7 +168,7 @@ When a package publishes `[[hooks]]`, Nodus filters those hook intents by what e
 | Adapter | Native hook events | `session_start` sources |
 |---------|--------------------|-------------------------|
 | `claude` | `session_start`, `user_prompt_submit`, `pre_tool_use`, `post_tool_use`, `stop`, `subagent_stop`, `session_end` | `startup`, `resume`, `clear`, `compact` |
-| `codex` | `session_start`, `user_prompt_submit`, `pre_tool_use`, `permission_request`, `post_tool_use`, `stop` | `startup`, `resume` |
+| `codex` | `session_start`, `user_prompt_submit`, `pre_tool_use`, `permission_request`, `post_tool_use`, `stop` | `startup`, `resume`, `clear` |
 | `opencode` | `session_start`, `pre_tool_use`, `post_tool_use`, `stop` | `startup` |
 | `agents` | none | none |
 | `copilot` | `session_start`, `user_prompt_submit`, `pre_tool_use`, `post_tool_use`, `stop`, `subagent_stop`, `session_end` | `startup`, `resume` |
@@ -173,7 +178,9 @@ See [docs/hooks.md](docs/hooks.md) for the full hook reference: matcher
 rules per event, handler configuration, runtime environment, `nodus info`
 inspection, and the `claude_plugin_hooks` escape hatch for Claude plugin
 packages that ship a pre-built `hooks/hooks.json`, plus `opencode_plugin_hooks`
-for raw OpenCode plugin files.
+for raw OpenCode plugin files. Dependency Codex hooks and activation context
+are emitted inside generated Codex plugins and enable
+`features.plugin_hooks` in `.codex/config.toml` when needed.
 
 ## CLI Help
 

@@ -1,6 +1,6 @@
 # Codex and Claude native integration
 
-Status: draft
+Status: implemented
 Date: 2026-05-16
 
 ## Summary
@@ -46,8 +46,8 @@ changes.
   plugins rather than direct runtime folders.
 - Nodus already emits Claude dependency hooks and activation context inside
   generated Claude plugins.
-- Nodus still emits Codex hooks and activation context into shared workspace
-  `.codex/hooks.json`.
+- Root Codex hooks remain in workspace `.codex/hooks.json`; dependency Codex
+  hooks and activation context are emitted inside generated Codex plugins.
 - Codex now documents plugin-bundled hooks. They are opt-in with
   `[features].plugin_hooks = true`, and can be loaded from the default
   `hooks/hooks.json` path or from a `.codex-plugin/plugin.json` `hooks` entry.
@@ -56,9 +56,10 @@ changes.
   include `startup`, `resume`, and `clear`.
 - Codex non-managed hooks, including plugin-bundled hooks, require trust review
   before they run.
-- Claude Code plugins support more component types than Nodus currently
-  models: skills, legacy commands, agents, hooks, MCP servers, LSP servers,
-  monitors, `bin/`, and plugin default `settings.json`.
+- Claude Code plugins support host-native component types beyond Nodus's
+  portable manifest model: skills, legacy commands, agents, hooks, MCP
+  servers, LSP servers, monitors, `bin/`, and plugin default
+  `settings.json`.
 - Claude Code hooks support more events and handler types than Nodus portable
   `[[hooks]]`: command, http, mcp_tool, prompt, and agent handlers; plus event
   surfaces such as `Setup`, `PermissionRequest`, `PermissionDenied`,
@@ -113,13 +114,19 @@ Plugin metadata includes:
 Codex commands do not have a native Nodus command artifact. They are bridged as
 synthetic skills named with the reserved `__cmd_` prefix.
 
-Codex hooks currently land in:
+Codex root hooks land in:
 
 - `.codex/hooks.json`
 - `.codex/hooks/nodus-hook-*.sh`
 
+Dependency hooks and activation context land in:
+
+- `.nodus/packages/<alias>/codex-plugin/hooks/hooks.json`
+- `.nodus/packages/<alias>/codex-plugin/hooks/scripts/nodus-hook-*.sh`
+
 Project `.codex/config.toml` is used for MCP config and for enabling
-`[features].hooks` when launch sync is emitted.
+`[features].hooks` and `[features].plugin_hooks` when hook output requires
+those Codex features.
 
 ### Claude
 
@@ -140,9 +147,10 @@ Generated Claude plugins can include:
 Root hooks remain in workspace `.claude/settings.json`. Dependency portable
 hooks and activation context live in plugin-local hooks.
 
-Claude plugin imports are partial. Nodus parses core fields such as skills,
-agents, commands, hooks, and MCP servers, but does not yet model or preserve
-every plugin component supported by Claude Code.
+Claude plugin imports preserve Nodus-manageable fields such as skills, agents,
+commands, hooks, and MCP servers. Nodus also preserves Claude-native component
+files that Claude loads by convention: `.lsp.json`, `monitors/`, `bin/`,
+`settings.json`, `output-styles/`, and `themes/`.
 
 ## Desired behavior
 

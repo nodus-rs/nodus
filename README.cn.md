@@ -112,6 +112,10 @@ nodus doctor
 runtime 输出。目前包括传统项目级 `.mcp.json`、Codex 的 `.codex/config.toml`，以及
 OpenCode 的 `opencode.json`。
 
+同步之后可以运行 `nodus info .` 查看 `native-integration` 区块。它会列出 Nodus 写出的
+Claude / Codex marketplace、plugin key、plugin 根目录、hook 位置、Codex
+`features.hooks` / `features.plugin_hooks` 状态，以及 Claude `enabledPlugins` 状态。
+
 如果这个包本身是一个会暴露多个子包的 wrapper，`nodus add` 现在默认只记录 wrapper
 本身，不会自动启用全部子包。你可以后续手动编辑 `nodus.toml` 里的 `members`，或者在
 安装时显式传 `--accept-all-dependencies` 一次性启用全部子包。
@@ -156,6 +160,8 @@ nodus doctor --help
 如果你想了解包作者工作流、workspace 包装、managed exports 或 relay 这样的进阶主题，优先看网站文档和 `nodus --help`，而不是把这个 README 当成完整命令手册。
 MCP 包也一样：包作者可以在 `nodus.toml` 里发布 `mcp_servers`，使用方则会按所选 adapter
 拿到对应的受管理项目配置。
+依赖包里的 Codex hook 和 activation context 会进入生成的 Codex plugin；需要时 Nodus 会在
+`.codex/config.toml` 中启用 `features.plugin_hooks`。
 
 ## 参与贡献
 

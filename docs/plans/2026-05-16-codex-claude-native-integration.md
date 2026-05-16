@@ -53,20 +53,20 @@ Move non-root dependency Codex hooks and activation context from workspace
 
 **Steps**
 
-- [ ] Add Codex plugin hook emission helpers parallel to Claude's
+- [x] Add Codex plugin hook emission helpers parallel to Claude's
       `plugin_native_hook_files`.
-- [ ] Emit plugin-local hook scripts under
+- [x] Emit plugin-local hook scripts under
       `.nodus/packages/<alias>/codex-plugin/hooks/scripts/`.
-- [ ] Emit plugin-local `hooks/hooks.json` with the documented Codex hook
+- [x] Emit plugin-local `hooks/hooks.json` with the documented Codex hook
       shape.
-- [ ] Add `"hooks": "./hooks/hooks.json"` to generated
+- [x] Add `"hooks": "./hooks/hooks.json"` to generated
       `.codex-plugin/plugin.json` when hook output exists.
-- [ ] Ensure `.codex/config.toml` writes `features.hooks = true` and
+- [x] Ensure `.codex/config.toml` writes `features.hooks = true` and
       `features.plugin_hooks = true` when Codex plugin hooks are emitted.
-- [ ] Keep root Codex hooks in `.codex/hooks.json`.
-- [ ] Update pruning/ownership expectations so old dependency workspace hook
+- [x] Keep root Codex hooks in `.codex/hooks.json`.
+- [x] Update pruning/ownership expectations so old dependency workspace hook
       files are removed after resync.
-- [ ] Add tests for:
+- [x] Add tests for:
       - dependency Codex hooks emitted inside plugin root
       - root Codex hooks still emitted in workspace hooks
       - activation context emitted inside dependency plugin hooks
@@ -103,16 +103,16 @@ Update Nodus's Codex hook capability matrix to match current official docs.
 
 **Steps**
 
-- [ ] Add Codex `SessionStart` support for `clear`.
-- [ ] Add Codex tool matcher support:
+- [x] Add Codex `SessionStart` support for `clear`.
+- [x] Add Codex tool matcher support:
       - `apply_patch` -> `apply_patch`
       - `edit` -> `Edit`
       - `write` -> `Write`
-- [ ] Decide how dynamic MCP tool names are represented:
+- [x] Decide how dynamic MCP tool names are represented:
       - add a raw matcher field, or
       - document that native Codex hook passthrough is required for MCP names.
-- [ ] Update docs tables and examples.
-- [ ] Add/adjust tests for supported events, session sources, and tool
+- [x] Update docs tables and examples.
+- [x] Add/adjust tests for supported events, session sources, and tool
       matchers.
 
 **Acceptance**
@@ -145,20 +145,20 @@ wraps Claude plugins.
 
 **Steps**
 
-- [ ] Support marketplace `mcpServers` path values by reading the referenced
+- [x] Support marketplace `mcpServers` path values by reading the referenced
       file relative to the plugin root.
-- [ ] Track native passthrough components in `ClaudePluginExtras`:
+- [x] Track native passthrough components in `ClaudePluginExtras`:
       - `.lsp.json`
       - `monitors/`
       - `bin/`
       - `settings.json`
       - `output-styles/`
       - `themes/`
-- [ ] Copy those components into generated Claude plugin roots when present.
-- [ ] Preserve or warn explicitly for unsupported command shapes:
+- [x] Copy those components into generated Claude plugin roots when present.
+- [x] Preserve or warn explicitly for unsupported command shapes:
       - directory-backed commands
       - inline command content
-- [ ] Add tests for path-based MCP import and each passthrough file/dir.
+- [x] Add tests for path-based MCP import and each passthrough file/dir.
 
 **Acceptance**
 
@@ -188,22 +188,22 @@ from the CLI.
 
 **Steps**
 
-- [ ] Extend `nodus_add` schema with:
+- [x] Extend `nodus_add` schema with:
       - `global`
       - `dev`
       - `revision`
       - `sync_on_launch`
       - `accept_all_dependencies`
       - `dry_run`
-- [ ] Thread those values through the MCP handler into existing resolver/CLI
+- [x] Thread those values through the MCP handler into existing resolver/CLI
       logic.
-- [ ] Add validation for mutually exclusive selectors:
+- [x] Add validation for mutually exclusive selectors:
       - `tag`
       - `branch`
       - `version`
       - `revision`
-- [ ] Add MCP tests covering schema and dispatch behavior.
-- [ ] Update MCP docs if they list tool schemas.
+- [x] Add MCP tests covering schema and dispatch behavior.
+- [x] Update MCP docs if they list tool schemas.
 
 **Acceptance**
 
@@ -230,22 +230,22 @@ Make it easy to inspect what Nodus generated for Codex and Claude.
 
 **Steps**
 
-- [ ] Decide whether diagnostics live under `nodus info`, `nodus doctor`, or
+- [x] Decide whether diagnostics live under `nodus info`, `nodus doctor`, or
       both.
-- [ ] Report enabled adapters and selected surfaces.
-- [ ] Report marketplace paths:
+- [x] Report enabled adapters and selected surfaces.
+- [x] Report marketplace paths:
       - `.nodus/.agents/plugins/marketplace.json`
       - `.nodus/.claude-plugin/marketplace.json`
-- [ ] Report generated plugin keys and plugin roots.
-- [ ] Report hook locations for root and dependency hooks.
-- [ ] Report Codex feature state:
+- [x] Report generated plugin keys and plugin roots.
+- [x] Report hook locations for root and dependency hooks.
+- [x] Report Codex feature state:
       - `features.hooks`
       - `features.plugin_hooks`
       - user config opt-in state
-- [ ] Report Claude settings state:
+- [x] Report Claude settings state:
       - `extraKnownMarketplaces`
       - `enabledPlugins`
-- [ ] Add tests with stable text or JSON output.
+- [x] Add tests with stable text or JSON output.
 
 **Acceptance**
 
@@ -274,12 +274,12 @@ Make the new behavior understandable for package consumers and authors.
 
 **Steps**
 
-- [ ] Document Codex plugin-local hooks and `plugin_hooks`.
-- [ ] Document Codex matcher support and limitations.
-- [ ] Document Claude native passthrough support.
-- [ ] Document MCP `nodus_add` parity.
-- [ ] Add package-author examples for Codex and Claude native plugin cases.
-- [ ] Update this plan's checkboxes and the spec status.
+- [x] Document Codex plugin-local hooks and `plugin_hooks`.
+- [x] Document Codex matcher support and limitations.
+- [x] Document Claude native passthrough support.
+- [x] Document MCP `nodus_add` parity.
+- [x] Add package-author examples for Codex and Claude native plugin cases.
+- [x] Update this plan's checkboxes and the spec status.
 
 **Acceptance**
 
