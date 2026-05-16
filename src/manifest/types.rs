@@ -462,6 +462,7 @@ pub(super) struct ClaudePluginExtras {
     pub(super) commands: Vec<ClaudePluginCommandSpec>,
     pub(super) hook_compat_sources: Vec<ClaudePluginHookCompatSource>,
     pub(super) mcp_servers: Vec<ClaudePluginMcpSource>,
+    pub(super) native_components: Vec<PathBuf>,
 }
 
 impl ClaudePluginExtras {
@@ -471,6 +472,7 @@ impl ClaudePluginExtras {
             && self.commands.is_empty()
             && self.hook_compat_sources.is_empty()
             && self.mcp_servers.is_empty()
+            && self.native_components.is_empty()
     }
 
     pub(super) fn has_nodus_manageable_content(&self) -> bool {
@@ -479,6 +481,7 @@ impl ClaudePluginExtras {
             || !self.commands.is_empty()
             || !self.hook_compat_sources.is_empty()
             || !self.mcp_servers.is_empty()
+            || !self.native_components.is_empty()
     }
 }
 

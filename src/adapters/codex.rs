@@ -261,6 +261,95 @@ pub fn hook_files(
     Ok(files)
 }
 
+/// Relative path inside a Codex plugin where Nodus emits the generated
+/// `hooks.json`. The plugin's `plugin.json` references this path via its
+/// `hooks` field.
+pub const PLUGIN_HOOKS_JSON_PATH: &str = "hooks/hooks.json";
+
+pub fn plugin_native_hook_files(
+    plugin_root: &Path,
+    package: &ResolvedPackage,
+    hooks: &[ManagedHookSpec],
+    activation_hook: Option<&ManagedActivationHook>,
+) -> Result<PluginHookEmission> {
+    debug_assert!(
+        hooks.iter().all(|hook| hook.package_alias == package.alias),
+        "plugin_native_hook_files expects hooks belonging to `{}`",
+        package.alias,
+    );
+
+    if hooks.is_empty() && activation_hook.is_none() {
+        return Ok(PluginHookEmission::default());
+    }
+
+    let mut files = Vec::new();
+    let mut entries: Vec<ManagedPluginHookEntry> = Vec::new();
+
+    for hook in hooks {
+        let script_relative = plugin_managed_script_relative_path(hook);
+        files.push(ManagedFile {
+            path: plugin_root.join(&script_relative),
+            contents: plugin_managed_hook_script_contents(hook),
+        });
+        entries.push(ManagedPluginHookEntry {
+            event: event_name(hook).to_string(),
+            entry: plugin_hook_entry(hook, &script_relative),
+        });
+    }
+
+    if let Some(activation_hook) = activation_hook {
+        let script_relative = plugin_activation_script_relative_path(activation_hook);
+        files.push(ManagedFile {
+            path: plugin_root.join(&script_relative),
+            contents: activation_script_contents(activation_hook)?,
+        });
+        entries.push(ManagedPluginHookEntry {
+            event: "SessionStart".to_string(),
+            entry: plugin_activation_hook_entry(&script_relative),
+        });
+    }
+
+    files.push(ManagedFile {
+        path: plugin_root.join(PLUGIN_HOOKS_JSON_PATH),
+        contents: plugin_hooks_json_contents(&entries)?,
+    });
+
+    Ok(PluginHookEmission {
+        files,
+        has_hooks_json: true,
+    })
+}
+
+#[derive(Debug, Default)]
+pub struct PluginHookEmission {
+    pub files: Vec<ManagedFile>,
+    pub has_hooks_json: bool,
+}
+
+#[derive(Debug)]
+struct ManagedPluginHookEntry {
+    event: String,
+    entry: Value,
+}
+
+fn plugin_hooks_json_contents(entries: &[ManagedPluginHookEntry]) -> Result<Vec<u8>> {
+    let mut hooks_object: Map<String, Value> = Map::new();
+    for entry in entries {
+        hooks_object
+            .entry(entry.event.clone())
+            .or_insert_with(|| Value::Array(Vec::new()))
+            .as_array_mut()
+            .expect("event array initialized as array")
+            .push(entry.entry.clone());
+    }
+    let mut root = Map::new();
+    root.insert("hooks".to_string(), Value::Object(hooks_object));
+    let mut contents = serde_json::to_vec_pretty(&Value::Object(root))
+        .context("failed to serialize Codex plugin hooks")?;
+    contents.push(b'\n');
+    Ok(contents)
+}
+
 fn merged_hooks_contents(
     path: &Path,
     hooks: &[ManagedHookSpec],
@@ -351,6 +440,40 @@ fn activation_hook_entry(hook: &ManagedActivationHook) -> Value {
     })
 }
 
+fn plugin_hook_entry(hook: &ManagedHookSpec, script_relative: &str) -> Value {
+    let hook_value = json!({
+        "type": "command",
+        "command": plugin_hook_command(script_relative),
+    });
+    if let Some(matcher) = matcher_string(hook) {
+        json!({
+            "matcher": matcher,
+            "hooks": [hook_value],
+        })
+    } else {
+        json!({
+            "hooks": [hook_value],
+        })
+    }
+}
+
+fn plugin_activation_hook_entry(script_relative: &str) -> Value {
+    json!({
+        "matcher": "startup|resume",
+        "hooks": [{
+            "type": "command",
+            "command": plugin_hook_command(script_relative),
+        }],
+    })
+}
+
+fn plugin_hook_command(script_relative: &str) -> String {
+    format!(
+        "sh \"${{PLUGIN_ROOT}}/{}\"",
+        script_relative.replace('"', "\\\"")
+    )
+}
+
 fn remove_managed_hook_entries(hooks: &mut Map<String, Value>) {
     for event in [
         "SessionStart",
@@ -405,6 +528,14 @@ fn activation_script_relative_path(hook: &ManagedActivationHook) -> String {
     format!(".codex/hooks/{}.sh", activation_script_stem(hook))
 }
 
+fn plugin_managed_script_relative_path(hook: &ManagedHookSpec) -> String {
+    format!("hooks/scripts/{}.sh", plugin_managed_script_stem(hook))
+}
+
+fn plugin_activation_script_relative_path(hook: &ManagedActivationHook) -> String {
+    format!("hooks/scripts/{}.sh", plugin_activation_script_stem(hook))
+}
+
 fn managed_script_stem(hook: &ManagedHookSpec) -> String {
     let sanitized = hook
         .hook
@@ -438,10 +569,25 @@ fn managed_script_stem(hook: &ManagedHookSpec) -> String {
     }
 }
 
+fn plugin_managed_script_stem(hook: &ManagedHookSpec) -> String {
+    let sanitized = sanitized_script_segment(&hook.hook.id);
+    format!(
+        "nodus-hook-{sanitized}-{}",
+        &blake3_hex(hook.hook.id.as_bytes())[..8]
+    )
+}
+
 fn activation_script_stem(hook: &ManagedActivationHook) -> String {
     let package = sanitized_script_segment(&hook.package_alias);
     format!(
         "nodus-hook-activation-{package}-{}",
+        &blake3_hex(format!("activation:{}", hook.package_alias).as_bytes())[..8]
+    )
+}
+
+fn plugin_activation_script_stem(hook: &ManagedActivationHook) -> String {
+    format!(
+        "nodus-hook-activation-{}",
         &blake3_hex(format!("activation:{}", hook.package_alias).as_bytes())[..8]
     )
 }
@@ -489,7 +635,9 @@ fn matcher_string(hook: &ManagedHookSpec) -> Option<String> {
                     .filter(|source| {
                         matches!(
                             source,
-                            HookSessionSource::Startup | HookSessionSource::Resume
+                            HookSessionSource::Startup
+                                | HookSessionSource::Resume
+                                | HookSessionSource::Clear
                         )
                     })
                     .collect::<Vec<_>>()
@@ -562,6 +710,10 @@ fi
         hook_label = hook.hook.id,
     )
     .into_bytes()
+}
+
+fn plugin_managed_hook_script_contents(hook: &ManagedHookSpec) -> Vec<u8> {
+    hook_script_contents(hook)
 }
 
 fn shell_quote(value: &str) -> String {

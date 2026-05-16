@@ -285,26 +285,6 @@ fn runtime_file_exists(project_root: &Path, adapter: Adapter, file_name: &str) -
     !runtime_file_paths(project_root, adapter, file_name).is_empty()
 }
 
-fn hook_script_path(project_root: &Path, runtime_dir: &str, name_fragment: &str) -> PathBuf {
-    let hooks_dir = project_root.join(runtime_dir).join("hooks");
-    let matches = fs::read_dir(&hooks_dir)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.contains(name_fragment))
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        matches.len(),
-        1,
-        "expected one hook script containing `{name_fragment}` in {}",
-        hooks_dir.display()
-    );
-    matches.into_iter().next().unwrap()
-}
-
 fn plugin_hook_script_path(
     project_root: &Path,
     package_alias: &str,
@@ -332,6 +312,38 @@ fn plugin_hook_script_path(
         matches.len(),
         1,
         "expected one plugin hook script containing `{name_fragment}` in {}",
+        scripts_dir.display()
+    );
+    matches.into_iter().next().unwrap()
+}
+
+fn codex_plugin_hook_script_path(
+    project_root: &Path,
+    package_alias: &str,
+    name_fragment: &str,
+) -> PathBuf {
+    let scripts_dir = project_root
+        .join(".nodus/packages")
+        .join(package_alias)
+        .join("codex-plugin/hooks/scripts");
+    let matches = fs::read_dir(&scripts_dir)
+        .unwrap_or_else(|err| {
+            panic!(
+                "expected Codex plugin scripts dir at {}: {err}",
+                scripts_dir.display()
+            )
+        })
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.contains(name_fragment))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        matches.len(),
+        1,
+        "expected one Codex plugin hook script containing `{name_fragment}` in {}",
         scripts_dir.display()
     );
     matches.into_iter().next().unwrap()
@@ -1852,6 +1864,63 @@ version = "1.2.3"
 }
 
 #[test]
+fn sync_preserves_claude_native_passthrough_components() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+    );
+    let package_root = temp.path().join("vendor/shared");
+    write_modern_claude_plugin_json(&package_root, "1.0.0");
+    write_file(&package_root.join(".lsp.json"), "{ \"servers\": {} }\n");
+    write_file(&package_root.join("monitors/status.json"), "{}\n");
+    write_file(&package_root.join("bin/run.sh"), "#!/bin/sh\n");
+    write_file(&package_root.join("settings.json"), "{}\n");
+    write_file(
+        &package_root.join("output-styles/default.md"),
+        "# Default\n",
+    );
+    write_file(&package_root.join("themes/dark.json"), "{}\n");
+
+    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Claude]).unwrap();
+
+    let plugin_root = temp.path().join(".nodus/packages/shared/claude-plugin");
+    for relative in [
+        ".lsp.json",
+        "monitors/status.json",
+        "bin/run.sh",
+        "settings.json",
+        "output-styles/default.md",
+        "themes/dark.json",
+    ] {
+        assert!(
+            plugin_root.join(relative).exists(),
+            "missing generated plugin file {relative}"
+        );
+    }
+    let plugin: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(plugin_root.join(".claude-plugin/plugin.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(plugin["name"].as_str(), Some("shared"));
+    assert_eq!(plugin["version"].as_str(), Some("1.0.0"));
+
+    let marketplace: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(generated_claude_marketplace_path(temp.path())).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(marketplace["plugins"][0]["name"].as_str(), Some("shared"));
+    assert_eq!(
+        marketplace["plugins"][0]["source"].as_str(),
+        Some("./packages/shared/claude-plugin")
+    );
+}
+
+#[test]
 fn sync_emits_codex_native_plugin_layout_for_dependency_package() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();
@@ -1993,6 +2062,88 @@ bundle = { path = "vendor/bundle", members = ["core"] }
         .find(|package| package.alias == "bundle")
         .unwrap();
     assert_eq!(bundle.dependencies, vec!["ena_core".to_string()]);
+}
+
+#[test]
+fn sync_emits_dependency_codex_hooks_inside_native_plugin() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[adapters]
+enabled = ["codex"]
+
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+    );
+    write_manifest(
+        &temp.path().join("vendor/shared"),
+        r#"
+[[hooks]]
+id = "format-after-write"
+event = "post_tool_use"
+adapters = ["codex"]
+
+[hooks.matcher]
+tool_names = ["bash"]
+
+[hooks.handler]
+type = "command"
+command = "./scripts/format.sh"
+"#,
+    );
+    write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+    write_file(
+        &temp.path().join("vendor/shared/scripts/format.sh"),
+        "#!/bin/sh\n",
+    );
+
+    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
+
+    let plugin_root = temp.path().join(".nodus/packages/shared/codex-plugin");
+    let plugin_hooks: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(plugin_root.join("hooks/hooks.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        plugin_hooks["hooks"]["PostToolUse"][0]["matcher"].as_str(),
+        Some("Bash")
+    );
+    let command = plugin_hooks["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap();
+    assert!(
+        command.contains("${PLUGIN_ROOT}/hooks/scripts/nodus-hook-format-after-write-"),
+        "expected plugin-root-relative hook command, got `{command}`",
+    );
+    assert!(codex_plugin_hook_script_path(temp.path(), "shared", "format-after-write").exists());
+
+    let plugin: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(plugin_root.join(".codex-plugin/plugin.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(plugin["hooks"].as_str(), Some("./hooks/hooks.json"));
+
+    assert!(
+        !temp.path().join(".codex/hooks.json").exists(),
+        "dependency hooks should not be emitted into workspace Codex hooks"
+    );
+    let codex_config: toml::Value =
+        toml::from_str(&fs::read_to_string(temp.path().join(".codex/config.toml")).unwrap())
+            .unwrap();
+    assert_eq!(codex_config["features"]["hooks"].as_bool(), Some(true));
+    assert_eq!(
+        codex_config["features"]["plugin_hooks"].as_bool(),
+        Some(true)
+    );
+
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    assert_owned(
+        &lockfile,
+        temp.path(),
+        ".nodus/packages/shared/codex-plugin",
+    );
 }
 
 #[test]
@@ -6629,28 +6780,54 @@ prefer_skills = ["review"]
         claude_settings["hooks"]["SessionStart"],
     );
 
-    let codex_hooks: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(temp.path().join(".codex/hooks.json")).unwrap())
-            .unwrap();
+    let codex_plugin_hooks: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(
+            temp.path()
+                .join(".nodus/packages/shared/codex-plugin/hooks/hooks.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     assert_eq!(
-        codex_hooks["hooks"]["SessionStart"][0]["matcher"].as_str(),
+        codex_plugin_hooks["hooks"]["SessionStart"][0]["matcher"].as_str(),
         Some("startup|resume")
     );
     assert!(
-        codex_hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        codex_plugin_hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"]
             .as_str()
             .unwrap()
-            .contains("/.codex/hooks/nodus-hook-activation-shared-")
+            .contains("${PLUGIN_ROOT}/hooks/scripts/nodus-hook-activation-")
     );
+    assert!(
+        !temp.path().join(".codex/hooks.json").exists(),
+        "workspace Codex hooks should not carry dependency activation"
+    );
+    let codex_plugin: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(
+            temp.path()
+                .join(".nodus/packages/shared/codex-plugin/.codex-plugin/plugin.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(codex_plugin["hooks"].as_str(), Some("./hooks/hooks.json"));
     let codex_config: toml::Value =
         toml::from_str(&fs::read_to_string(temp.path().join(".codex/config.toml")).unwrap())
             .unwrap();
     assert_eq!(codex_config["features"]["hooks"].as_bool(), Some(true));
+    assert_eq!(
+        codex_config["features"]["plugin_hooks"].as_bool(),
+        Some(true)
+    );
 
     let claude_script =
         fs::read_to_string(plugin_hook_script_path(temp.path(), "shared", "activation")).unwrap();
-    let codex_script =
-        fs::read_to_string(hook_script_path(temp.path(), ".codex", "activation-shared")).unwrap();
+    let codex_script = fs::read_to_string(codex_plugin_hook_script_path(
+        temp.path(),
+        "shared",
+        "activation",
+    ))
+    .unwrap();
     for context in [
         activation_context_from_script(&claude_script),
         activation_context_from_script(&codex_script),
@@ -6697,9 +6874,13 @@ always_context = ["prompts/bootstrap.md"]
     );
 
     sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
-    let script = hook_script_path(temp.path(), ".codex", "activation-shared");
+    let script = codex_plugin_hook_script_path(temp.path(), "shared", "activation");
+    let plugin_hooks_json = temp
+        .path()
+        .join(".nodus/packages/shared/codex-plugin/hooks/hooks.json");
     assert!(script.exists());
-    assert!(temp.path().join(".codex/hooks.json").exists());
+    assert!(plugin_hooks_json.exists());
+    assert!(!temp.path().join(".codex/hooks.json").exists());
     assert!(temp.path().join(".codex/config.toml").exists());
     let first_lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert_owned(&first_lockfile, temp.path(), ".codex/config.toml");
@@ -6719,7 +6900,7 @@ always_context = ["prompts/bootstrap.md"]
     sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
 
     assert!(!script.exists());
-    assert!(!temp.path().join(".codex/hooks.json").exists());
+    assert!(!plugin_hooks_json.exists());
     assert!(!temp.path().join(".codex/config.toml").exists());
 }
 
@@ -6782,6 +6963,7 @@ sync_on_startup = true
     assert!(claude_settings.contains("\"SessionStart\""));
     assert!(claude_settings.contains("\"startup|resume\""));
     assert_eq!(codex_config["features"]["hooks"].as_bool(), Some(true));
+    assert!(!codex_features.contains_key("plugin_hooks"));
     assert!(!codex_features.contains_key("codex_hooks"));
     assert_eq!(
         codex_hooks["hooks"]["SessionStart"][0]["matcher"].as_str(),
@@ -7447,7 +7629,10 @@ command = "./scripts/read.sh"
             .unwrap();
     let codex_pre_tool = codex_hooks["hooks"]["PreToolUse"].as_array().unwrap();
     assert_eq!(codex_pre_tool.len(), 1);
-    assert_eq!(codex_pre_tool[0]["matcher"].as_str(), Some("Bash"));
+    assert_eq!(
+        codex_pre_tool[0]["matcher"].as_str(),
+        Some("Bash|apply_patch")
+    );
 
     let copilot_hooks: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(temp.path().join(".github/hooks/nodus-hooks.json")).unwrap(),
@@ -7500,6 +7685,41 @@ command = "./scripts/log-prompt.sh"
             .as_str()
             .unwrap()
             .contains("/.codex/hooks/nodus-hook-")
+    );
+}
+
+#[test]
+fn sync_emits_codex_apply_patch_edit_and_write_matchers() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_skill(&temp.path().join("skills/review"), "Review");
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[adapters]
+enabled = ["codex"]
+
+[[hooks]]
+id = "mutation-audit"
+event = "pre_tool_use"
+
+[hooks.matcher]
+tool_names = ["apply_patch", "edit", "write"]
+
+[hooks.handler]
+type = "command"
+command = "./scripts/audit.sh"
+"#,
+    );
+
+    sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+
+    let codex_hooks: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(temp.path().join(".codex/hooks.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        codex_hooks["hooks"]["PreToolUse"][0]["matcher"].as_str(),
+        Some("apply_patch|Edit|Write")
     );
 }
 
@@ -7877,7 +8097,7 @@ command = "./scripts/session-memory.sh"
     );
     assert_eq!(
         codex_hooks["hooks"]["SessionStart"][0]["matcher"].as_str(),
-        Some("startup")
+        Some("startup|clear")
     );
     assert!(
         temp.path()

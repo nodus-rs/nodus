@@ -54,6 +54,10 @@ placement = "project"
 # local clones.
 enabled = ["codex", "copilot", "claude", "opencode"]
 
+# After `nodus sync`, run `nodus info .` to inspect generated native plugin
+# state: marketplace files, plugin keys, hook locations, Codex hook feature
+# flags, and Claude enabled plugin keys.
+
 [[capabilities]]
 # Optional capability declarations for the root package.
 # Use these only if this repo itself is a package that exposes tools or actions.
@@ -90,7 +94,7 @@ justification = "Run repository checks and maintenance commands."
 playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.6.0" }
 
 # Common case: install only a subset of artifact kinds from a dependency.
-# Supported values: "skills", "agents", "rules", "commands"
+# Supported values: "skills", "agents", "rules", "commands", "mcp"
 nodus = { github = "nodus-rs/nodus", tag = "v0.3.2", components = ["skills", "rules"] }
 
 # Common case: local path dependency relative to the repo root.

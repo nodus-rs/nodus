@@ -1,10 +1,11 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anstyle::{AnsiColor, Effects, Style};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 
 use crate::adapters::{Adapter, effective_session_start_sources, hook_supported_by_adapter};
 use crate::domain::dependency_query::{
@@ -49,6 +50,8 @@ pub struct PackageInfo {
     dev_dependencies: Vec<String>,
     capabilities: Vec<PackageCapability>,
     hook_adapter_support: Vec<PackageHookAdapterSupport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    native_integration: Option<PackageNativeIntegration>,
     warnings: Vec<String>,
     #[serde(skip)]
     show_dev_dependencies: bool,
@@ -68,6 +71,55 @@ enum PackageInfoSource {
         branch: Option<String>,
         rev: String,
     },
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PackageNativeIntegration {
+    adapters: Vec<Adapter>,
+    marketplaces: Vec<NativeMarketplaceInfo>,
+    plugins: Vec<NativePluginInfo>,
+    hooks: Vec<NativeHookLocation>,
+    codex: CodexNativeState,
+    claude: ClaudeNativeState,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct NativeMarketplaceInfo {
+    adapter: Adapter,
+    path: String,
+    exists: bool,
+    name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct NativePluginInfo {
+    adapter: Adapter,
+    key: String,
+    root: String,
+    hooks: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct NativeHookLocation {
+    adapter: Adapter,
+    scope: String,
+    path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CodexNativeState {
+    project_config: String,
+    hooks: Option<bool>,
+    plugin_hooks: Option<bool>,
+    plugin_hooks_required: bool,
+    user_config: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ClaudeNativeState {
+    settings: String,
+    extra_known_marketplaces: Vec<String>,
+    enabled_plugins: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -388,6 +440,9 @@ fn package_info_from_loaded(
     } else {
         manifest.manifest.hooks.clone()
     };
+    let native_integration = (role == PackageRole::Root)
+        .then(|| build_native_integration_info(&manifest.root, &adapters, &mut warnings))
+        .flatten();
 
     PackageInfo {
         alias,
@@ -482,6 +537,7 @@ fn package_info_from_loaded(
             })
             .collect(),
         hook_adapter_support: build_hook_adapter_support(&hooks),
+        native_integration,
         warnings,
         show_dev_dependencies: role == PackageRole::Root,
     }
@@ -517,6 +573,329 @@ fn load_cargo_metadata(root: &Path, warnings: &mut Vec<String>) -> CargoMetadata
             CargoMetadata::default()
         }
     }
+}
+
+fn build_native_integration_info(
+    project_root: &Path,
+    manifest_adapters: &[Adapter],
+    warnings: &mut Vec<String>,
+) -> Option<PackageNativeIntegration> {
+    let mut marketplaces = Vec::new();
+    let mut plugins = Vec::new();
+    for adapter in [Adapter::Claude, Adapter::Codex] {
+        let Some((marketplace, mut marketplace_plugins)) =
+            inspect_native_marketplace(project_root, adapter, warnings)
+        else {
+            continue;
+        };
+        marketplaces.push(marketplace);
+        plugins.append(&mut marketplace_plugins);
+    }
+
+    let hooks = inspect_native_hook_locations(project_root, &plugins);
+    let codex = inspect_codex_native_state(
+        project_root,
+        plugins
+            .iter()
+            .any(|plugin| plugin.adapter == Adapter::Codex && plugin.hooks.is_some()),
+        warnings,
+    );
+    let claude = inspect_claude_native_state(project_root, warnings);
+
+    let mut adapters = manifest_adapters
+        .iter()
+        .copied()
+        .filter(|adapter| matches!(adapter, Adapter::Claude | Adapter::Codex))
+        .collect::<BTreeSet<_>>();
+    for marketplace in &marketplaces {
+        if marketplace.exists {
+            adapters.insert(marketplace.adapter);
+        }
+    }
+    if codex.hooks.is_some() || codex.plugin_hooks.is_some() {
+        adapters.insert(Adapter::Codex);
+    }
+    if !claude.extra_known_marketplaces.is_empty() || !claude.enabled_plugins.is_empty() {
+        adapters.insert(Adapter::Claude);
+    }
+
+    let has_state = !adapters.is_empty()
+        || marketplaces.iter().any(|marketplace| marketplace.exists)
+        || !plugins.is_empty()
+        || !hooks.is_empty()
+        || codex.hooks.is_some()
+        || codex.plugin_hooks.is_some()
+        || !claude.extra_known_marketplaces.is_empty()
+        || !claude.enabled_plugins.is_empty();
+    has_state.then(|| PackageNativeIntegration {
+        adapters: adapters.into_iter().collect(),
+        marketplaces,
+        plugins,
+        hooks,
+        codex,
+        claude,
+    })
+}
+
+fn inspect_native_marketplace(
+    project_root: &Path,
+    adapter: Adapter,
+    warnings: &mut Vec<String>,
+) -> Option<(NativeMarketplaceInfo, Vec<NativePluginInfo>)> {
+    let path = crate::adapters::native_marketplace_path(project_root, adapter)?;
+    let display = display_project_path(project_root, &path);
+    if !path.exists() {
+        return Some((
+            NativeMarketplaceInfo {
+                adapter,
+                path: display,
+                exists: false,
+                name: None,
+            },
+            Vec::new(),
+        ));
+    }
+
+    let Some(json) = read_json_file(&path, warnings) else {
+        return Some((
+            NativeMarketplaceInfo {
+                adapter,
+                path: display,
+                exists: true,
+                name: None,
+            },
+            Vec::new(),
+        ));
+    };
+    let name = json
+        .get("name")
+        .and_then(JsonValue::as_str)
+        .map(str::to_string);
+    let plugins = json
+        .get("plugins")
+        .and_then(JsonValue::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| {
+                    native_plugin_info(project_root, adapter, name.as_deref(), entry)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    Some((
+        NativeMarketplaceInfo {
+            adapter,
+            path: display,
+            exists: true,
+            name,
+        },
+        plugins,
+    ))
+}
+
+fn native_plugin_info(
+    project_root: &Path,
+    adapter: Adapter,
+    marketplace_name: Option<&str>,
+    entry: &JsonValue,
+) -> Option<NativePluginInfo> {
+    let plugin_name = entry.get("name").and_then(JsonValue::as_str)?;
+    let root = native_plugin_source_root(project_root, adapter, entry)?;
+    let key = marketplace_name
+        .map(|marketplace| format!("{plugin_name}@{marketplace}"))
+        .unwrap_or_else(|| plugin_name.to_string());
+    let hooks_path = root.join("hooks").join("hooks.json");
+    Some(NativePluginInfo {
+        adapter,
+        key,
+        root: display_project_path(project_root, &root),
+        hooks: hooks_path
+            .exists()
+            .then(|| display_project_path(project_root, &hooks_path)),
+    })
+}
+
+fn native_plugin_source_root(
+    project_root: &Path,
+    adapter: Adapter,
+    entry: &JsonValue,
+) -> Option<PathBuf> {
+    let source = match adapter {
+        Adapter::Claude => entry.get("source").and_then(JsonValue::as_str),
+        Adapter::Codex => entry
+            .get("source")
+            .and_then(|source| source.get("path"))
+            .and_then(JsonValue::as_str)
+            .or_else(|| entry.get("source").and_then(JsonValue::as_str)),
+        Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => None,
+    }?;
+    let source = source.strip_prefix("./").unwrap_or(source);
+    let path = Path::new(source);
+    if path.is_absolute() {
+        Some(path.to_path_buf())
+    } else {
+        Some(project_root.join(".nodus").join(path))
+    }
+}
+
+fn inspect_native_hook_locations(
+    project_root: &Path,
+    plugins: &[NativePluginInfo],
+) -> Vec<NativeHookLocation> {
+    let mut hooks = Vec::new();
+    for (adapter, path) in [
+        (
+            Adapter::Claude,
+            project_root.join(".claude").join("settings.json"),
+        ),
+        (
+            Adapter::Codex,
+            project_root.join(".codex").join("hooks.json"),
+        ),
+    ] {
+        if path.exists() {
+            hooks.push(NativeHookLocation {
+                adapter,
+                scope: "workspace".into(),
+                path: display_project_path(project_root, &path),
+            });
+        }
+    }
+
+    for plugin in plugins {
+        if let Some(path) = &plugin.hooks {
+            hooks.push(NativeHookLocation {
+                adapter: plugin.adapter,
+                scope: format!("plugin:{}", plugin.key),
+                path: path.clone(),
+            });
+        }
+    }
+    hooks
+}
+
+fn inspect_codex_native_state(
+    project_root: &Path,
+    plugin_hooks_required: bool,
+    warnings: &mut Vec<String>,
+) -> CodexNativeState {
+    let path = project_root.join(".codex").join("config.toml");
+    let (hooks, plugin_hooks) = if path.exists() {
+        match fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))
+            .and_then(|contents| {
+                contents
+                    .parse::<toml_edit::DocumentMut>()
+                    .with_context(|| format!("failed to parse TOML in {}", path.display()))
+            }) {
+            Ok(value) => {
+                let features = value.get("features");
+                (
+                    features
+                        .and_then(|features| features.get("hooks"))
+                        .and_then(toml_edit::Item::as_bool),
+                    features
+                        .and_then(|features| features.get("plugin_hooks"))
+                        .and_then(toml_edit::Item::as_bool),
+                )
+            }
+            Err(error) => {
+                warnings.push(error.to_string());
+                (None, None)
+            }
+        }
+    } else {
+        (None, None)
+    };
+
+    CodexNativeState {
+        project_config: if path.exists() {
+            format!("{} (present)", display_project_path(project_root, &path))
+        } else {
+            format!("{} (missing)", display_project_path(project_root, &path))
+        },
+        hooks,
+        plugin_hooks,
+        plugin_hooks_required,
+        user_config: if codex_user_config_opted_in() {
+            "opted-in".into()
+        } else {
+            "skipped".into()
+        },
+    }
+}
+
+fn inspect_claude_native_state(
+    project_root: &Path,
+    warnings: &mut Vec<String>,
+) -> ClaudeNativeState {
+    let path = project_root.join(".claude").join("settings.json");
+    let mut extra_known_marketplaces = Vec::new();
+    let mut enabled_plugins = Vec::new();
+    if path.exists()
+        && let Some(json) = read_json_file(&path, warnings)
+    {
+        extra_known_marketplaces = json
+            .get("extraKnownMarketplaces")
+            .and_then(JsonValue::as_object)
+            .map(|entries| entries.keys().cloned().collect())
+            .unwrap_or_default();
+        enabled_plugins = json
+            .get("enabledPlugins")
+            .and_then(JsonValue::as_object)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|(key, value)| {
+                        value.as_bool().unwrap_or(false).then_some(key.clone())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
+    extra_known_marketplaces.sort();
+    enabled_plugins.sort();
+
+    ClaudeNativeState {
+        settings: if path.exists() {
+            format!("{} (present)", display_project_path(project_root, &path))
+        } else {
+            format!("{} (missing)", display_project_path(project_root, &path))
+        },
+        extra_known_marketplaces,
+        enabled_plugins,
+    }
+}
+
+fn read_json_file(path: &Path, warnings: &mut Vec<String>) -> Option<JsonValue> {
+    match fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))
+        .and_then(|contents| {
+            serde_json::from_str::<JsonValue>(&contents)
+                .with_context(|| format!("failed to parse JSON in {}", path.display()))
+        }) {
+        Ok(value) => Some(value),
+        Err(error) => {
+            warnings.push(error.to_string());
+            None
+        }
+    }
+}
+
+fn display_project_path(project_root: &Path, path: &Path) -> String {
+    path.strip_prefix(project_root)
+        .ok()
+        .filter(|relative| !relative.as_os_str().is_empty())
+        .map(display_path)
+        .unwrap_or_else(|| display_path(path))
+}
+
+fn codex_user_config_opted_in() -> bool {
+    std::env::var_os("NODUS_ENABLE_CODEX_USER_CONFIG")
+        .as_deref()
+        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
 }
 
 fn alias_from_loaded_manifest(manifest: &LoadedManifest) -> Result<String> {
@@ -627,6 +1006,14 @@ impl PackageInfo {
             lines.extend(render_hook_adapter_support_lines(
                 reporter,
                 &self.hook_adapter_support,
+            ));
+        }
+
+        if let Some(native_integration) = &self.native_integration {
+            lines.push(paint_label(reporter, "native-integration:"));
+            lines.extend(render_native_integration_lines(
+                reporter,
+                native_integration,
             ));
         }
 
@@ -864,6 +1251,97 @@ fn render_hook_adapter_support_lines(
             format!("  {label} = {summary}")
         })
         .collect()
+}
+
+fn render_native_integration_lines(
+    reporter: &Reporter,
+    native: &PackageNativeIntegration,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "  adapters = [{}]",
+        native
+            .adapters
+            .iter()
+            .map(|adapter| adapter.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+
+    if !native.marketplaces.is_empty() {
+        lines.push(format!("  {}", paint_label(reporter, "marketplaces:")));
+        for marketplace in &native.marketplaces {
+            let state = if marketplace.exists {
+                marketplace
+                    .name
+                    .as_deref()
+                    .map(|name| format!("present, {name}"))
+                    .unwrap_or_else(|| "present".into())
+            } else {
+                "missing".into()
+            };
+            lines.push(format!(
+                "    {} {} ({state})",
+                marketplace.adapter.as_str(),
+                marketplace.path
+            ));
+        }
+    }
+
+    if !native.plugins.is_empty() {
+        lines.push(format!("  {}", paint_label(reporter, "plugins:")));
+        for plugin in &native.plugins {
+            let hooks = plugin
+                .hooks
+                .as_deref()
+                .map(|hooks| format!(" hooks={hooks}"))
+                .unwrap_or_default();
+            lines.push(format!(
+                "    {} {} -> {}{}",
+                plugin.adapter.as_str(),
+                plugin.key,
+                plugin.root,
+                hooks
+            ));
+        }
+    }
+
+    if !native.hooks.is_empty() {
+        lines.push(format!("  {}", paint_label(reporter, "hooks:")));
+        for hook in &native.hooks {
+            lines.push(format!(
+                "    {} {} {}",
+                hook.adapter.as_str(),
+                hook.scope,
+                hook.path
+            ));
+        }
+    }
+
+    lines.push(format!(
+        "  codex = project-config:{} hooks={} plugin_hooks={} plugin_hooks_required={} user-config={}",
+        native.codex.project_config,
+        render_optional_bool(native.codex.hooks),
+        render_optional_bool(native.codex.plugin_hooks),
+        native.codex.plugin_hooks_required,
+        native.codex.user_config
+    ));
+    lines.push(format!(
+        "  claude = settings:{} marketplaces=[{}] enabled=[{}]",
+        native.claude.settings,
+        native.claude.extra_known_marketplaces.join(", "),
+        native.claude.enabled_plugins.join(", ")
+    ));
+
+    lines
+}
+
+fn render_optional_bool(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "true",
+        Some(false) => "false",
+        None => "unknown",
+    }
 }
 
 fn render_managed_export_lines(
@@ -1281,7 +1759,7 @@ command = "fuli integration claude hook session-end"
         );
         assert_eq!(
             codex.supported_events[0].session_start_sources,
-            vec!["startup", "resume"]
+            vec!["startup", "resume", "clear"]
         );
 
         let opencode = info
@@ -1340,7 +1818,7 @@ command = "fuli integration claude hook session-end"
         assert!(output.contains("session_end"));
         assert!(output.contains("subagent_stop"));
         assert!(output.contains(
-            "codex    = session_start(startup,resume), user_prompt_submit, post_tool_use, stop"
+            "codex    = session_start(startup,resume,clear), user_prompt_submit, post_tool_use, stop"
         ));
         assert!(output.contains("opencode = session_start(startup), post_tool_use, stop"));
         assert!(output.contains("agents   = none"));
@@ -1400,6 +1878,82 @@ args = ["-y", "firebase-tools", "mcp", "--dir", "."]
         let output = capture_info_output(package.path(), cache.path(), ".", None, None);
 
         assert!(output.contains("mcp-servers: firebase"));
+    }
+
+    #[test]
+    fn info_reports_native_integration_state() {
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        write_file(
+            &project.path().join("nodus.toml"),
+            r#"
+[adapters]
+enabled = ["claude", "codex"]
+
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+        );
+        write_file(
+            &project.path().join("vendor/shared/nodus.toml"),
+            r#"
+name = "Shared Tools"
+
+[activation]
+always_context = ["prompts/context.md"]
+"#,
+        );
+        write_skill(&project.path().join("vendor/shared"), "Review");
+        write_file(
+            &project.path().join("vendor/shared/prompts/context.md"),
+            "Use the shared context.\n",
+        );
+
+        crate::resolver::sync_in_dir_with_adapters(
+            project.path(),
+            cache.path(),
+            false,
+            false,
+            false,
+            &[Adapter::Claude, Adapter::Codex],
+            false,
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        let output = capture_info_output(project.path(), cache.path(), ".", None, None);
+
+        assert!(output.contains("native-integration:"));
+        assert!(output.contains("adapters = [claude, codex]"));
+        assert!(output.contains(".nodus/.claude-plugin/marketplace.json (present"));
+        assert!(output.contains(".nodus/.agents/plugins/marketplace.json (present"));
+        assert!(output.contains("claude shared@"));
+        assert!(output.contains(".nodus/packages/shared/claude-plugin"));
+        assert!(output.contains("codex shared@"));
+        assert!(output.contains(".nodus/packages/shared/codex-plugin"));
+        assert!(output.contains("plugin_hooks=true plugin_hooks_required=true"));
+        assert!(output.contains("user-config=skipped"));
+
+        let info =
+            describe_package_json_in_dir(project.path(), cache.path(), ".", None, None).unwrap();
+        let native = info.native_integration.unwrap();
+        assert_eq!(native.adapters, vec![Adapter::Claude, Adapter::Codex]);
+        assert_eq!(native.codex.hooks, Some(true));
+        assert_eq!(native.codex.plugin_hooks, Some(true));
+        assert!(native.codex.plugin_hooks_required);
+        assert!(
+            native
+                .plugins
+                .iter()
+                .any(|plugin| plugin.adapter == Adapter::Codex && plugin.hooks.is_some())
+        );
+        assert!(
+            native
+                .claude
+                .enabled_plugins
+                .iter()
+                .any(|plugin| plugin.starts_with("shared@"))
+        );
     }
 
     #[test]

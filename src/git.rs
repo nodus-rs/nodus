@@ -233,6 +233,10 @@ fn add_dependency_at_paths_with_adapters_mode(
             install_paths.config_root.join(MANIFEST_FILE).display()
         ),
     )?;
+    let pinned_revision = options
+        .git_ref
+        .is_some_and(|git_ref| matches!(git_ref, RequestedGitRef::Revision(_)))
+        || (checkout.tag.is_none() && checkout.branch.is_none());
     let dependency = DependencySpec {
         github: github.clone(),
         url: github.is_none().then_some(checkout.url.clone()),
@@ -244,10 +248,7 @@ fn add_dependency_at_paths_with_adapters_mode(
             .then_some(checkout.tag.clone())
             .flatten(),
         branch: checkout.branch.clone(),
-        revision: options.git_ref.and_then(|git_ref| match git_ref {
-            RequestedGitRef::Revision(_) => Some(checkout.rev.clone()),
-            _ => None,
-        }),
+        revision: pinned_revision.then_some(checkout.rev.clone()),
         version: options.version_req.clone(),
         components: (!options.components.is_empty()).then(|| {
             let mut sorted = options.components.to_vec();
@@ -439,6 +440,11 @@ pub fn ensure_git_dependency(
     let normalized_url = normalize_git_url(url);
     let mirror_path = shared_repository_path(cache_root, &normalized_url)?;
     ensure_shared_repository(&mirror_path, &normalized_url, allow_network, reporter)?;
+    let implicit_local_ref = if requested_ref.is_none() {
+        implicit_local_git_ref(&normalized_url, reporter)?
+    } else {
+        None
+    };
 
     let (resolved_tag, resolved_branch, rev) = if let Some(requested_ref) = requested_ref {
         match requested_ref {
@@ -463,6 +469,25 @@ pub fn ensure_git_dependency(
                 let tag = latest_compatible_tag(&mirror_path, value)?;
                 let rev = resolve_ref_to_rev(&mirror_path, &tag)?;
                 (Some(tag), None, rev)
+            }
+        }
+    } else if let Some(implicit_local_ref) = implicit_local_ref {
+        match implicit_local_ref {
+            ImplicitLocalRef::Branch(branch) => {
+                reporter.status(
+                    "Resolving",
+                    format!("current branch {branch} for local checkout {normalized_url}"),
+                )?;
+                let rev = resolve_ref_to_rev(&mirror_path, &branch)?;
+                (None, Some(branch), rev)
+            }
+            ImplicitLocalRef::Revision(revision) => {
+                reporter.status(
+                    "Resolving",
+                    format!("current revision for local checkout {normalized_url}"),
+                )?;
+                resolve_ref_to_rev(&mirror_path, &revision)?;
+                (None, None, revision)
             }
         }
     } else {
@@ -560,6 +585,50 @@ pub fn shared_checkout_path(cache_root: &Path, url: &str, rev: &str) -> Result<P
     let repo_name = normalize_repository_name_from_url(&normalized_url)?;
     let hash = short_hash(&normalized_url);
     Ok(checkouts_root.join(format!("{repo_name}-{hash}")).join(rev))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ImplicitLocalRef {
+    Branch(String),
+    Revision(String),
+}
+
+fn implicit_local_git_ref(
+    normalized_url: &str,
+    reporter: &Reporter,
+) -> Result<Option<ImplicitLocalRef>> {
+    if !looks_like_local_path(normalized_url) {
+        return Ok(None);
+    }
+
+    let path = Path::new(normalized_url);
+    if !is_git_repository(path) {
+        return Ok(None);
+    }
+
+    if local_checkout_has_uncommitted_changes(path)? {
+        reporter.note(format!(
+            "local checkout {normalized_url} has uncommitted changes; Nodus will install committed Git contents only"
+        ))?;
+    }
+
+    let current = current_rev(path)?;
+    if let Some(tag) = latest_tag_name(path)?
+        && resolve_ref_to_rev(path, &tag)? == current
+    {
+        return Ok(None);
+    }
+
+    match git_output(path, ["symbolic-ref", "--quiet", "--short", "HEAD"]) {
+        Ok(branch) if !branch.trim().is_empty() => {
+            Ok(Some(ImplicitLocalRef::Branch(branch.trim().to_string())))
+        }
+        _ => Ok(Some(ImplicitLocalRef::Revision(current))),
+    }
+}
+
+fn local_checkout_has_uncommitted_changes(path: &Path) -> Result<bool> {
+    Ok(!git_output(path, ["status", "--porcelain"])?.is_empty())
 }
 
 pub fn current_rev(path: &Path) -> Result<String> {
@@ -1435,6 +1504,41 @@ mod tests {
         assert_eq!(checkout.tag, None);
         assert_eq!(checkout.branch.as_deref(), Some("main"));
         assert_eq!(checkout.rev, current_rev(repo.path()).unwrap());
+    }
+
+    #[test]
+    fn resolves_current_branch_for_local_checkout_when_tags_exist() {
+        let cache_root = TempDir::new().unwrap();
+        let repo = TempDir::new().unwrap();
+        write_file(
+            &repo.path().join("skills/review/SKILL.md"),
+            "---\nname: Review\ndescription: Review code safely.\n---\n# Review\n",
+        );
+        init_git_repo(repo.path());
+        rename_current_branch(repo.path(), "main");
+        git_run(repo.path(), ["tag", "v0.1.0"]).unwrap();
+
+        write_file(
+            &repo.path().join("skills/testing/SKILL.md"),
+            "---\nname: Testing\ndescription: Test code safely.\n---\n# Testing\n",
+        );
+        git_run(repo.path(), ["add", "."]).unwrap();
+        git_run(repo.path(), ["commit", "-m", "add testing skill"]).unwrap();
+
+        let reporter = Reporter::silent();
+        let checkout = ensure_git_dependency(
+            cache_root.path(),
+            &repo.path().to_string_lossy(),
+            None,
+            true,
+            &reporter,
+        )
+        .unwrap();
+
+        assert_eq!(checkout.tag, None);
+        assert_eq!(checkout.branch.as_deref(), Some("main"));
+        assert_eq!(checkout.rev, current_rev(repo.path()).unwrap());
+        assert!(checkout.path.join("skills/testing/SKILL.md").exists());
     }
 
     #[test]

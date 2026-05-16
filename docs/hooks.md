@@ -2,10 +2,10 @@
 
 Nodus lets a package declare portable hook intents in `nodus.toml`, then emits
 adapter-specific wiring (Claude plugin `hooks/hooks.json`, Codex `config.toml`,
-OpenCode `plugins/nodus-hooks.js`, GitHub Copilot
-`.github/hooks/nodus-hooks.json`) during `nodus sync`. Hooks that an adapter
-cannot express are silently filtered out — the manifest stays portable and the
-generated output stays valid.
+Codex plugin `hooks/hooks.json`, OpenCode `plugins/nodus-hooks.js`, GitHub
+Copilot `.github/hooks/nodus-hooks.json`) during `nodus sync`. Hooks that an
+adapter cannot express are silently filtered out — the manifest stays portable
+and the generated output stays valid.
 
 This page is the source of truth for what each adapter supports today.
 
@@ -34,6 +34,26 @@ themselves, and `${CLAUDE_PROJECT_DIR}` (with a `git rev-parse` fallback) for
 `cwd = "git_root"`. They still export `NODUS_HOOK_ID`, `NODUS_HOOK_EVENT`,
 and `NODUS_HOOK_TIMEOUT_SEC` before running the declared command.
 
+## Codex: workspace hooks vs. plugin hooks
+
+The Codex adapter uses the same root/dependency split:
+
+- **Root manifest hooks** land in workspace `.codex/hooks.json` with scripts
+  under `.codex/hooks/`.
+- **Dependency package hooks** land inside the generated Codex plugin at
+  `.nodus/packages/<alias>/codex-plugin/hooks/hooks.json`, with scripts under
+  `hooks/scripts/`. When a plugin has hook output, Nodus adds
+  `"hooks": "./hooks/hooks.json"` to `.codex-plugin/plugin.json`.
+
+Codex requires project feature flags for generated hook surfaces. When Nodus
+emits Codex hooks it writes `[features].hooks = true` to `.codex/config.toml`;
+when any dependency plugin contains Codex hooks it also writes
+`[features].plugin_hooks = true`. Codex may still ask the user to trust plugin
+hooks before running them.
+
+Generated Codex plugin hook commands use `${PLUGIN_ROOT}` to reference files
+inside the plugin bundle.
+
 ## Activation context
 
 Packages that only need startup context should prefer `[activation]` over raw
@@ -53,10 +73,10 @@ short `prefer_skills` instruction using the managed runtime skill names. The
 listed skill bodies are not embedded unless a package also names them in
 `always_context`.
 
-For Claude, dependency-package activation flows through the same per-plugin
-`hooks/hooks.json` as portable `[[hooks]]` — see the workspace-vs-plugin
-split above. Codex still emits activation into the shared workspace
-`.codex/hooks.json`.
+For Claude and Codex, dependency-package activation flows through the same
+per-plugin `hooks/hooks.json` as portable `[[hooks]]` — see the
+workspace-vs-plugin split above. Root activation remains in the workspace
+hook location for each adapter.
 
 Activation hooks are generated separately from package-authored `[[hooks]]`.
 They reuse the same managed hook files, merge behavior, and stale-file pruning,
@@ -107,7 +127,7 @@ that event. Consumers never have to strip these manually.
 | Adapter    | Supported events                                                                                                       | `session_start` sources                 |
 |------------|------------------------------------------------------------------------------------------------------------------------|-----------------------------------------|
 | `claude`   | `session_start`, `user_prompt_submit`, `pre_tool_use`, `post_tool_use`, `stop`, `subagent_stop`, `session_end`         | `startup`, `resume`, `clear`, `compact` |
-| `codex`    | `session_start`, `user_prompt_submit`, `pre_tool_use`, `permission_request`, `post_tool_use`, `stop`                   | `startup`, `resume`                     |
+| `codex`    | `session_start`, `user_prompt_submit`, `pre_tool_use`, `permission_request`, `post_tool_use`, `stop`                   | `startup`, `resume`, `clear`            |
 | `opencode` | `session_start`, `pre_tool_use`, `post_tool_use`, `stop`                                                               | `startup`                               |
 | `agents`   | none                                                                                                                   | —                                       |
 | `copilot`  | `session_start`, `user_prompt_submit`, `pre_tool_use`, `post_tool_use`, `stop`, `subagent_stop`, `session_end`         | `startup`, `resume`                     |
@@ -118,7 +138,7 @@ Notes:
   event; declaring a hook that targets only Claude with this event fails
   manifest validation.
 - `subagent_stop` is emitted for Claude and Copilot. It is not emitted for
-  Codex until Codex exposes a distinct subagent hook.
+  Codex because Codex does not expose a distinct subagent hook.
 - `user_prompt_submit`, `subagent_stop`, and `session_end` have no native
   equivalent in OpenCode's portable wrapper today and are dropped for that
   adapter.
@@ -161,7 +181,7 @@ Tool matchers are strongly typed in the manifest and filtered by adapter:
 | Adapter    | Supported `tool_names` values                                                                 |
 |------------|------------------------------------------------------------------------------------------------|
 | `claude`   | `bash`, `read`, `edit`, `write`, `multi_edit`, `glob`, `grep`, `web_fetch`, `web_search`, `task` |
-| `codex`    | `bash`                                                                                         |
+| `codex`    | `bash`, `apply_patch`, `edit`, `write`                                                         |
 | `opencode` | `bash`, `read`, `edit`, `write`, `multi_edit`, `apply_patch`, `glob`, `grep`, `web_fetch`, `web_search`, `task` |
 | `copilot`  | `bash`, `read`, `edit`, `write`, `glob`, `grep`, `web_fetch`, `task`                            |
 
@@ -170,6 +190,12 @@ that adapter. Otherwise, unsupported names are dropped and the remaining names
 are emitted using the adapter's native spelling.
 
 Duplicates inside `sources` or `tool_names` are rejected by the validator.
+
+Codex MCP tool names are dynamic strings such as
+`mcp__filesystem__read_file`. They are not represented by Nodus's portable
+`tool_names` enum today. If a package needs that exact matcher, leave
+`tool_names` unset for a broader Codex hook or manage a Codex-native hook
+outside the portable Nodus manifest until a raw matcher escape hatch exists.
 
 ## Handler
 
@@ -233,6 +259,12 @@ claude_plugin_hooks = ["hooks/hooks.json"]
 The contents are passed through verbatim under the Claude-specific plugin
 root. They only affect the Claude adapter and are not portable across Codex or
 OpenCode.
+
+Nodus also preserves Claude-native plugin components that Claude Code loads by
+convention when importing or wrapping a Claude plugin: `.lsp.json`,
+`monitors/`, `bin/`, `settings.json`, `output-styles/`, and `themes/`.
+Marketplace-level `mcpServers: "./file.json"` entries are read relative to the
+plugin root and included in the package file set.
 
 ## `opencode_plugin_hooks` (OpenCode escape hatch)
 

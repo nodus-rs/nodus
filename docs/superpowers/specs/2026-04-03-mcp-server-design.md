@@ -30,7 +30,7 @@ Eight tools, each a thin adapter over existing CLI handler logic:
 
 | Tool | Description | Parameters | Returns |
 |------|-------------|------------|---------|
-| `nodus_add` | Add a dependency | `package` (required), `tag`, `branch`, `version`, `adapter[]`, `component[]` | Success message + installed package info |
+| `nodus_add` | Add a dependency | `package` (required), `global`, `dev`, `tag`, `branch`, `version`, `revision`, `adapter[]`, `component[]`, `exclude_component[]`, `sync_on_launch`, `accept_all_dependencies`, `dry_run` | Success message + installed package info |
 | `nodus_remove` | Remove a dependency | `package` (required) | Success message |
 | `nodus_sync` | Sync all dependencies | (none) | Summary of synced packages |
 | `nodus_list` | List installed packages | (none) | JSON array of packages with name, version, source, adapters |

@@ -26,6 +26,22 @@ publish_root = true
 # Use this when the package intentionally ships Claude plugin hook config from
 # a `hooks/` folder instead of portable native `[[hooks]]`.
 # claude_plugin_hooks = ["hooks/hooks.json"]
+#
+# Nodus also preserves Claude-native plugin files when this package is imported
+# or wrapped as a Claude plugin:
+# - `.lsp.json`
+# - `monitors/`
+# - `bin/`
+# - `settings.json`
+# - `output-styles/`
+# - `themes/`
+# Marketplace `mcpServers = "./file.json"` entries are read relative to the
+# plugin root.
+
+# Codex dependency hooks declared below as portable `[[hooks]]` are emitted into
+# generated Codex plugins. If hook output exists, Nodus adds
+# `"hooks": "./hooks/hooks.json"` to `.codex-plugin/plugin.json` and enables
+# `features.plugin_hooks` in the consuming workspace `.codex/config.toml`.
 
 # Optional OpenCode-specific plugin hook import.
 # Use this when the package needs OpenCode's full native plugin event surface

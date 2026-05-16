@@ -93,6 +93,7 @@ pub(super) fn load_claude_marketplace_wrapper(
     let mut single_plugin_version = None;
     let mut aliases = HashSet::new();
     let mut warnings = loaded.warnings.clone();
+    let mut extra_package_files = vec![marketplace_path.clone()];
     let plugin_count = marketplace.plugins.len();
     for plugin in marketplace.plugins {
         match load_claude_marketplace_plugin(
@@ -100,6 +101,7 @@ pub(super) fn load_claude_marketplace_wrapper(
             &mut manifest,
             &marketplace_path,
             &mut aliases,
+            &mut extra_package_files,
             plugin,
         ) {
             Ok(plugin_version) => {
@@ -114,6 +116,8 @@ pub(super) fn load_claude_marketplace_wrapper(
     if manifest.version.is_none() {
         manifest.version = single_plugin_version;
     }
+    extra_package_files.sort();
+    extra_package_files.dedup();
 
     Ok(Some(LoadedManifest {
         root: loaded.root.clone(),
@@ -122,7 +126,7 @@ pub(super) fn load_claude_marketplace_wrapper(
         discovered: PackageContents::default(),
         warnings,
         claude_plugin: None,
-        extra_package_files: vec![marketplace_path],
+        extra_package_files,
         allows_empty_dependency_wrapper: true,
         allows_unpinned_git_dependencies: true,
         manifest_contents_override: None,
@@ -289,6 +293,7 @@ fn load_claude_marketplace_plugin(
     manifest: &mut Manifest,
     marketplace_path: &Path,
     aliases: &mut HashSet<String>,
+    extra_package_files: &mut Vec<PathBuf>,
     plugin: super::types::ClaudeMarketplacePlugin,
 ) -> Result<Option<Version>> {
     let name = plugin.name.trim();
@@ -371,6 +376,7 @@ fn load_claude_marketplace_plugin(
                         mcp_servers,
                         marketplace_path,
                         &loaded.root,
+                        extra_package_files,
                     )?;
                 } else if !loaded
                     .root
@@ -558,14 +564,22 @@ fn import_marketplace_mcp_servers(
     mcp_servers: ClaudeMarketplaceMcpServers,
     marketplace_path: &Path,
     plugin_root: &Path,
+    extra_package_files: &mut Vec<PathBuf>,
 ) -> Result<()> {
     let servers = match mcp_servers {
         ClaudeMarketplaceMcpServers::Inline(servers) => servers,
         ClaudeMarketplaceMcpServers::Path(path) => {
-            bail!(
-                "{} plugin `{plugin_name}` uses unsupported `mcpServers` path `{path}`",
-                marketplace_path.display()
-            )
+            let path = normalize_manifest_relative_path(
+                Path::new(&path),
+                &format!(
+                    "{} plugin `{plugin_name}` field `mcpServers` path",
+                    marketplace_path.display()
+                ),
+            )?;
+            let config_path = plugin_root.join(&path);
+            let servers = read_claude_plugin_mcp_servers_from_path(&config_path)?;
+            extra_package_files.push(config_path);
+            servers
         }
     };
 
@@ -638,11 +652,9 @@ pub(super) fn import_claude_plugin_metadata(loaded: &mut LoadedManifest) -> Resu
         loaded.extra_package_files.push(metadata_path.clone());
     }
 
-    if !extras.hook_compat_sources.is_empty() {
-        loaded
-            .extra_package_files
-            .extend(collect_claude_plugin_runtime_files(&loaded.root, &extras)?);
-    }
+    loaded
+        .extra_package_files
+        .extend(collect_claude_plugin_runtime_files(&loaded.root, &extras)?);
 
     let mut normalized_servers = BTreeMap::new();
 
@@ -749,8 +761,12 @@ fn collect_claude_plugin_runtime_files(
         PathBuf::from(".lsp.json"),
         PathBuf::from("monitors"),
         PathBuf::from("output-styles"),
+        PathBuf::from("themes"),
     ] {
         collect_existing_path_files(root, &relative, &mut files)?;
+    }
+    for path in &extras.native_components {
+        collect_existing_path_files(root, path, &mut files)?;
     }
 
     for path in &extras.skills {
@@ -921,7 +937,25 @@ fn parse_claude_plugin_extras(
             metadata_path,
             warnings,
         )?,
+        native_components: discover_claude_native_components(root),
     })
+}
+
+fn discover_claude_native_components(root: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for relative in [
+        ".lsp.json",
+        "monitors",
+        "bin",
+        "settings.json",
+        "output-styles",
+        "themes",
+    ] {
+        if root.join(relative).exists() {
+            paths.push(PathBuf::from(relative));
+        }
+    }
+    paths
 }
 
 fn parse_claude_plugin_relative_paths(
@@ -1276,14 +1310,7 @@ fn extend_claude_plugin_mcp_servers_from_path(
         );
     }
 
-    let contents =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let config: ClaudePluginMcpConfig = serde_json::from_str(&contents)
-        .with_context(|| format!("failed to parse JSON in {}", path.display()))?;
-    let servers = match config {
-        ClaudePluginMcpConfig::Wrapped { mcp_servers } => mcp_servers,
-        ClaudePluginMcpConfig::Flat(servers) => servers,
-    };
+    let servers = read_claude_plugin_mcp_servers_from_path(path)?;
 
     for (server_id, server) in servers {
         target.insert(
@@ -1295,6 +1322,26 @@ fn extend_claude_plugin_mcp_servers_from_path(
         .extra_package_files
         .push(canonicalize_existing_path(path)?);
     Ok(())
+}
+
+fn read_claude_plugin_mcp_servers_from_path(
+    path: &Path,
+) -> Result<BTreeMap<String, McpServerConfig>> {
+    if !path.is_file() {
+        bail!(
+            "Claude plugin MCP config {} must point to a file",
+            path.display()
+        );
+    }
+
+    let contents =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let config: ClaudePluginMcpConfig = serde_json::from_str(&contents)
+        .with_context(|| format!("failed to parse JSON in {}", path.display()))?;
+    Ok(match config {
+        ClaudePluginMcpConfig::Wrapped { mcp_servers } => mcp_servers,
+        ClaudePluginMcpConfig::Flat(servers) => servers,
+    })
 }
 
 pub(super) fn import_codex_plugin_metadata(loaded: &mut LoadedManifest) -> Result<()> {

@@ -1824,6 +1824,74 @@ fn add_command_emits_resolving_and_adding_lines() {
 }
 
 #[test]
+fn add_command_tracks_current_branch_for_local_checkout_ahead_of_latest_tag() {
+    let temp = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    let repo = TempDir::new().unwrap();
+    write_skill(&repo.path().join("skills/review"), "Review");
+    init_git_repo(repo.path());
+
+    for args in [vec!["branch", "-m", "main"], vec!["tag", "v0.1.0"]] {
+        let output = ProcessCommand::new("git")
+            .args(args)
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    write_skill(&repo.path().join("skills/testing"), "Testing");
+    for args in [vec!["add", "."], vec!["commit", "-m", "add testing skill"]] {
+        let output = ProcessCommand::new("git")
+            .args(args)
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let output = run_command_output(
+        Command::Add {
+            url: repo.path().to_string_lossy().to_string(),
+            global: false,
+            dev: false,
+            tag: None,
+            branch: None,
+            version: None,
+            revision: None,
+            adapter: vec![Adapter::Claude],
+            component: vec![],
+            exclude_component: vec![],
+            sync_on_launch: false,
+            no_sync_on_launch: false,
+            accept_all_dependencies: false,
+            dry_run: false,
+        },
+        temp.path(),
+        cache.path(),
+    );
+
+    let manifest = fs::read_to_string(temp.path().join(MANIFEST_FILE)).unwrap();
+    assert!(output.contains("current branch main"));
+    assert!(manifest.contains("branch = \"main\""));
+    assert!(!manifest.contains("tag = \"v0.1.0\""));
+    assert!(
+        WalkDir::new(temp.path().join(".nodus/packages"))
+            .into_iter()
+            .filter_map(Result::ok)
+            .any(|entry| entry.path().ends_with("skills/testing/SKILL.md"))
+    );
+}
+
+#[test]
 fn info_command_renders_version_requirement_for_semver_dependencies() {
     let temp = TempDir::new().unwrap();
     let cache = TempDir::new().unwrap();
