@@ -839,6 +839,8 @@ pub(crate) fn build_output_plan_with_options(
         merge_file(&mut plan.files, file)?;
     }
 
+    prune_redundant_owned_paths(&mut plan.owned_by_package);
+
     let managed_files: Vec<String> = plan.managed_files.iter().cloned().collect();
     let managed_files_by_package = plan
         .owned_by_package
@@ -3032,6 +3034,40 @@ fn track_owned_prefix(plan: &mut OutputAccumulator, alias: &str, dir: String, pr
         .or_default()
         .prefixes
         .insert((dir, prefix));
+}
+
+/// Drop exact-file and filename-prefix claims covered by any owned subtree.
+/// The ownership model treats subtrees as the strongest claim: a subtree owns
+/// every descendant, and install-digest attribution consults subtrees before
+/// exact files or prefix rules. Keeping narrower claims under those subtrees
+/// only produces redundant lockfile warnings.
+fn prune_redundant_owned_paths(owned_by_package: &mut BTreeMap<String, PackageOwnedAccumulator>) {
+    let subtrees = owned_by_package
+        .values()
+        .flat_map(|bucket| {
+            bucket
+                .subtrees
+                .iter()
+                .map(|subtree| Path::new(subtree).to_owned())
+        })
+        .collect::<Vec<_>>();
+
+    if subtrees.is_empty() {
+        return;
+    }
+
+    for bucket in owned_by_package.values_mut() {
+        bucket.files.retain(|file| {
+            let file = Path::new(file);
+            !subtrees
+                .iter()
+                .any(|subtree| file != subtree.as_path() && file.starts_with(subtree))
+        });
+        bucket.prefixes.retain(|(dir, _)| {
+            let dir = Path::new(dir);
+            !subtrees.iter().any(|subtree| dir.starts_with(subtree))
+        });
+    }
 }
 
 /// Convenience wrapper for the common skill-root case: derive the on-disk

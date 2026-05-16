@@ -5427,6 +5427,50 @@ publish_root = true
 }
 
 #[test]
+fn sync_publishes_root_codex_agents_without_redundant_owned_files() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+publish_root = true
+"#,
+    );
+    write_codex_agent_toml(
+        &temp.path().join("agents/security.toml"),
+        "security",
+        "Security reviewer",
+        "Audit the code.",
+    );
+
+    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
+
+    assert!(temp.path().join(".codex/agents/security.toml").exists());
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    let root = lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == "root")
+        .unwrap();
+    assert!(
+        root.owned_subtrees
+            .iter()
+            .any(|path| path == ".codex/agents"),
+        "root package should own `.codex/agents` as a subtree; got {:?}",
+        root.owned_subtrees
+    );
+    assert!(
+        !root
+            .owned_files
+            .iter()
+            .any(|path| path.starts_with(".codex/agents/")),
+        "root package should not repeat agent files already covered by `.codex/agents`; got {:?}",
+        root.owned_files
+    );
+    assert_owned(&lockfile, temp.path(), ".codex/agents/security.toml");
+}
+
+#[test]
 fn sync_writes_runtime_gitignores_for_managed_outputs() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();
