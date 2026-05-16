@@ -65,9 +65,9 @@ changes.
   surfaces such as `Setup`, `PermissionRequest`, `PermissionDenied`,
   `PostToolUseFailure`, `PreCompact`, `PostCompact`, `WorktreeCreate`, and
   `WorktreeRemove`.
-- Nodus user-level Codex config writes are currently opt-in through
-  `NODUS_ENABLE_CODEX_USER_CONFIG` because authored entries are not yet
-  tracked and pruned.
+- Nodus user-level Codex config writes are automatic for Codex adapter syncs
+  so Codex can discover local Nodus marketplaces without a manual follow-up.
+  `NODUS_DISABLE_CODEX_USER_CONFIG=1` disables the external write.
 
 ## Goals
 
@@ -235,17 +235,14 @@ Preferred direction:
 
 - Track authored user-level Codex entries with enough provenance to remove
   stale marketplaces and plugin enables when packages disappear.
-- Keep the current env-gated behavior until provenance exists.
+- Keep an explicit opt-out while provenance is incomplete.
 - Consider a repo-root `.agents/plugins/marketplace.json` wrapper as a lower
   risk alternative for project-local discovery if Codex reliably loads it from
   trusted repo roots.
 
-Acceptance for this milestone is a design-and-implementation slice, not a
-half-on global write:
+Acceptance for this slice is explicit about the remaining cleanup tradeoff:
 
-- Either provenance and pruning are complete, or user-level writes remain
-  opt-in.
-- Docs clearly describe the remaining user action, if any.
+- Docs clearly describe automatic registration and the opt-out.
 
 ### 4. Claude native passthrough
 
@@ -320,8 +317,9 @@ Any new public manifest fields must be documented in `examples/nodus.toml` and
 - Existing lockfiles should prune old dependency `.codex/hooks/nodus-hook-*`
   files after dependency hooks move into Codex plugin folders.
 - Existing Claude plugin hook behavior must keep working.
-- Existing `NODUS_ENABLE_CODEX_USER_CONFIG` behavior should remain compatible
-  until replaced by provenance-backed cleanup.
+- Existing `NODUS_ENABLE_CODEX_USER_CONFIG=1` behavior should remain
+  compatible, while falsey values continue to disable the write for older
+  scripts that used the old gate.
 
 ## Acceptance criteria
 

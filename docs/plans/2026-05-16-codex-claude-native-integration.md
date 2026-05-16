@@ -241,7 +241,7 @@ Make it easy to inspect what Nodus generated for Codex and Claude.
 - [x] Report Codex feature state:
       - `features.hooks`
       - `features.plugin_hooks`
-      - user config opt-in state
+      - user config sync state
 - [x] Report Claude settings state:
       - `extraKnownMarketplaces`
       - `enabledPlugins`
@@ -304,8 +304,8 @@ After all tracks are merged:
       - activation context
       - MCP server
       - command-as-skill
-- [x] Confirm no unintended user-level `~/.codex/config.toml` write occurs
-      without opt-in or provenance.
+- [x] Confirm user-level `~/.codex/config.toml` writes are documented and
+      can be disabled.
 - [x] Confirm lockfile-owned paths cover all generated plugin hook files.
 
 ## Suggested agent launch set
@@ -329,4 +329,4 @@ Track F until implementation behavior has stabilized.
 - Claude's native hook surface is much larger than Nodus portable hooks. Avoid
   overfitting the portable model to Claude-only concepts.
 - User-level Codex config cleanup can affect files outside the project root.
-  Keep it opt-in until provenance is real.
+  Keep an opt-out until provenance is real.

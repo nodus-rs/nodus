@@ -88,19 +88,19 @@ emit a sync warning.
 
 Codex can auto-discover the workspace marketplace through
 `~/.codex/config.toml` (or `$CODEX_HOME/config.toml`). Nodus knows how to
-merge marketplace and plugin entries into that file, but the write is
-**opt-in** because Nodus does not yet track which entries it authored, so
-package removal can leave stale entries behind.
+merge marketplace and plugin entries into that file, and does so by default
+when the Codex adapter is enabled.
 
-Enable per command with:
+Disable the external config write per command with:
 
 ```bash
-NODUS_ENABLE_CODEX_USER_CONFIG=1 nodus sync
+NODUS_DISABLE_CODEX_USER_CONFIG=1 nodus sync
 ```
 
-Accepted values are `1` and `true` (case-insensitive). Any other value, or
-the variable being unset, leaves `~/.codex/config.toml` untouched. Full
-provenance and pruning for the user-level write is tracked in
+For compatibility with older scripts, setting
+`NODUS_ENABLE_CODEX_USER_CONFIG` to anything other than `1` or `true`
+(case-insensitive) also disables the write. Full provenance and pruning for
+the user-level write is tracked in
 `docs/specs/2026-05-13-pre-0.15-followups.md` and lands in 0.16.0.
 
 ## Event catalog

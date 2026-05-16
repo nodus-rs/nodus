@@ -116,19 +116,20 @@ runtime outputs as well. Today that includes the legacy project `.mcp.json`, Cod
 `nodus info .` now includes a `native-integration` section after sync. It shows
 the generated Claude and Codex marketplace files, plugin keys and roots, hook
 locations, Codex `features.hooks` / `features.plugin_hooks`, Codex user-config
-opt-in state, and Claude `enabledPlugins` state.
+sync state, and Claude `enabledPlugins` state.
 
-### Codex user-level config (opt-in)
+### Codex user-level config
 
-Nodus can also write to the user-level Codex config at `~/.codex/config.toml`
-(or `$CODEX_HOME/config.toml`) so Codex auto-discovers the workspace
-marketplace. This write is **off by default** because Nodus does not yet
-prune entries on package removal; opt in with:
+When the Codex adapter is enabled, Nodus writes the user-level Codex config at
+`~/.codex/config.toml` (or `$CODEX_HOME/config.toml`) so Codex auto-discovers
+the workspace marketplace. Disable this external config write with:
 
 ```bash
-NODUS_ENABLE_CODEX_USER_CONFIG=1 nodus sync
+NODUS_DISABLE_CODEX_USER_CONFIG=1 nodus sync
 ```
 
+For compatibility, setting `NODUS_ENABLE_CODEX_USER_CONFIG` to anything other
+than `1` or `true` also disables the write.
 Full provenance and cleanup for user-level Codex config is a 0.16.0
 milestone — see `docs/specs/2026-05-13-pre-0.15-followups.md`.
 

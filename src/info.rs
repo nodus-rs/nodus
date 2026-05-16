@@ -12,6 +12,7 @@ use crate::domain::dependency_query::{
     ResolvedInspectionSource, load_manifest_for_inspection, resolve_inspection_target,
 };
 use crate::git::{ensure_git_dependency, normalize_alias_from_url, normalize_git_url};
+use crate::install_paths::codex_user_config_writes_enabled;
 use crate::manifest::{
     DependencyComponent, DependencySpec, LoadedManifest, ManagedPlacement, PackageRole,
     RequestedGitRef as ManifestRequestedGitRef, normalize_dependency_alias,
@@ -819,10 +820,10 @@ fn inspect_codex_native_state(
         hooks,
         plugin_hooks,
         plugin_hooks_required,
-        user_config: if codex_user_config_opted_in() {
-            "opted-in".into()
+        user_config: if codex_user_config_writes_enabled() {
+            "auto".into()
         } else {
-            "skipped".into()
+            "disabled".into()
         },
     }
 }
@@ -890,12 +891,6 @@ fn display_project_path(project_root: &Path, path: &Path) -> String {
         .filter(|relative| !relative.as_os_str().is_empty())
         .map(display_path)
         .unwrap_or_else(|| display_path(path))
-}
-
-fn codex_user_config_opted_in() -> bool {
-    std::env::var_os("NODUS_ENABLE_CODEX_USER_CONFIG")
-        .as_deref()
-        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
 }
 
 fn alias_from_loaded_manifest(manifest: &LoadedManifest) -> Result<String> {
@@ -1932,7 +1927,7 @@ always_context = ["prompts/context.md"]
         assert!(output.contains("codex shared@"));
         assert!(output.contains(".nodus/packages/shared/codex-plugin"));
         assert!(output.contains("plugin_hooks=true plugin_hooks_required=true"));
-        assert!(output.contains("user-config=skipped"));
+        assert!(output.contains("user-config=auto"));
 
         let info =
             describe_package_json_in_dir(project.path(), cache.path(), ".", None, None).unwrap();
