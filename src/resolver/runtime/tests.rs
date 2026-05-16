@@ -1771,7 +1771,84 @@ model = "gpt-5"
         marketplace.get("source").and_then(toml::Value::as_str),
         Some(expected_marketplace_source.as_str())
     );
-    assert!(config.get("plugins").is_none());
+    let plugins = config
+        .get("plugins")
+        .and_then(toml::Value::as_table)
+        .expect("workspace member plugins should be enabled");
+    for plugin in ["Axiom", "Firebase"] {
+        let key = format!("{plugin}@{expected_marketplace_name}");
+        assert_eq!(
+            plugins
+                .get(&key)
+                .and_then(|plugin| plugin.get("enabled"))
+                .and_then(toml::Value::as_bool),
+            Some(true),
+            "expected Codex user config to enable {key}"
+        );
+    }
+}
+
+#[test]
+fn sync_recreates_codex_user_config_when_runtime_outputs_are_in_sync() {
+    let repo = create_workspace_dependency();
+    let cache = cache_dir();
+    let codex_home = TempDir::new().unwrap();
+    let codex_config = codex_home.path().join("config.toml");
+    let install_paths =
+        InstallPaths::project(repo.path()).with_codex_user_config(Some(codex_config.clone()));
+    let reporter = Reporter::silent();
+
+    super::sync_in_dir_with_adapters_mode(
+        &install_paths,
+        cache.path(),
+        SyncMode::Normal,
+        false,
+        false,
+        &[Adapter::Codex],
+        false,
+        ExecutionMode::Apply,
+        None,
+        DependencyFailureMode::Graceful,
+        false,
+        &reporter,
+    )
+    .unwrap();
+    fs::remove_file(&codex_config).unwrap();
+
+    let buffer = SharedBuffer::default();
+    let reporter = Reporter::sink(ColorMode::Never, buffer.clone());
+    super::sync_in_dir_with_adapters_mode(
+        &install_paths,
+        cache.path(),
+        SyncMode::Normal,
+        false,
+        false,
+        &[Adapter::Codex],
+        false,
+        ExecutionMode::Apply,
+        None,
+        DependencyFailureMode::Graceful,
+        false,
+        &reporter,
+    )
+    .unwrap();
+
+    let output = buffer.contents();
+    assert!(
+        output.contains("Resolving"),
+        "Codex user-config writes must bypass the runtime-only fast path; got: {output}"
+    );
+    let config: toml::Value = toml::from_str(&fs::read_to_string(&codex_config).unwrap()).unwrap();
+    let expected_marketplace_name = normalize_workspace_marketplace_name(
+        repo.path()
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap(),
+    );
+    assert_eq!(
+        config["plugins"][format!("Axiom@{expected_marketplace_name}")]["enabled"].as_bool(),
+        Some(true)
+    );
 }
 
 #[test]

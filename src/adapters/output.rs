@@ -16,7 +16,7 @@ use super::{
     managed_runtime_skill_id, preferred_surface,
 };
 use crate::lockfile::{Lockfile, OwnedPrefix, managed_mcp_server_name};
-use crate::manifest::{DependencyComponent, HookSpec, McpServerConfig};
+use crate::manifest::{DependencyComponent, HookSpec, LoadedManifest, McpServerConfig};
 use crate::paths::{display_path, strip_path_prefix};
 use crate::resolver::{PackageSource, ResolvedPackage};
 
@@ -1075,22 +1075,45 @@ fn native_package_plugin_keys(
         matches!(package.source, PackageSource::Root)
             && package.manifest.manifest.workspace.is_some()
     }) {
-        let has_enabled_members = packages
+        let Some(root) = packages
             .iter()
             .find(|(package, _)| matches!(package.source, PackageSource::Root))
-            .map(|(package, _)| package.manifest.workspace_member_statuses())
-            .transpose()?
-            .unwrap_or_default()
+            .map(|(package, _)| package)
+        else {
+            return Ok(None);
+        };
+        let enabled_members = root
+            .manifest
+            .workspace_member_statuses()?
             .into_iter()
-            .any(|member| member.enabled);
-        return Ok(
-            (adapter == Adapter::Claude && has_enabled_members).then(|| {
-                (
-                    native_marketplace_names(project_root, packages).0,
-                    Vec::new(),
-                )
-            }),
-        );
+            .filter(|member| member.enabled)
+            .collect::<Vec<_>>();
+        if enabled_members.is_empty() {
+            return Ok(None);
+        }
+
+        let (marketplace, _) = native_marketplace_names(project_root, packages);
+        return match adapter {
+            Adapter::Claude => Ok(Some((marketplace, Vec::new()))),
+            Adapter::Codex => {
+                let plugin_keys = enabled_members
+                    .iter()
+                    .filter(|member| {
+                        member
+                            .codex
+                            .as_ref()
+                            .is_some_and(|codex| codex.installation != "NOT_AVAILABLE")
+                    })
+                    .map(|member| {
+                        let plugin = workspace_member_codex_plugin_name(&root.manifest, member);
+                        format!("{plugin}@{marketplace}")
+                    })
+                    .collect::<Vec<_>>();
+                let has_codex_members = enabled_members.iter().any(|member| member.codex.is_some());
+                Ok(has_codex_members.then_some((marketplace, plugin_keys)))
+            }
+            Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => Ok(None),
+        };
     }
 
     let plugins = packages
@@ -1112,6 +1135,23 @@ fn native_package_plugin_keys(
         .map(|plugin| format!("{plugin}@{marketplace}"))
         .collect::<Vec<_>>();
     Ok(Some((marketplace, keys)))
+}
+
+fn workspace_member_codex_plugin_name(
+    root: &LoadedManifest,
+    member: &crate::manifest::WorkspaceMemberStatus,
+) -> String {
+    if root
+        .manifest
+        .workspace
+        .as_ref()
+        .and_then(|workspace| workspace.namespace.as_ref())
+        .is_some()
+    {
+        normalize_marketplace_name(&member.alias)
+    } else {
+        member.name.clone().unwrap_or_else(|| member.id.clone())
+    }
 }
 
 pub(crate) fn codex_user_plugin_config_file(

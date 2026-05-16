@@ -88,8 +88,8 @@ emit a sync warning.
 
 Codex can auto-discover the workspace marketplace through
 `~/.codex/config.toml` (or `$CODEX_HOME/config.toml`). Nodus knows how to
-merge marketplace and plugin entries into that file, and does so by default
-when the Codex adapter is enabled.
+merge marketplace and selected plugin entries into that file, and does so by
+default when the Codex adapter is enabled.
 
 Disable the external config write per command with:
 

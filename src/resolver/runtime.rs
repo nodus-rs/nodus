@@ -889,8 +889,11 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
         || selection.should_persist
         || sync_on_launch
         || legacy_launch_hook_config;
+    let codex_user_config_write_possible =
+        selection.adapters.contains(&Adapter::Codex) && install_paths.codex_user_config.is_some();
     let attempt_fast_path = !force_rebuild
         && !manifest_mutation_pending
+        && !codex_user_config_write_possible
         && existing_lockfile
             .as_ref()
             .is_some_and(Lockfile::uses_current_schema);

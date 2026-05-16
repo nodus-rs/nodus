@@ -122,7 +122,8 @@ sync state, and Claude `enabledPlugins` state.
 
 When the Codex adapter is enabled, Nodus writes the user-level Codex config at
 `~/.codex/config.toml` (or `$CODEX_HOME/config.toml`) so Codex auto-discovers
-the workspace marketplace. Disable this external config write with:
+the workspace marketplace and enables the selected plugins. Disable this
+external config write with:
 
 ```bash
 NODUS_DISABLE_CODEX_USER_CONFIG=1 nodus sync

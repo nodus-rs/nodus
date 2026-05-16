@@ -67,6 +67,7 @@ changes.
   `WorktreeRemove`.
 - Nodus user-level Codex config writes are automatic for Codex adapter syncs
   so Codex can discover local Nodus marketplaces without a manual follow-up.
+  Selected workspace member plugins are enabled in that config.
   `NODUS_DISABLE_CODEX_USER_CONFIG=1` disables the external write.
 
 ## Goals
