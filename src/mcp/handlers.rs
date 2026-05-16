@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, bail};
 use clap::ValueEnum;
-use serde_json::Value as JsonValue;
 use semver::VersionReq;
+use serde_json::Value as JsonValue;
 
 use super::tools::*;
 use crate::adapters::Adapter;
@@ -319,5 +319,186 @@ impl Write for SharedOutputBuffer {
 
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::Path;
+    use std::process::Command;
+
+    use serde_json::json;
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::manifest::MANIFEST_FILE;
+
+    fn write_file(path: &Path, contents: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, contents).unwrap();
+    }
+
+    fn run_git(path: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn git_output(path: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn init_git_skill_package(path: &Path) -> String {
+        write_file(
+            &path.join("skills/review/SKILL.md"),
+            "---\nname: Review\ndescription: Review code.\n---\n# Review\n",
+        );
+        run_git(path, &["init"]);
+        run_git(path, &["config", "user.email", "test@example.com"]);
+        run_git(path, &["config", "user.name", "Test User"]);
+        run_git(path, &["add", "."]);
+        run_git(path, &["commit", "-m", "initial"]);
+        git_output(path, &["rev-parse", "HEAD"])
+    }
+
+    #[test]
+    fn parses_add_cli_parity_options() {
+        let args = json!({
+            "package": "owner/repo",
+            "global": true,
+            "dev": true,
+            "revision": "abc123",
+            "adapter": ["claude", "codex"],
+            "component": ["skills", "mcp"],
+            "exclude_component": ["mcp"],
+            "accept_all_dependencies": true,
+            "dry_run": true
+        });
+
+        let parsed = parse_add_args(&args).unwrap();
+
+        assert_eq!(parsed.package, "owner/repo");
+        assert!(parsed.global);
+        assert!(parsed.dry_run);
+        assert!(matches!(
+            parsed.git_ref,
+            Some(RequestedGitRef::Revision("abc123"))
+        ));
+        assert_eq!(parsed.version_req, None);
+        assert_eq!(parsed.kind, DependencyKind::DevDependency);
+        assert_eq!(parsed.adapters, vec![Adapter::Claude, Adapter::Codex]);
+        assert_eq!(parsed.components, vec![DependencyComponent::Skills]);
+        assert!(!parsed.sync_on_launch);
+        assert!(parsed.accept_all_dependencies);
+    }
+
+    #[test]
+    fn rejects_add_with_multiple_selectors() {
+        let args = json!({
+            "package": "owner/repo",
+            "tag": "v1.0.0",
+            "revision": "abc123"
+        });
+
+        let error = parse_add_args(&args).unwrap_err().to_string();
+
+        assert!(error.contains("more than one of `tag`, `branch`, `version`, or `revision`"));
+    }
+
+    #[test]
+    fn parses_add_version_requirement() {
+        let args = json!({
+            "package": "owner/repo",
+            "version": "^1.2.0"
+        });
+
+        let parsed = parse_add_args(&args).unwrap();
+
+        assert!(parsed.git_ref.is_none());
+        assert_eq!(parsed.version_req.unwrap().to_string(), "^1.2.0");
+    }
+
+    #[test]
+    fn rejects_global_add_sync_on_launch() {
+        let args = json!({
+            "package": "owner/repo",
+            "global": true,
+            "sync_on_launch": true
+        });
+
+        let error = parse_add_args(&args).unwrap_err().to_string();
+
+        assert!(error.contains("does not support `sync_on_launch: true`"));
+    }
+
+    #[test]
+    fn dispatch_add_can_write_dev_revision_dependency() {
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        let package = TempDir::new().unwrap();
+        let revision = init_git_skill_package(package.path());
+        let package_url = package.path().to_string_lossy().into_owned();
+
+        dispatch_tool(
+            TOOL_ADD,
+            &json!({
+                "package": package_url,
+                "dev": true,
+                "revision": revision,
+                "adapter": ["claude"],
+                "component": ["skills"]
+            }),
+            project.path(),
+            cache.path(),
+        )
+        .unwrap();
+
+        let manifest = fs::read_to_string(project.path().join(MANIFEST_FILE)).unwrap();
+        assert!(manifest.contains("[dev-dependencies]"));
+        assert!(manifest.contains(&format!("revision = \"{revision}\"")));
+        assert!(manifest.contains("components = [\"skills\"]"));
+    }
+
+    #[test]
+    fn dispatch_add_dry_run_does_not_write_project_manifest() {
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        let package = TempDir::new().unwrap();
+        init_git_skill_package(package.path());
+        let package_url = package.path().to_string_lossy().into_owned();
+
+        dispatch_tool(
+            TOOL_ADD,
+            &json!({
+                "package": package_url,
+                "adapter": ["claude"],
+                "dry_run": true
+            }),
+            project.path(),
+            cache.path(),
+        )
+        .unwrap();
+
+        assert!(!project.path().join(MANIFEST_FILE).exists());
     }
 }
