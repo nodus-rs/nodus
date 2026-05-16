@@ -1,14 +1,16 @@
 mod doctor;
+mod install_digest;
 mod resolve;
 mod support;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 pub use self::doctor::{
     DoctorActionRecord, DoctorFinding, DoctorFindingKind, DoctorMode, DoctorStatus, DoctorSummary,
     doctor_in_dir_with_mode,
 };
+use self::install_digest::install_digest_from_disk;
 use self::resolve::{ResolveProjectOptions, resolve_project};
 use self::support::{
     build_sync_execution_plan, enforce_capabilities, execute_sync_plan, find_managed_collision,
@@ -19,10 +21,11 @@ use self::support::{
 #[cfg(test)]
 use self::support::{prune_empty_parent_dirs, write_managed_files};
 use crate::adapters::{
-    Adapter, Adapters, ArtifactKind, ManagedFile, OutputPlanOptions,
+    Adapter, Adapters, ManagedFile, OutputPlan, OutputPlanOptions, PackageOwnedPaths,
     build_output_plan_with_options, codex_user_plugin_config_file,
 };
 use crate::execution::ExecutionMode;
+use crate::hashing::content_digest;
 use crate::install_paths::{InstallPaths, InstallScope};
 use crate::lockfile::{LOCKFILE_NAME, LockedPackage, LockedSource, Lockfile};
 use crate::manifest::{
@@ -137,6 +140,12 @@ struct SyncExecutionOptions<'a> {
     sync_on_launch: bool,
     execution_mode: ExecutionMode,
     dependency_failure_mode: DependencyFailureMode,
+    /// When true, skip the v10 `install_digest` drift fast-path even if all
+    /// preconditions hold (lockfile is current schema, all pins are exact,
+    /// every package has an `install_digest`). Slice 4 added the fast-path for
+    /// the common "nothing changed on disk" case; this flag is the escape
+    /// hatch for users who want to force a full re-render.
+    force_rebuild: bool,
 }
 
 impl<'a> SyncExecutionOptions<'a> {
@@ -147,6 +156,7 @@ impl<'a> SyncExecutionOptions<'a> {
         sync_on_launch: bool,
         execution_mode: ExecutionMode,
         dependency_failure_mode: DependencyFailureMode,
+        force_rebuild: bool,
     ) -> Self {
         Self {
             allow_high_sensitivity,
@@ -155,6 +165,7 @@ impl<'a> SyncExecutionOptions<'a> {
             sync_on_launch,
             execution_mode,
             dependency_failure_mode,
+            force_rebuild,
         }
     }
 }
@@ -256,6 +267,38 @@ pub fn sync_in_dir_with_adapters(
     sync_on_launch: bool,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
+    sync_in_dir_with_adapters_full(
+        cwd,
+        cache_root,
+        locked,
+        allow_high_sensitivity,
+        force,
+        adapters,
+        sync_on_launch,
+        false,
+        reporter,
+    )
+}
+
+/// `sync_in_dir_with_adapters` plus the v10 fast-path opt-out.
+///
+/// Slice 4 added the `install_digest` drift fast-path that lets `nodus sync`
+/// exit early when the lockfile and disk agree. Pass `force_rebuild = true` to
+/// skip that check and always run a full resolve + render. The CLI surfaces
+/// this as `--no-fast-path`; library callers default to `false` so they keep
+/// the speedup.
+#[allow(clippy::too_many_arguments)]
+pub fn sync_in_dir_with_adapters_full(
+    cwd: &Path,
+    cache_root: &Path,
+    locked: bool,
+    allow_high_sensitivity: bool,
+    force: bool,
+    adapters: &[Adapter],
+    sync_on_launch: bool,
+    force_rebuild: bool,
+    reporter: &Reporter,
+) -> Result<SyncSummary> {
     sync_in_dir_with_adapters_with_failure_mode(
         cwd,
         cache_root,
@@ -267,12 +310,13 @@ pub fn sync_in_dir_with_adapters(
             sync_on_launch,
             ExecutionMode::Apply,
             DependencyFailureMode::Graceful,
+            force_rebuild,
         ),
         reporter,
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, dead_code)]
 pub fn sync_in_dir_with_adapters_strict(
     cwd: &Path,
     cache_root: &Path,
@@ -281,6 +325,32 @@ pub fn sync_in_dir_with_adapters_strict(
     force: bool,
     adapters: &[Adapter],
     sync_on_launch: bool,
+    reporter: &Reporter,
+) -> Result<SyncSummary> {
+    sync_in_dir_with_adapters_strict_full(
+        cwd,
+        cache_root,
+        locked,
+        allow_high_sensitivity,
+        force,
+        adapters,
+        sync_on_launch,
+        false,
+        reporter,
+    )
+}
+
+/// `sync_in_dir_with_adapters_strict` plus the v10 fast-path opt-out.
+#[allow(clippy::too_many_arguments)]
+pub fn sync_in_dir_with_adapters_strict_full(
+    cwd: &Path,
+    cache_root: &Path,
+    locked: bool,
+    allow_high_sensitivity: bool,
+    force: bool,
+    adapters: &[Adapter],
+    sync_on_launch: bool,
+    force_rebuild: bool,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
     sync_in_dir_with_adapters_with_failure_mode(
@@ -294,6 +364,7 @@ pub fn sync_in_dir_with_adapters_strict(
             sync_on_launch,
             ExecutionMode::Apply,
             DependencyFailureMode::Strict,
+            force_rebuild,
         ),
         reporter,
     )
@@ -322,10 +393,12 @@ fn sync_in_dir_with_adapters_with_failure_mode(
         options.execution_mode,
         None,
         options.dependency_failure_mode,
+        options.force_rebuild,
         reporter,
     )
 }
 
+#[allow(dead_code)]
 pub fn sync_in_dir_with_adapters_frozen(
     cwd: &Path,
     cache_root: &Path,
@@ -333,6 +406,30 @@ pub fn sync_in_dir_with_adapters_frozen(
     force: bool,
     adapters: &[Adapter],
     sync_on_launch: bool,
+    reporter: &Reporter,
+) -> Result<SyncSummary> {
+    sync_in_dir_with_adapters_frozen_full(
+        cwd,
+        cache_root,
+        allow_high_sensitivity,
+        force,
+        adapters,
+        sync_on_launch,
+        false,
+        reporter,
+    )
+}
+
+/// `sync_in_dir_with_adapters_frozen` plus the v10 fast-path opt-out.
+#[allow(clippy::too_many_arguments)]
+pub fn sync_in_dir_with_adapters_frozen_full(
+    cwd: &Path,
+    cache_root: &Path,
+    allow_high_sensitivity: bool,
+    force: bool,
+    adapters: &[Adapter],
+    sync_on_launch: bool,
+    force_rebuild: bool,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
     sync_in_dir_with_adapters_frozen_with_failure_mode(
@@ -345,11 +442,13 @@ pub fn sync_in_dir_with_adapters_frozen(
             sync_on_launch,
             ExecutionMode::Apply,
             DependencyFailureMode::Graceful,
+            force_rebuild,
         ),
         reporter,
     )
 }
 
+#[allow(dead_code)]
 pub fn sync_in_dir_with_adapters_frozen_strict(
     cwd: &Path,
     cache_root: &Path,
@@ -357,6 +456,30 @@ pub fn sync_in_dir_with_adapters_frozen_strict(
     force: bool,
     adapters: &[Adapter],
     sync_on_launch: bool,
+    reporter: &Reporter,
+) -> Result<SyncSummary> {
+    sync_in_dir_with_adapters_frozen_strict_full(
+        cwd,
+        cache_root,
+        allow_high_sensitivity,
+        force,
+        adapters,
+        sync_on_launch,
+        false,
+        reporter,
+    )
+}
+
+/// `sync_in_dir_with_adapters_frozen_strict` plus the v10 fast-path opt-out.
+#[allow(clippy::too_many_arguments)]
+pub fn sync_in_dir_with_adapters_frozen_strict_full(
+    cwd: &Path,
+    cache_root: &Path,
+    allow_high_sensitivity: bool,
+    force: bool,
+    adapters: &[Adapter],
+    sync_on_launch: bool,
+    force_rebuild: bool,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
     sync_in_dir_with_adapters_frozen_with_failure_mode(
@@ -369,6 +492,7 @@ pub fn sync_in_dir_with_adapters_frozen_strict(
             sync_on_launch,
             ExecutionMode::Apply,
             DependencyFailureMode::Strict,
+            force_rebuild,
         ),
         reporter,
     )
@@ -392,11 +516,12 @@ fn sync_in_dir_with_adapters_frozen_with_failure_mode(
         options.execution_mode,
         None,
         options.dependency_failure_mode,
+        options.force_rebuild,
         reporter,
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, dead_code)]
 pub fn sync_in_dir_with_adapters_dry_run(
     cwd: &Path,
     cache_root: &Path,
@@ -407,6 +532,32 @@ pub fn sync_in_dir_with_adapters_dry_run(
     sync_on_launch: bool,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
+    sync_in_dir_with_adapters_dry_run_full(
+        cwd,
+        cache_root,
+        locked,
+        allow_high_sensitivity,
+        force,
+        adapters,
+        sync_on_launch,
+        false,
+        reporter,
+    )
+}
+
+/// `sync_in_dir_with_adapters_dry_run` plus the v10 fast-path opt-out.
+#[allow(clippy::too_many_arguments)]
+pub fn sync_in_dir_with_adapters_dry_run_full(
+    cwd: &Path,
+    cache_root: &Path,
+    locked: bool,
+    allow_high_sensitivity: bool,
+    force: bool,
+    adapters: &[Adapter],
+    sync_on_launch: bool,
+    force_rebuild: bool,
+    reporter: &Reporter,
+) -> Result<SyncSummary> {
     sync_in_dir_with_adapters_with_failure_mode(
         cwd,
         cache_root,
@@ -418,12 +569,13 @@ pub fn sync_in_dir_with_adapters_dry_run(
             sync_on_launch,
             ExecutionMode::DryRun,
             DependencyFailureMode::Graceful,
+            force_rebuild,
         ),
         reporter,
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, dead_code)]
 pub fn sync_in_dir_with_adapters_strict_dry_run(
     cwd: &Path,
     cache_root: &Path,
@@ -434,6 +586,32 @@ pub fn sync_in_dir_with_adapters_strict_dry_run(
     sync_on_launch: bool,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
+    sync_in_dir_with_adapters_strict_dry_run_full(
+        cwd,
+        cache_root,
+        locked,
+        allow_high_sensitivity,
+        force,
+        adapters,
+        sync_on_launch,
+        false,
+        reporter,
+    )
+}
+
+/// `sync_in_dir_with_adapters_strict_dry_run` plus the v10 fast-path opt-out.
+#[allow(clippy::too_many_arguments)]
+pub fn sync_in_dir_with_adapters_strict_dry_run_full(
+    cwd: &Path,
+    cache_root: &Path,
+    locked: bool,
+    allow_high_sensitivity: bool,
+    force: bool,
+    adapters: &[Adapter],
+    sync_on_launch: bool,
+    force_rebuild: bool,
+    reporter: &Reporter,
+) -> Result<SyncSummary> {
     sync_in_dir_with_adapters_with_failure_mode(
         cwd,
         cache_root,
@@ -445,11 +623,13 @@ pub fn sync_in_dir_with_adapters_strict_dry_run(
             sync_on_launch,
             ExecutionMode::DryRun,
             DependencyFailureMode::Strict,
+            force_rebuild,
         ),
         reporter,
     )
 }
 
+#[allow(dead_code)]
 pub fn sync_in_dir_with_adapters_frozen_dry_run(
     cwd: &Path,
     cache_root: &Path,
@@ -457,6 +637,30 @@ pub fn sync_in_dir_with_adapters_frozen_dry_run(
     force: bool,
     adapters: &[Adapter],
     sync_on_launch: bool,
+    reporter: &Reporter,
+) -> Result<SyncSummary> {
+    sync_in_dir_with_adapters_frozen_dry_run_full(
+        cwd,
+        cache_root,
+        allow_high_sensitivity,
+        force,
+        adapters,
+        sync_on_launch,
+        false,
+        reporter,
+    )
+}
+
+/// `sync_in_dir_with_adapters_frozen_dry_run` plus the v10 fast-path opt-out.
+#[allow(clippy::too_many_arguments)]
+pub fn sync_in_dir_with_adapters_frozen_dry_run_full(
+    cwd: &Path,
+    cache_root: &Path,
+    allow_high_sensitivity: bool,
+    force: bool,
+    adapters: &[Adapter],
+    sync_on_launch: bool,
+    force_rebuild: bool,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
     sync_in_dir_with_adapters_frozen_with_failure_mode(
@@ -469,11 +673,13 @@ pub fn sync_in_dir_with_adapters_frozen_dry_run(
             sync_on_launch,
             ExecutionMode::DryRun,
             DependencyFailureMode::Graceful,
+            force_rebuild,
         ),
         reporter,
     )
 }
 
+#[allow(dead_code)]
 pub fn sync_in_dir_with_adapters_frozen_strict_dry_run(
     cwd: &Path,
     cache_root: &Path,
@@ -481,6 +687,31 @@ pub fn sync_in_dir_with_adapters_frozen_strict_dry_run(
     force: bool,
     adapters: &[Adapter],
     sync_on_launch: bool,
+    reporter: &Reporter,
+) -> Result<SyncSummary> {
+    sync_in_dir_with_adapters_frozen_strict_dry_run_full(
+        cwd,
+        cache_root,
+        allow_high_sensitivity,
+        force,
+        adapters,
+        sync_on_launch,
+        false,
+        reporter,
+    )
+}
+
+/// `sync_in_dir_with_adapters_frozen_strict_dry_run` plus the v10 fast-path
+/// opt-out.
+#[allow(clippy::too_many_arguments)]
+pub fn sync_in_dir_with_adapters_frozen_strict_dry_run_full(
+    cwd: &Path,
+    cache_root: &Path,
+    allow_high_sensitivity: bool,
+    force: bool,
+    adapters: &[Adapter],
+    sync_on_launch: bool,
+    force_rebuild: bool,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
     sync_in_dir_with_adapters_frozen_with_failure_mode(
@@ -493,6 +724,7 @@ pub fn sync_in_dir_with_adapters_frozen_strict_dry_run(
             sync_on_launch,
             ExecutionMode::DryRun,
             DependencyFailureMode::Strict,
+            force_rebuild,
         ),
         reporter,
     )
@@ -510,6 +742,7 @@ fn sync_in_dir_with_adapters_mode(
     execution_mode: ExecutionMode,
     root_override: Option<LoadedManifest>,
     dependency_failure_mode: DependencyFailureMode,
+    force_rebuild: bool,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
     let mut collision_resolver = TtyManagedCollisionResolver;
@@ -524,6 +757,7 @@ fn sync_in_dir_with_adapters_mode(
         execution_mode,
         root_override,
         dependency_failure_mode,
+        force_rebuild,
         if sync_mode.checks_lockfile() || !should_prompt_for_adapter() {
             None
         } else {
@@ -545,6 +779,7 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
     execution_mode: ExecutionMode,
     root_override: Option<LoadedManifest>,
     dependency_failure_mode: DependencyFailureMode,
+    force_rebuild: bool,
     mut collision_resolver: Option<&mut dyn ManagedCollisionResolver>,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
@@ -632,6 +867,67 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
             "`--frozen` requires an existing {} in {}",
             LOCKFILE_NAME,
             install_paths.config_root.display()
+        );
+    }
+
+    // ---- v10 install_digest drift fast-path ----------------------------
+    //
+    // Slice 4: when the lockfile is v10, all packages are exactly pinned,
+    // each package's `install_digest` is populated, and the on-disk state
+    // matches every recorded digest, we can skip the full resolve + render
+    // and return a synthetic `SyncSummary` immediately. This is the common
+    // case at the start of an editor session ("`nodus sync` on a clean
+    // repo") and shaves seconds off the wall time.
+    //
+    // The fast-path gate is intentionally conservative: any condition we
+    // can't cheaply verify (branch-tracking deps, missing digests, root
+    // manifest mutation in flight, opt-out flag) falls through to the
+    // full sync loop below. `--frozen` is the one mode where a failing
+    // gate becomes an error instead of a fallthrough, since the user has
+    // explicitly opted into "trust the lockfile".
+    let manifest_mutation_pending = has_root_override
+        || selection.should_persist
+        || sync_on_launch
+        || legacy_launch_hook_config;
+    let attempt_fast_path = !force_rebuild
+        && !manifest_mutation_pending
+        && existing_lockfile
+            .as_ref()
+            .is_some_and(Lockfile::uses_current_schema);
+    if attempt_fast_path {
+        let lockfile = existing_lockfile
+            .as_ref()
+            .expect("attempt_fast_path implies existing_lockfile is Some");
+        match evaluate_fast_path(lockfile, &install_paths.runtime_root, sync_mode, cache_root)? {
+            FastPathOutcome::Hit => {
+                reporter.note(format!("{LOCKFILE_NAME} is in sync; no work to do"))?;
+                let summary = SyncSummary {
+                    package_count: lockfile.packages.len(),
+                    adapters: selection.adapters.clone(),
+                    managed_file_count: count_owned_files(lockfile),
+                };
+                return Ok(summary);
+            }
+            FastPathOutcome::Miss(reason) => {
+                if sync_mode.installs_from_lockfile() {
+                    bail!(
+                        "{LOCKFILE_NAME} is out of date for {}: {reason}. Rerun plain `nodus sync` to repair the lockfile and managed outputs.",
+                        sync_mode.flag(),
+                    );
+                }
+                // For non-frozen modes the miss reason is debug-level
+                // information only — fall through to the full resolve
+                // loop which will repair any drift.
+            }
+        }
+    } else if sync_mode.installs_from_lockfile() && force_rebuild {
+        // `--frozen` requires the lockfile to be trusted. An explicit
+        // `--no-fast-path` (force_rebuild) flag contradicts that intent —
+        // bail before doing any work rather than silently honoring one
+        // flag and ignoring the other.
+        bail!(
+            "{} cannot be combined with `--no-fast-path`",
+            sync_mode.flag(),
         );
     }
 
@@ -971,6 +1267,7 @@ pub(crate) fn sync_with_loaded_root_at_paths(
         execution_mode,
         Some(root),
         DependencyFailureMode::Graceful,
+        false,
         reporter,
     )
 }
@@ -1039,6 +1336,83 @@ impl Resolution {
         runtime_root: &Path,
         codex_native_plugins_auto_enabled: bool,
     ) -> Result<Lockfile> {
+        // Build the output plan ONCE. We feed it twice: once to attribute
+        // per-package ownership (subtrees/prefixes/files), and once more (via
+        // `output_plan.files`) to compute each package's `install_digest`.
+        let package_roots = self
+            .packages
+            .iter()
+            .map(|package| (package.clone(), package.root.clone()))
+            .collect::<Vec<_>>();
+        let output_plan = build_output_plan_with_options(
+            runtime_root,
+            &package_roots,
+            selected_adapters,
+            None,
+            OutputPlanOptions {
+                merge_existing_mcp: false,
+                codex_native_plugins_auto_enabled,
+            },
+        )?;
+
+        // BTreeMap (not HashMap) so attribute_file_to_package iterates aliases
+        // in deterministic alphabetical order. With a HashMap, two packages
+        // with overlapping ownership claims would attribute differently across
+        // runs and silently shift install_digest contents, breaking the
+        // byte-identical-idempotent guarantee.
+        let mut per_package_owned: BTreeMap<String, PackageOwnedPaths> = output_plan
+            .managed_files_by_package
+            .iter()
+            .cloned()
+            .map(|owned| (owned.alias.clone(), owned))
+            .collect();
+
+        // The workspace marketplace files (`.nodus/.claude-plugin/marketplace.json`
+        // and `.nodus/.agents/plugins/marketplace.json`) are emitted by the
+        // sync loop, not by `build_output_plan_with_options`. Attribute them
+        // to the workspace owner (root package) so the lockfile records them
+        // as Nodus-owned — sync's collision detector and cleanup pass both
+        // consult the per-package ownership view to decide whether a runtime
+        // file is allowed to exist. We also feed the bytes into the digest
+        // input below so the recorded `install_digest` covers them; without
+        // that, `install_digest_from_disk` (which walks every owned path on
+        // disk, marketplace files included) would always disagree with the
+        // recorded digest and the fast-path would miss on every sync in
+        // workspace mode.
+        let workspace_marketplace_managed_files =
+            planned_workspace_marketplace_managed_files(self, runtime_root)?;
+        if !workspace_marketplace_managed_files.is_empty() {
+            let workspace_alias = self
+                .packages
+                .iter()
+                .find(|package| matches!(package.source, PackageSource::Root))
+                .map(|package| package.alias.clone())
+                .unwrap_or_else(|| "root".to_string());
+            let bucket = per_package_owned
+                .entry(workspace_alias.clone())
+                .or_insert_with(|| PackageOwnedPaths {
+                    alias: workspace_alias,
+                    subtrees: Vec::new(),
+                    prefixes: Vec::new(),
+                    files: Vec::new(),
+                });
+            for file in &workspace_marketplace_managed_files {
+                let relative =
+                    display_path(file.path.strip_prefix(runtime_root).unwrap_or(&file.path));
+                if !bucket.files.contains(&relative) {
+                    bucket.files.push(relative);
+                }
+            }
+            bucket.files.sort();
+        }
+
+        let per_package_install_digests = install_digests_by_package(
+            runtime_root,
+            &output_plan,
+            &per_package_owned,
+            &workspace_marketplace_managed_files,
+        )?;
+
         let mut packages = Vec::new();
 
         for package in &self.packages {
@@ -1081,6 +1455,12 @@ impl Resolution {
             };
             let mut dependencies = package_dependency_aliases(package, package_role)?;
             dependencies.sort();
+
+            let owned = per_package_owned.remove(&package.alias).unwrap_or_default();
+            let install_digest = per_package_install_digests
+                .get(&package.alias)
+                .cloned()
+                .or_else(|| Some(content_digest(&[])));
 
             packages.push(LockedPackage {
                 alias: package.alias.clone(),
@@ -1147,27 +1527,14 @@ impl Resolution {
                 ),
                 dependencies,
                 capabilities: package.manifest.manifest.capabilities.clone(),
-                // Slice 3 owns emission of these per-package ownership fields.
-                owned_subtrees: Vec::new(),
-                owned_prefixes: Vec::new(),
-                owned_files: Vec::new(),
-                install_digest: None,
+                owned_subtrees: owned.subtrees,
+                owned_prefixes: owned.prefixes,
+                owned_files: owned.files,
+                install_digest,
             });
         }
 
-        let mut lockfile = Lockfile::new(packages);
-        // Slice 1 bridge: the v10 schema replaces the top-level `managed_files`
-        // list with per-package ownership rules
-        // (`owned_subtrees`/`owned_prefixes`/`owned_files`). Slice 3 will move
-        // the emission below into those per-package fields. Until then, we
-        // continue to populate the legacy field so the existing read-path
-        // expansion (and the inline resolver tests) keep working.
-        lockfile.legacy_managed_files = self.lockfile_managed_files(
-            selected_adapters,
-            runtime_root,
-            codex_native_plugins_auto_enabled,
-        )?;
-        Ok(lockfile)
+        Ok(Lockfile::new(packages))
     }
 
     #[allow(dead_code)]
@@ -1185,20 +1552,33 @@ impl Resolution {
         selected_adapters: Adapters,
         codex_native_plugins_auto_enabled: bool,
     ) -> Result<HashSet<PathBuf>> {
+        // v10 lockfiles no longer populate `legacy_managed_files`, so
+        // `Lockfile::managed_paths` returns an empty set on v10 input. Derive
+        // the owned root paths directly from the per-package ownership view:
+        // subtree roots, exact files, prefix dirs. Doctor and sync consume
+        // this list to decide which on-disk paths they may inspect / write /
+        // adopt.
         let lockfile = self.to_lockfile_with_options(
             selected_adapters,
             runtime_root,
             codex_native_plugins_auto_enabled,
         )?;
-        lockfile.managed_paths(runtime_root)
-    }
+        let owned = lockfile.owned_set(runtime_root)?;
+        let mut paths: HashSet<PathBuf> = owned.exact;
+        paths.extend(owned.subtrees.iter().cloned());
+        paths.extend(owned.prefixes.iter().map(|rule| rule.dir.clone()));
 
-    fn lockfile_managed_files(
-        &self,
-        selected_adapters: Adapters,
-        runtime_root: &Path,
-        codex_native_plugins_auto_enabled: bool,
-    ) -> Result<Vec<String>> {
+        // For each subtree we own, surface the immediate sub-directories
+        // that hold one-artifact-per-subdir (skill folders inside a native
+        // plugin: `.nodus/packages/<alias>/<runtime>-plugin/skills/`, agent
+        // folders in similar positions). The pre-Slice-3 behavior compressed
+        // these subdirs into `desired_paths` via `derivable_runtime_artifact_entries`
+        // so `recover_runtime_owned_paths_from_disk` could match an
+        // exactly-equivalent pre-written directory tree without needing the
+        // whole plugin folder to already exist. We mirror that here by
+        // recording any direct child of a subtree that the output plan plans
+        // to populate, so the on-disk adoption logic keeps working through
+        // the schema bump.
         let package_roots = self
             .packages
             .iter()
@@ -1214,181 +1594,369 @@ impl Resolution {
                 codex_native_plugins_auto_enabled,
             },
         )?;
-        let mut managed_files = compress_lockfile_managed_files(
-            self,
-            selected_adapters,
-            runtime_root,
-            output_plan.managed_files,
-        )?;
-        managed_files.extend(workspace_marketplace_managed_files(self)?);
-        managed_files.sort();
-        managed_files.dedup();
-        Ok(managed_files)
+        for owned_subtree in &owned.subtrees {
+            for file in &output_plan.files {
+                let Some(rest) = file.path.strip_prefix(owned_subtree).ok() else {
+                    continue;
+                };
+                // Capture only the IMMEDIATE child directory (e.g. `skills`,
+                // `agents`, `commands`, `.codex-plugin` inside a plugin
+                // folder). Deeper paths are still owned via the subtree.
+                if let Some(first) = rest.components().next() {
+                    let child = owned_subtree.join(first.as_os_str());
+                    if child != file.path {
+                        paths.insert(child);
+                    }
+                }
+            }
+        }
+        Ok(paths)
     }
 }
 
-fn compress_lockfile_managed_files(
-    resolution: &Resolution,
-    selected_adapters: Adapters,
-    runtime_root: &Path,
-    managed_files: Vec<String>,
-) -> Result<Vec<String>> {
-    let derivable_runtime_entries =
-        derivable_runtime_artifact_entries(resolution, selected_adapters, runtime_root);
-    let compressed_runtime_roots = derivable_runtime_entries
-        .iter()
-        .filter_map(|entry| Path::new(entry).parent().map(display_path))
-        .collect::<HashSet<_>>();
-    let managed_export_roots = resolution
-        .packages
-        .iter()
-        .flat_map(|package| {
-            package.managed_paths().iter().filter(|mapping| {
-                matches!(
-                    mapping.origin,
-                    ResolvedManagedPathOrigin::PackageManagedExport { .. }
-                )
-            })
-        })
-        .map(|mapping| display_path(&mapping.ownership_root))
-        .collect::<HashSet<_>>();
-
-    let mut compressed = managed_files
-        .into_iter()
-        .filter(|entry| {
-            !derivable_runtime_entries.contains(entry)
-                && !managed_export_roots
-                    .iter()
-                    .any(|root| entry != root && Path::new(entry).starts_with(root))
-        })
-        .collect::<Vec<_>>();
-    compressed.extend(compressed_runtime_roots);
-    compressed.extend(managed_export_roots);
-    compressed.sort();
-    compressed.dedup();
-    Ok(compressed)
+/// Outcome of evaluating the v10 install_digest drift fast-path.
+///
+/// `Hit` means the lockfile and disk agree exactly — the caller can return a
+/// synthetic `SyncSummary` without doing any further work. `Miss(reason)`
+/// surfaces a human-readable explanation of which gate condition failed; the
+/// caller logs it under `--frozen` (where missing the fast-path is fatal) and
+/// silently falls through under normal sync.
+enum FastPathOutcome {
+    Hit,
+    Miss(String),
 }
 
-fn derivable_runtime_artifact_entries(
-    resolution: &Resolution,
-    selected_adapters: Adapters,
-    runtime_root: &Path,
-) -> HashSet<String> {
-    let names =
-        crate::adapters::ManagedArtifactNames::from_resolved_packages(resolution.packages.iter());
-    let mut entries = HashSet::new();
+/// Decide whether the v10 install_digest drift fast-path can short-circuit a
+/// sync.
+///
+/// The lockfile is already known to be v10 and the caller has already filtered
+/// out modes that mutate the consumer manifest. This function checks the
+/// per-package preconditions:
+///
+/// - **Freshness gate** (skipped under `--frozen`): every git source is
+///   pinned to a `rev` and not tracking a `branch`. Branch-tracked deps can
+///   have moved upstream, so the fast-path can't safely skip a re-resolve.
+///   `--frozen` opts out of upstream-freshness checking by definition (it
+///   uses the recorded `rev` verbatim), so this gate is bypassed there.
+/// - **Integrity gate**: every package carries an `install_digest` and the
+///   recomputed digest from disk matches it.
+///
+/// Any failure short-circuits with a descriptive `Miss`. The cost of the
+/// disk-walk is bounded by the union of `owned_*` paths the lockfile names,
+/// which is exactly the set the full resolve would re-render anyway.
+fn evaluate_fast_path(
+    lockfile: &Lockfile,
+    project_root: &Path,
+    sync_mode: SyncMode,
+    cache_root: &Path,
+) -> Result<FastPathOutcome> {
+    let bypass_freshness_gate = sync_mode.installs_from_lockfile();
+    let lockfile_mtime = if bypass_freshness_gate {
+        None
+    } else {
+        std::fs::metadata(project_root.join(LOCKFILE_NAME))
+            .and_then(|metadata| metadata.modified())
+            .ok()
+    };
+    for package in &lockfile.packages {
+        if !bypass_freshness_gate {
+            // Source-pin freshness gate. Float-y deps (branch tracking) can
+            // change upstream between syncs; the disk content might match the
+            // lockfile but the lockfile itself could be stale. Always
+            // re-resolve those in non-frozen modes. Path deps are similarly
+            // open-ended (the user can edit local files at any time), so we
+            // check that nothing under the path source root is newer than
+            // the lockfile as a cheap freshness proxy.
+            match package.source.kind.as_str() {
+                "path" => {
+                    if let Some(lockfile_mtime) = lockfile_mtime {
+                        let source_root = package
+                            .source
+                            .path
+                            .as_deref()
+                            .map(|raw| project_root.join(raw))
+                            .unwrap_or_else(|| project_root.to_path_buf());
+                        if path_dep_source_is_newer(&source_root, lockfile_mtime, project_root) {
+                            return Ok(FastPathOutcome::Miss(format!(
+                                "package `{}` has on-disk source newer than the lockfile",
+                                package.alias
+                            )));
+                        }
+                    } else {
+                        return Ok(FastPathOutcome::Miss(format!(
+                            "package `{}` is a path dependency but the lockfile mtime could not be read",
+                            package.alias
+                        )));
+                    }
+                }
+                "git" => {
+                    if package.source.rev.is_none() {
+                        return Ok(FastPathOutcome::Miss(format!(
+                            "package `{}` has no pinned git revision",
+                            package.alias
+                        )));
+                    }
+                    if package.source.branch.is_some() {
+                        return Ok(FastPathOutcome::Miss(format!(
+                            "package `{}` tracks branch `{}`; upstream may have moved",
+                            package.alias,
+                            package.source.branch.as_deref().unwrap_or(""),
+                        )));
+                    }
+                }
+                other => {
+                    return Ok(FastPathOutcome::Miss(format!(
+                        "package `{}` has unrecognized source kind `{}`",
+                        package.alias, other
+                    )));
+                }
+            }
+        }
 
-    for package in &resolution.packages {
-        if matches!(package.source, PackageSource::Root) && !package.manifest.manifest.publish_root
+        // install_digest gate. Slice 3 always stamps a digest on v10
+        // emissions (defaulting to `content_digest(&[])` for empty packages),
+        // so `None` here means the lockfile was hand-edited or upgraded from
+        // a pre-Slice-3 schema by a different tool.
+        let Some(recorded) = package.install_digest.as_deref() else {
+            return Ok(FastPathOutcome::Miss(format!(
+                "package `{}` has no recorded install_digest",
+                package.alias
+            )));
+        };
+
+        // Disk-digest gate. `Ok(None)` means an `owned_files` entry is
+        // missing on disk — drift, fall back to full sync.
+        let Some(disk_digest) = install_digest_from_disk(project_root, package)? else {
+            return Ok(FastPathOutcome::Miss(format!(
+                "package `{}` has an owned file missing on disk",
+                package.alias
+            )));
+        };
+
+        if disk_digest != recorded {
+            return Ok(FastPathOutcome::Miss(format!(
+                "package `{}` install_digest mismatch (disk drift)",
+                package.alias
+            )));
+        }
+
+        // Cache-presence gate. `nodus clean` plus a stale lockfile leaves
+        // disk consistent but the shared cache empty; downstream commands
+        // (`doctor`, `update`) need the cache present. Fall through so the
+        // full resolve repopulates it.
+        let snapshot_path = crate::store::snapshot_path(cache_root, &package.digest)?;
+        if !snapshot_path.exists() {
+            return Ok(FastPathOutcome::Miss(format!(
+                "package `{}` snapshot is missing from the shared cache",
+                package.alias
+            )));
+        }
+    }
+
+    Ok(FastPathOutcome::Hit)
+}
+
+/// Cheap freshness probe for path-dep sources.
+///
+/// Walks the source root and returns `true` if any non-runtime file's mtime
+/// is strictly newer than `lockfile_mtime`. We skip everything under
+/// `project_root/.nodus`, `.claude`, `.codex`, etc. — those are the runtime
+/// outputs Nodus writes during sync, which would always be at least as new
+/// as the lockfile and would trip every fast-path check otherwise.
+///
+/// mtime-based detection is a heuristic, not a proof. False positives (mtime
+/// bumped by an unrelated tool like a git checkout) cause an unneeded full
+/// sync, which is correct-but-slow. False negatives (someone restored a
+/// snapshot to an older mtime) cause a missed sync, which the user can
+/// recover from via `nodus sync --no-fast-path`. The trade is acceptable
+/// because the alternative — recomputing every path dep's source digest —
+/// duplicates the bulk of a full resolve and erases the fast-path benefit.
+fn path_dep_source_is_newer(
+    source_root: &Path,
+    lockfile_mtime: std::time::SystemTime,
+    project_root: &Path,
+) -> bool {
+    use walkdir::WalkDir;
+
+    // Names at the top of `project_root` we know Nodus writes during sync.
+    // When the path-dep source root equals the project root (the common
+    // "consumer = root package" case) we have to filter these out or the
+    // freshness probe always trips on Nodus's own outputs.
+    let nodus_owned_top_level = [
+        ".nodus",
+        ".claude",
+        ".claude-plugin",
+        ".codex",
+        ".cursor",
+        ".github",
+        ".opencode",
+        ".agents",
+        "nodus.lock",
+    ];
+    let canonical_project_root = std::fs::canonicalize(project_root).ok();
+    for entry in WalkDir::new(source_root).follow_links(false) {
+        let Ok(entry) = entry else {
+            // Walk errors don't disqualify the fast-path on their own —
+            // the integrity gate's disk reads will surface real errors.
+            continue;
+        };
+        let path = entry.path();
+        // Skip Nodus-managed top-level dirs at the project root.
+        if let Some(canonical_project_root) = canonical_project_root.as_ref()
+            && let Ok(rel) = path.strip_prefix(canonical_project_root)
+            && let Some(first) = rel.components().next()
+            && let Some(first_str) = first.as_os_str().to_str()
+            && nodus_owned_top_level.contains(&first_str)
         {
             continue;
         }
-
-        if package.selects_component(DependencyComponent::Skills) {
-            for skill in &package.manifest.discovered.skills {
-                for adapter in ArtifactKind::Skill.supported_adapters().iter() {
-                    if !selected_adapters.contains(adapter) {
-                        continue;
-                    }
-                    let path = crate::adapters::managed_skill_root(
-                        &names,
-                        runtime_root,
-                        adapter,
-                        package,
-                        &skill.id,
-                    );
-                    entries.insert(display_path(
-                        path.strip_prefix(runtime_root).unwrap_or(&path),
-                    ));
-                }
-            }
+        if let Ok(rel) = path.strip_prefix(project_root)
+            && let Some(first) = rel.components().next()
+            && let Some(first_str) = first.as_os_str().to_str()
+            && nodus_owned_top_level.contains(&first_str)
+        {
+            continue;
         }
-
-        if package.selects_component(DependencyComponent::Agents) {
-            for adapter in ArtifactKind::Agent.supported_adapters().iter() {
-                if !selected_adapters.contains(adapter) {
-                    continue;
-                }
-                for agent in package.manifest.discovered.selected_agents(adapter) {
-                    if let Some(path) = crate::adapters::managed_artifact_path(
-                        &names,
-                        runtime_root,
-                        adapter,
-                        ArtifactKind::Agent,
-                        package,
-                        &agent.id,
-                    ) {
-                        entries.insert(display_path(
-                            path.strip_prefix(runtime_root).unwrap_or(&path),
-                        ));
-                    }
-                }
-            }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
         }
-
-        if package.selects_component(DependencyComponent::Rules) {
-            for rule in &package.manifest.discovered.rules {
-                for adapter in ArtifactKind::Rule.supported_adapters().iter() {
-                    if !selected_adapters.contains(adapter) {
-                        continue;
-                    }
-                    if let Some(path) = crate::adapters::managed_artifact_path(
-                        &names,
-                        runtime_root,
-                        adapter,
-                        ArtifactKind::Rule,
-                        package,
-                        &rule.id,
-                    ) {
-                        entries.insert(display_path(
-                            path.strip_prefix(runtime_root).unwrap_or(&path),
-                        ));
-                    }
-                }
-            }
-        }
-
-        if package.selects_component(DependencyComponent::Commands) {
-            for command in &package.manifest.discovered.commands {
-                if selected_adapters.contains(Adapter::Codex) {
-                    let skill_id = crate::adapters::codex::synthetic_command_skill_id(
-                        &names,
-                        package,
-                        &command.id,
-                    );
-                    let path = crate::adapters::managed_skill_root(
-                        &names,
-                        runtime_root,
-                        Adapter::Codex,
-                        package,
-                        &skill_id,
-                    );
-                    entries.insert(display_path(
-                        path.strip_prefix(runtime_root).unwrap_or(&path),
-                    ));
-                }
-                for adapter in ArtifactKind::Command.supported_adapters().iter() {
-                    if !selected_adapters.contains(adapter) {
-                        continue;
-                    }
-                    if let Some(path) = crate::adapters::managed_artifact_path(
-                        &names,
-                        runtime_root,
-                        adapter,
-                        ArtifactKind::Command,
-                        package,
-                        &command.id,
-                    ) {
-                        entries.insert(display_path(
-                            path.strip_prefix(runtime_root).unwrap_or(&path),
-                        ));
-                    }
-                }
-            }
+        let Ok(modified) = metadata.modified() else {
+            continue;
+        };
+        if modified > lockfile_mtime {
+            return true;
         }
     }
+    false
+}
 
-    entries
+/// Approximate the `managed_file_count` summary field on a fast-path hit.
+///
+/// The pre-fast-path code derived this from the rendered `planned_files`
+/// vector. On the fast-path we never render — we use the lockfile's
+/// per-package `owned_*` rules instead. Counting subtrees / prefix rules / exact
+/// files gives the user a sensible number for the "managed files" summary
+/// line without forcing a disk walk just to count.
+fn count_owned_files(lockfile: &Lockfile) -> usize {
+    lockfile
+        .packages
+        .iter()
+        .map(|package| {
+            package.owned_files.len() + package.owned_subtrees.len() + package.owned_prefixes.len()
+        })
+        .sum()
+}
+
+/// Compute per-package `install_digest` (`blake3:<hex>`) from the output plan.
+///
+/// Each emitted file is attributed to the owning package by consulting
+/// `per_package_owned` (the same per-package ownership rules we emit into the
+/// lockfile). Files are sorted by `target_relative_path` before hashing so the
+/// digest is stable across equivalent resolutions. The digest covers
+/// `(target_relative_path, contents)` for every attributed file.
+///
+/// Packages with no attributed files don't appear in the returned map; the
+/// caller stamps `content_digest(&[])` on them so v10 lockfiles always carry a
+/// digest (Slice 4's drift fast-path needs a stable empty-install baseline).
+///
+/// `extra_files` is the second-class input for files the output plan does not
+/// emit but the lockfile records as owned (today: workspace marketplace JSONs
+/// under `.nodus/.claude-plugin/` and `.nodus/.agents/plugins/`, which the
+/// sync loop writes outside `build_output_plan_with_options`). They must be
+/// hashed too, otherwise `install_digest_from_disk` — which walks every owned
+/// path on disk — will compute a digest that always disagrees with the
+/// recorded one and the fast-path will miss on every subsequent sync.
+fn install_digests_by_package(
+    runtime_root: &Path,
+    output_plan: &OutputPlan,
+    per_package_owned: &BTreeMap<String, PackageOwnedPaths>,
+    extra_files: &[ManagedFile],
+) -> Result<HashMap<String, String>> {
+    let mut per_package_entries: BTreeMap<String, BTreeMap<PathBuf, Vec<u8>>> = BTreeMap::new();
+
+    let all_files = output_plan.files.iter().chain(extra_files.iter());
+    for file in all_files {
+        let target_relative = file
+            .path
+            .strip_prefix(runtime_root)
+            .unwrap_or(&file.path)
+            .to_path_buf();
+        let Some(alias) = attribute_file_to_package(&target_relative, per_package_owned) else {
+            // Unattributed files exist in the on-disk plan but aren't part of
+            // any package's ownership view (e.g. Codex user-config edits that
+            // live outside runtime_root). They don't contribute to a
+            // per-package install_digest.
+            continue;
+        };
+        per_package_entries
+            .entry(alias)
+            .or_default()
+            .insert(target_relative, file.contents.clone());
+    }
+
+    let mut digests = HashMap::with_capacity(per_package_entries.len());
+    for (alias, entries) in per_package_entries {
+        let entries_for_digest: Vec<(String, Vec<u8>)> = entries
+            .into_iter()
+            .map(|(path, contents)| (display_path(&path), contents))
+            .collect();
+        let digest_input: Vec<(&str, &[u8])> = entries_for_digest
+            .iter()
+            .map(|(path, contents)| (path.as_str(), contents.as_slice()))
+            .collect();
+        digests.insert(alias, content_digest(&digest_input));
+    }
+    Ok(digests)
+}
+
+/// Return the package alias that owns `target_relative` according to the
+/// per-package categorization we've already built. Mirrors
+/// `OwnedSet::contains` (subtree starts_with, exact path match, prefix dir +
+/// stem prefix) but returns the alias instead of a boolean so the install
+/// digest computation can bucket files per package.
+fn attribute_file_to_package(
+    target_relative: &Path,
+    per_package_owned: &BTreeMap<String, PackageOwnedPaths>,
+) -> Option<String> {
+    // Subtree match wins: a file living under a package's owned subtree is
+    // attributed to that package regardless of whether another package also
+    // declares an exact file match (the latter would be redundant).
+    //
+    // BTreeMap iteration is alphabetically deterministic — overlapping claims
+    // resolve in a stable order so install_digest distribution stays
+    // byte-identical across runs.
+    for (alias, owned) in per_package_owned {
+        if owned
+            .subtrees
+            .iter()
+            .any(|subtree| target_relative.starts_with(Path::new(subtree)))
+        {
+            return Some(alias.clone());
+        }
+    }
+    for (alias, owned) in per_package_owned {
+        if owned.files.iter().any(|file| {
+            let owned = Path::new(file);
+            target_relative == owned || target_relative.starts_with(owned)
+        }) {
+            return Some(alias.clone());
+        }
+    }
+    for (alias, owned) in per_package_owned {
+        if owned.prefixes.iter().any(|rule| {
+            target_relative.parent() == Some(Path::new(&rule.dir))
+                && target_relative
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(&rule.prefix))
+        }) {
+            return Some(alias.clone());
+        }
+    }
+    None
 }
 
 fn package_dependency_aliases(
@@ -1437,6 +2005,32 @@ fn package_dependency_aliases(
     dependencies.sort();
     dependencies.dedup();
     Ok(dependencies)
+}
+
+/// Resolver-side view of [`planned_workspace_marketplace_files`] for the
+/// lockfile-emission path. Returns just the on-disk paths the workspace
+/// marketplace planner would emit; we use them in `to_lockfile_with_options`
+/// to seed per-package ownership for the workspace owner (without forcing
+/// every call site that just wants ownership to construct the JSON bodies).
+/// Resolve the workspace marketplace files (path + bytes) for the lockfile
+/// emitter. These are the `.nodus/.claude-plugin/marketplace.json` and
+/// `.nodus/.agents/plugins/marketplace.json` files the sync loop writes
+/// outside `build_output_plan_with_options`. Both consumers (per-package
+/// ownership and `install_digest`) need the same set, so we return the full
+/// `ManagedFile` and let callers pick `.path` or `.contents` as needed.
+fn planned_workspace_marketplace_managed_files(
+    resolution: &Resolution,
+    runtime_root: &Path,
+) -> Result<Vec<ManagedFile>> {
+    let Some(root) = resolution
+        .packages
+        .iter()
+        .find(|package| matches!(package.source, PackageSource::Root))
+        .map(|package| &package.manifest)
+    else {
+        return Ok(Vec::new());
+    };
+    planned_workspace_marketplace_files(root, runtime_root)
 }
 
 fn planned_workspace_marketplace_files(
@@ -1593,21 +2187,6 @@ fn normalize_workspace_marketplace_name(value: &str) -> String {
     } else {
         normalized
     }
-}
-
-fn workspace_marketplace_managed_files(resolution: &Resolution) -> Result<Vec<String>> {
-    let Some(root) = resolution
-        .packages
-        .iter()
-        .find(|package| matches!(package.source, PackageSource::Root))
-        .map(|package| &package.manifest)
-    else {
-        return Ok(Vec::new());
-    };
-    Ok(planned_workspace_marketplace_files(root, &root.root)?
-        .into_iter()
-        .map(|file| display_path(file.path.strip_prefix(&root.root).unwrap_or(&file.path)))
-        .collect())
 }
 
 fn sorted_ids<'a>(ids: impl Iterator<Item = &'a String>) -> Vec<String> {

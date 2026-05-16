@@ -447,7 +447,10 @@ impl Lockfile {
         Ok(())
     }
 
-    fn validate_managed_relative<'a>(relative: &'a str, project_root: &Path) -> Result<&'a Path> {
+    pub(crate) fn validate_managed_relative<'a>(
+        relative: &'a str,
+        project_root: &Path,
+    ) -> Result<&'a Path> {
         let relative_path = Path::new(relative);
         if relative_path.is_absolute()
             || relative_path

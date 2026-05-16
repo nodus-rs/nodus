@@ -201,6 +201,7 @@ pub(super) const SYNC_AFTER_LONG_HELP: &str = r#"Common options:
   nodus sync --frozen
   nodus sync --strict
   nodus sync --force
+  nodus sync --no-fast-path
 
 Examples:
   nodus sync
@@ -209,8 +210,9 @@ Examples:
   nodus sync --frozen
   nodus sync --strict
   nodus sync --force
+  nodus sync --no-fast-path
 
-Use `--locked` when the lockfile must stay unchanged. Use `--frozen` when installs must come exactly from the existing `nodus.lock`. Use `--strict` when any Git refresh failure should stop the sync instead of falling back to cached locked data."#;
+Use `--locked` when the lockfile must stay unchanged. Use `--frozen` when installs must come exactly from the existing `nodus.lock`. Use `--strict` when any Git refresh failure should stop the sync instead of falling back to cached locked data. By default `nodus sync` skips the full resolve when the v10 `install_digest` shows the lockfile and disk already agree; pass `--no-fast-path` to force a full resolve and render."#;
 
 pub(super) const CLEAN_ABOUT: &str = "Clear shared repository, checkout, and snapshot cache data";
 

@@ -37,7 +37,7 @@ pub(super) fn build_sync_execution_plan(
     sync_mode: SyncMode,
 ) -> Result<SyncExecutionPlan> {
     let manifest_write = planned_manifest_write(original_root, working_root)?;
-    let mut removals = planned_stale_paths(owned_paths, desired_paths)?;
+    let mut removals = planned_stale_paths(owned_paths, desired_paths, planned_files)?;
     removals.extend(planned_paths_to_replace(
         planned_files,
         owned_paths,
@@ -176,6 +176,7 @@ fn planned_lockfile_write(path: &Path, lockfile: &Lockfile) -> Result<PlannedFil
 fn planned_stale_paths(
     owned_paths: &OwnedSet,
     desired_paths: &HashSet<PathBuf>,
+    planned_files: &[ManagedFile],
 ) -> Result<Vec<PathBuf>> {
     let mut removals: HashSet<PathBuf> = owned_paths
         .exact
@@ -184,28 +185,33 @@ fn planned_stale_paths(
         .cloned()
         .collect();
 
+    // Planned-file paths give us the actual leaves Nodus is about to write
+    // inside any owned subtree. Anything else inside the subtree is stale.
+    let planned_paths: HashSet<&Path> = planned_files
+        .iter()
+        .map(|file| file.path.as_path())
+        .collect();
+
     // For each owned subtree root, walk on-disk and queue every file that no
-    // longer corresponds to a desired path. Subtree roots that themselves no
-    // longer have any desired content are queued as well so the directory
-    // disappears at the end of the sweep.
+    // longer corresponds to a planned path or a desired path. Subtree roots
+    // that themselves no longer have any desired content are queued as well
+    // so the directory disappears at the end of the sweep.
     for subtree in &owned_paths.subtrees {
         if !subtree.exists() {
             continue;
         }
-        let entries = walk_subtree_files(subtree)?;
-        for entry in entries {
-            if !desired_paths.contains(&entry) {
-                removals.insert(entry);
-            }
-        }
-        // The subtree root itself is queued only when no desired path lives
-        // under it (otherwise removing the root would also remove desired
-        // children). When the root is queued, the executor's recursive remove
-        // takes the entire tree.
         let root_still_wanted = desired_paths
             .iter()
             .any(|desired| desired == subtree.as_path() || desired.starts_with(subtree));
+        let entries = walk_subtree_files(subtree)?;
+        for entry in entries {
+            if !desired_paths.contains(&entry) && !planned_paths.contains(entry.as_path()) {
+                removals.insert(entry);
+            }
+        }
         if !root_still_wanted {
+            // No desired content under the subtree — drop the root and the
+            // executor's recursive remove will take everything underneath.
             removals.insert(subtree.clone());
         }
     }
@@ -396,7 +402,16 @@ pub(super) fn find_unmanaged_collision(
             if parent == project_root {
                 break;
             }
-            if parent.exists() && parent.is_file() && !path_is_owned(parent, owned_paths) {
+            // When `parent` exists on disk as a regular file but Nodus expects
+            // a directory there (because something inside it is planned), it's
+            // a structural collision. We need to reject it even if a v10
+            // subtree claim transitively "owns" the path — subtree ownership
+            // describes a directory tree, so a leaf file at an interior path
+            // means the user planted something Nodus didn't put there.
+            if parent.exists()
+                && parent.is_file()
+                && !path_is_owned_exact_or_prefix(parent, owned_paths)
+            {
                 return Some(UnmanagedCollision {
                     path: parent.to_path_buf(),
                 });
@@ -406,6 +421,28 @@ pub(super) fn find_unmanaged_collision(
     }
 
     None
+}
+
+/// Like [`OwnedSet::contains`] but ignores subtree membership. Subtree claims
+/// describe a directory tree; when collision detection finds a regular file
+/// where Nodus expects a parent directory, the subtree-membership check would
+/// spuriously claim ownership of a user-planted file. Exact-path and
+/// filename-prefix ownership are unambiguous and still considered.
+fn path_is_owned_exact_or_prefix(path: &Path, owned_paths: &OwnedSet) -> bool {
+    if owned_paths.exact.contains(path) {
+        return true;
+    }
+    for rule in &owned_paths.prefixes {
+        if path.parent() == Some(rule.dir.as_path())
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(&rule.prefix))
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn allows_managed_merge(project_root: &Path, path: &Path) -> bool {

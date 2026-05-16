@@ -348,6 +348,11 @@ pub(super) enum Command {
         )]
         force: bool,
         #[arg(
+            long = "no-fast-path",
+            help = "Skip the v10 install_digest drift fast-path and always run a full resolve and render"
+        )]
+        no_fast_path: bool,
+        #[arg(
             long,
             value_enum,
             help = "Override and persist the adapter selection for this repository"
