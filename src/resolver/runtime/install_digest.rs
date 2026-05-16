@@ -34,7 +34,7 @@ use anyhow::{Context, Result};
 use walkdir::WalkDir;
 
 use crate::hashing::content_digest;
-use crate::lockfile::LockedPackage;
+use crate::lockfile::{LockedPackage, Lockfile};
 use crate::paths::display_path;
 
 /// Compute the `install_digest` (`"blake3:<hex>"`) for `package` by reading the
@@ -57,7 +57,20 @@ pub(crate) fn install_digest_from_disk(
     let mut entries: BTreeMap<PathBuf, Vec<u8>> = BTreeMap::new();
 
     for owned in &package.owned_files {
-        let relative = PathBuf::from(owned);
+        // Reject lockfile entries that escape the project root before we
+        // touch the disk. A hand-edited or malicious lockfile carrying an
+        // absolute path (e.g. "/etc/passwd") or `..` segments would
+        // otherwise let the fast-path probe read arbitrary files outside
+        // the workspace, because `project_root.join(absolute)` discards
+        // `project_root`.
+        let relative = Lockfile::validate_managed_relative(owned, project_root)
+            .with_context(|| {
+                format!(
+                    "package `{}` declares owned file `{}` outside the project root",
+                    package.alias, owned
+                )
+            })?
+            .to_path_buf();
         let absolute = project_root.join(&relative);
         let contents = match std::fs::read(&absolute) {
             Ok(bytes) => bytes,
@@ -80,13 +93,27 @@ pub(crate) fn install_digest_from_disk(
     }
 
     for subtree in &package.owned_subtrees {
-        let subtree_relative = PathBuf::from(subtree);
+        let subtree_relative = Lockfile::validate_managed_relative(subtree, project_root)
+            .with_context(|| {
+                format!(
+                    "package `{}` declares owned subtree `{}` outside the project root",
+                    package.alias, subtree
+                )
+            })?
+            .to_path_buf();
         let subtree_abs = project_root.join(&subtree_relative);
         collect_subtree_files(project_root, &subtree_abs, &mut entries)?;
     }
 
     for rule in &package.owned_prefixes {
-        let dir_relative = PathBuf::from(&rule.dir);
+        let dir_relative = Lockfile::validate_managed_relative(&rule.dir, project_root)
+            .with_context(|| {
+                format!(
+                    "package `{}` declares owned-prefix dir `{}` outside the project root",
+                    package.alias, rule.dir
+                )
+            })?
+            .to_path_buf();
         let dir_abs = project_root.join(&dir_relative);
         collect_prefix_files(project_root, &dir_abs, &rule.prefix, &mut entries)?;
     }
@@ -351,6 +378,58 @@ mod tests {
             .unwrap();
 
         assert_ne!(original, mutated);
+    }
+
+    #[test]
+    fn rejects_owned_files_entry_with_absolute_path() {
+        let temp = TempDir::new().unwrap();
+        let mut pkg = minimal_package("foo");
+        // Absolute path that would otherwise slip past `project_root.join`
+        // (Path::join drops the LHS when the RHS is absolute) and let the
+        // probe try to read /etc/passwd. We never want to touch the disk
+        // outside the workspace.
+        pkg.owned_files = vec!["/etc/passwd".into()];
+
+        let err = install_digest_from_disk(temp.path(), &pkg).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("escapes project root")
+                || message.contains("outside the project root"),
+            "expected escape diagnostic, got: {message}"
+        );
+    }
+
+    #[test]
+    fn rejects_owned_subtrees_entry_with_parent_dir_segment() {
+        let temp = TempDir::new().unwrap();
+        let mut pkg = minimal_package("foo");
+        pkg.owned_subtrees = vec!["../../etc".into()];
+
+        let err = install_digest_from_disk(temp.path(), &pkg).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("escapes project root")
+                || message.contains("outside the project root"),
+            "expected escape diagnostic, got: {message}"
+        );
+    }
+
+    #[test]
+    fn rejects_owned_prefix_dir_with_absolute_path() {
+        let temp = TempDir::new().unwrap();
+        let mut pkg = minimal_package("foo");
+        pkg.owned_prefixes = vec![OwnedPrefix {
+            dir: "/etc".into(),
+            prefix: "passwd".into(),
+        }];
+
+        let err = install_digest_from_disk(temp.path(), &pkg).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("escapes project root")
+                || message.contains("outside the project root"),
+            "expected escape diagnostic, got: {message}"
+        );
     }
 
     #[test]

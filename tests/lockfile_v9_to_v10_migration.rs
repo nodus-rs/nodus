@@ -37,7 +37,6 @@ where
 ///   vendor/shared/
 ///     nodus.toml                # empty package manifest
 ///     skills/review/SKILL.md    # one skill
-///     hooks/example.sh          # one hook script (drift-detection target)
 /// ```
 fn build_path_dep_workspace(temp: &Path) -> TempDir {
     let cache = TempDir::new().expect("cache tempdir");

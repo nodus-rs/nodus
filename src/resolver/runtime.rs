@@ -1373,10 +1373,15 @@ impl Resolution {
         // to the workspace owner (root package) so the lockfile records them
         // as Nodus-owned — sync's collision detector and cleanup pass both
         // consult the per-package ownership view to decide whether a runtime
-        // file is allowed to exist.
-        let workspace_marketplace_files =
-            planned_workspace_marketplace_files_lockfile(self, runtime_root)?;
-        if !workspace_marketplace_files.is_empty() {
+        // file is allowed to exist. We also feed the bytes into the digest
+        // input below so the recorded `install_digest` covers them; without
+        // that, `install_digest_from_disk` (which walks every owned path on
+        // disk, marketplace files included) would always disagree with the
+        // recorded digest and the fast-path would miss on every sync in
+        // workspace mode.
+        let workspace_marketplace_managed_files =
+            planned_workspace_marketplace_managed_files(self, runtime_root)?;
+        if !workspace_marketplace_managed_files.is_empty() {
             let workspace_alias = self
                 .packages
                 .iter()
@@ -1391,8 +1396,9 @@ impl Resolution {
                     prefixes: Vec::new(),
                     files: Vec::new(),
                 });
-            for file in &workspace_marketplace_files {
-                let relative = display_path(file.strip_prefix(runtime_root).unwrap_or(file));
+            for file in &workspace_marketplace_managed_files {
+                let relative =
+                    display_path(file.path.strip_prefix(runtime_root).unwrap_or(&file.path));
                 if !bucket.files.contains(&relative) {
                     bucket.files.push(relative);
                 }
@@ -1400,8 +1406,12 @@ impl Resolution {
             bucket.files.sort();
         }
 
-        let per_package_install_digests =
-            install_digests_by_package(runtime_root, &output_plan, &per_package_owned)?;
+        let per_package_install_digests = install_digests_by_package(
+            runtime_root,
+            &output_plan,
+            &per_package_owned,
+            &workspace_marketplace_managed_files,
+        )?;
 
         let mut packages = Vec::new();
 
@@ -1851,14 +1861,24 @@ fn count_owned_files(lockfile: &Lockfile) -> usize {
 /// Packages with no attributed files don't appear in the returned map; the
 /// caller stamps `content_digest(&[])` on them so v10 lockfiles always carry a
 /// digest (Slice 4's drift fast-path needs a stable empty-install baseline).
+///
+/// `extra_files` is the second-class input for files the output plan does not
+/// emit but the lockfile records as owned (today: workspace marketplace JSONs
+/// under `.nodus/.claude-plugin/` and `.nodus/.agents/plugins/`, which the
+/// sync loop writes outside `build_output_plan_with_options`). They must be
+/// hashed too, otherwise `install_digest_from_disk` — which walks every owned
+/// path on disk — will compute a digest that always disagrees with the
+/// recorded one and the fast-path will miss on every subsequent sync.
 fn install_digests_by_package(
     runtime_root: &Path,
     output_plan: &OutputPlan,
     per_package_owned: &BTreeMap<String, PackageOwnedPaths>,
+    extra_files: &[ManagedFile],
 ) -> Result<HashMap<String, String>> {
     let mut per_package_entries: BTreeMap<String, BTreeMap<PathBuf, Vec<u8>>> = BTreeMap::new();
 
-    for file in &output_plan.files {
+    let all_files = output_plan.files.iter().chain(extra_files.iter());
+    for file in all_files {
         let target_relative = file
             .path
             .strip_prefix(runtime_root)
@@ -1992,10 +2012,16 @@ fn package_dependency_aliases(
 /// marketplace planner would emit; we use them in `to_lockfile_with_options`
 /// to seed per-package ownership for the workspace owner (without forcing
 /// every call site that just wants ownership to construct the JSON bodies).
-fn planned_workspace_marketplace_files_lockfile(
+/// Resolve the workspace marketplace files (path + bytes) for the lockfile
+/// emitter. These are the `.nodus/.claude-plugin/marketplace.json` and
+/// `.nodus/.agents/plugins/marketplace.json` files the sync loop writes
+/// outside `build_output_plan_with_options`. Both consumers (per-package
+/// ownership and `install_digest`) need the same set, so we return the full
+/// `ManagedFile` and let callers pick `.path` or `.contents` as needed.
+fn planned_workspace_marketplace_managed_files(
     resolution: &Resolution,
     runtime_root: &Path,
-) -> Result<Vec<PathBuf>> {
+) -> Result<Vec<ManagedFile>> {
     let Some(root) = resolution
         .packages
         .iter()
@@ -2004,10 +2030,7 @@ fn planned_workspace_marketplace_files_lockfile(
     else {
         return Ok(Vec::new());
     };
-    Ok(planned_workspace_marketplace_files(root, runtime_root)?
-        .into_iter()
-        .map(|file| file.path)
-        .collect())
+    planned_workspace_marketplace_files(root, runtime_root)
 }
 
 fn planned_workspace_marketplace_files(

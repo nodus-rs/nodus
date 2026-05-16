@@ -12021,3 +12021,83 @@ fn slice5_attribute_file_to_package_is_alphabetically_deterministic() {
         );
     }
 }
+
+/// Regression guard for Copilot PR #14 review finding #2: in workspace mode
+/// (`[workspace]` in the root manifest) the marketplace JSON files
+/// (`.nodus/.claude-plugin/marketplace.json`, `.nodus/.agents/plugins/...`)
+/// are written by the sync loop, not by `build_output_plan_with_options`.
+/// Before the fix they landed in the root package's `owned_files` but their
+/// bytes were missing from `install_digest`. On a second sync,
+/// `install_digest_from_disk` would walk them and produce a digest that
+/// always disagreed with the recorded value, missing the fast-path forever.
+///
+/// This test asserts the recorded install_digest equals what we re-compute
+/// from disk for a workspace-mode consumer.
+#[test]
+fn slice5_workspace_mode_install_digest_matches_disk_for_marketplace_files() {
+    let repo = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        repo.path(),
+        r#"
+name = "Workspace Plugins"
+
+[workspace]
+members = ["plugins/axiom"]
+
+[workspace.package.axiom]
+path = "plugins/axiom"
+name = "Axiom"
+
+[workspace.package.axiom.codex]
+category = "Productivity"
+installation = "AVAILABLE"
+authentication = "ON_INSTALL"
+"#,
+    );
+    write_skill(&repo.path().join("plugins/axiom/skills/review"), "Review");
+
+    sync_in_dir_with_adapters(repo.path(), cache.path(), false, false, &Adapter::ALL).unwrap();
+
+    // Marketplace JSONs must have been written on disk — proves the fixture
+    // actually exercises the workspace marketplace path.
+    let claude_marketplace = repo.path().join(".nodus/.claude-plugin/marketplace.json");
+    assert!(
+        claude_marketplace.exists(),
+        "test fixture didn't write the claude workspace marketplace JSON; \
+         the test is no longer exercising the bug it's guarding against"
+    );
+
+    let lockfile = Lockfile::read(&repo.path().join(LOCKFILE_NAME)).unwrap();
+    let root_package = lockfile
+        .packages
+        .iter()
+        .find(|pkg| pkg.alias == "root")
+        .expect("root package must appear in v10 lockfile");
+
+    // The root package's owned_files must include the marketplace JSON (proof
+    // that the per-package attribution wired it in).
+    assert!(
+        root_package
+            .owned_files
+            .iter()
+            .any(|f| f.contains("marketplace.json")),
+        "expected root package owned_files to include the workspace marketplace JSON; \
+         got: {:?}",
+        root_package.owned_files
+    );
+
+    let recorded = root_package
+        .install_digest
+        .as_deref()
+        .expect("v10 lockfile must stamp install_digest on every package");
+    let from_disk = super::install_digest::install_digest_from_disk(repo.path(), root_package)
+        .unwrap()
+        .expect("root package owns existing files on disk");
+
+    assert_eq!(
+        from_disk, recorded,
+        "recorded install_digest must include workspace marketplace file bytes; \
+         otherwise the drift fast-path misses on every sync in workspace mode"
+    );
+}
