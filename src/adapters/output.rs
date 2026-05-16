@@ -1603,11 +1603,7 @@ fn claude_native_package_plugin_files(
         &mut files,
         ManagedFile {
             path: plugin_root.join(".claude-plugin/plugin.json"),
-            contents: claude_native_package_plugin_json(
-                &names,
-                package,
-                hook_emission.has_hooks_json,
-            )?,
+            contents: claude_native_package_plugin_json(&names, package)?,
         },
     )?;
     Ok(managed_files_from_map(files))
@@ -1713,17 +1709,9 @@ fn codex_native_package_plugin_files(
 fn claude_native_package_plugin_json(
     names: &ManagedArtifactNames,
     package: &ResolvedPackage,
-    has_plugin_hooks_json: bool,
 ) -> Result<Vec<u8>> {
     let mut root = native_plugin_metadata_base(package);
     let prefix = native_package_plugin_artifact_prefix(Adapter::Claude, package);
-
-    if has_plugin_hooks_json {
-        root.insert(
-            "hooks".into(),
-            JsonValue::String(format!("{prefix}{}", super::claude::PLUGIN_HOOKS_JSON_PATH)),
-        );
-    }
 
     if package.selects_component(DependencyComponent::Skills)
         && !package.manifest.discovered.skills.is_empty()

@@ -110,8 +110,8 @@ pub fn rule_file(
 }
 
 /// Relative path inside a Claude plugin where Nodus emits the generated
-/// `hooks.json`. The plugin's `plugin.json` references this path via its
-/// `hooks` field.
+/// `hooks.json`. Claude Code loads this standard location automatically, so
+/// generated plugin manifests do not also reference it through `hooks`.
 pub const PLUGIN_HOOKS_JSON_PATH: &str = "hooks/hooks.json";
 
 pub fn hook_files(
@@ -465,11 +465,8 @@ exec sh -lc {command}
 /// Emit Nodus-managed portable hooks for a single package inside its Claude
 /// plugin root.
 ///
-/// Returns the list of files (per-hook shell wrappers and the generated
-/// `hooks.json`) and any warnings. The plugin's `plugin.json` must reference
-/// the emitted `hooks.json` via [`PLUGIN_HOOKS_JSON_PATH`]; pass
-/// `plugin_has_hooks_emitted` from [`PluginHookEmission::has_hooks_json`] to
-/// decide whether to set that field.
+/// Returns the list of files: per-hook shell wrappers plus the generated
+/// standard `hooks/hooks.json` file that Claude Code auto-loads.
 pub fn plugin_native_hook_files(
     plugin_root: &Path,
     package: &ResolvedPackage,
@@ -519,10 +516,7 @@ pub fn plugin_native_hook_files(
         contents: plugin_hooks_json_contents(&entries)?,
     });
 
-    Ok(PluginHookEmission {
-        files,
-        has_hooks_json: true,
-    })
+    Ok(PluginHookEmission { files })
 }
 
 /// Result of [`plugin_native_hook_files`].
@@ -530,9 +524,6 @@ pub fn plugin_native_hook_files(
 pub struct PluginHookEmission {
     /// Managed files to write inside the plugin root.
     pub files: Vec<ManagedFile>,
-    /// True when a `hooks.json` was emitted; the caller should set the
-    /// plugin manifest's `hooks` field accordingly.
-    pub has_hooks_json: bool,
 }
 
 fn plugin_hooks_json_contents(entries: &[ManagedSettingsEntry]) -> Result<Vec<u8>> {

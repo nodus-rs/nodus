@@ -4351,14 +4351,15 @@ command = "fuli integration claude hook session-end"
         );
     }
 
-    // The plugin manifest references the generated hooks file.
+    // Claude Code auto-loads the standard `hooks/hooks.json` path. The
+    // generated plugin manifest must not reference that same file again.
     let plugin_manifest: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(plugin_root.join(".claude-plugin/plugin.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(
-        plugin_manifest["hooks"].as_str(),
-        Some("./hooks/hooks.json"),
+    assert!(
+        plugin_manifest.get("hooks").is_none(),
+        "standard hooks file should not be duplicated in plugin manifest: {plugin_manifest:?}",
     );
 
     // Hook scripts live inside the plugin root.

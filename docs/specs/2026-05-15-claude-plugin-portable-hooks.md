@@ -23,14 +23,13 @@ means:
   matchers, IDs, and digests instead of a stable "enable this plugin"
   record.
 
-Claude Code plugins already define their own native hook surface: a
-plugin's `.claude-plugin/plugin.json` may carry a `hooks` field pointing
-at a `hooks/hooks.json` inside the plugin, and commands inside that file
-use `${CLAUDE_PLUGIN_ROOT}` to reference plugin-local scripts. That is
-the surface Claude Code reads when the plugin is enabled. Nodus already
-emits each non-root Nodus dependency as a Claude plugin under
-`.nodus/packages/<alias>/claude-plugin/`, but does not yet route the
-portable `[[hooks]]` through it.
+Claude Code plugins already define their own native hook surface: Claude
+loads the standard `hooks/hooks.json` inside an enabled plugin, and commands
+inside that file use `${CLAUDE_PLUGIN_ROOT}` to reference plugin-local
+scripts. The plugin manifest's `hooks` field is reserved for additional
+non-standard hook files. Nodus already emits each non-root Nodus dependency as
+a Claude plugin under `.nodus/packages/<alias>/claude-plugin/`, but does not
+yet route the portable `[[hooks]]` through it.
 
 ## Goal
 
@@ -43,8 +42,8 @@ settings file. Concretely:
 - A `.nodus/packages/<alias>/claude-plugin/hooks/hooks.json` file
   contains the per-event entries that today land in
   `.claude/settings.json`.
-- The plugin's `.claude-plugin/plugin.json` gains a top-level
-  `"hooks": "./hooks/hooks.json"` pointer so Claude loads it.
+- The plugin's `.claude-plugin/plugin.json` does not repeat the standard
+  `hooks/hooks.json` path; Claude loads it automatically.
 - The workspace `.claude/settings.json` only carries the root manifest's
   own `[[hooks]]` (e.g. `nodus.sync_on_startup`) plus marketplace and
   `enabledPlugins` wiring. Removing a dependency removes its plugin
@@ -73,7 +72,8 @@ settings since the root is the workspace itself.
    Claude either implicitly or via `adapters = ["claude"]`) emits its
    hook scripts under `.nodus/packages/<alias>/claude-plugin/hooks/`
    and its `hooks.json` under that same directory.
-2. The plugin's `plugin.json` carries `"hooks": "./hooks/hooks.json"`.
+2. The plugin's `plugin.json` does not carry a `hooks` entry for the
+   standard `hooks/hooks.json` file.
 3. `.claude/settings.json` no longer contains entries for that
    dependency's hooks. It still carries the marketplace,
    `enabledPlugins`, and the root manifest's own hook entries.

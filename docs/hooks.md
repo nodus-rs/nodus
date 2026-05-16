@@ -19,10 +19,10 @@ from:
   the marketplace and `enabledPlugins` records Nodus already manages there.
 - **Dependency package hooks** ride inside each package's generated Claude
   plugin at `.nodus/packages/<alias>/claude-plugin/`. Nodus writes
-  `hooks/hooks.json` plus per-hook scripts under `hooks/scripts/`, and the
-  plugin's `.claude-plugin/plugin.json` gains a `"hooks":
-  "./hooks/hooks.json"` pointer so Claude Code loads it whenever the plugin
-  is enabled.
+  `hooks/hooks.json` plus per-hook scripts under `hooks/scripts/`. Claude
+  Code loads that standard `hooks/hooks.json` path automatically when the
+  plugin is enabled, so generated plugin manifests leave `hooks` unset unless
+  a future non-standard hook file must be referenced.
 
 This split keeps the workspace settings file readable — adding, updating, or
 removing a dependency only churns files under the plugin folder, not the
