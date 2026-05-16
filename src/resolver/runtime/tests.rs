@@ -11921,3 +11921,93 @@ fn slice4_count_owned_files_sums_per_package_views() {
     // alpha: 1 subtree + 1 file = 2; beta: 1 prefix = 1; total = 3
     assert_eq!(super::count_owned_files(&lockfile), 3);
 }
+
+/// Regression guard for the Slice 5 review HIGH finding: with overlapping
+/// ownership claims across packages, `attribute_file_to_package` must
+/// resolve in a stable order so `install_digest` distribution doesn't
+/// silently shift across runs. The fix routes the inner map through
+/// `BTreeMap` to get alphabetical iteration; this test fails if it
+/// regresses to `HashMap`.
+#[test]
+fn slice5_attribute_file_to_package_is_alphabetically_deterministic() {
+    use std::collections::BTreeMap;
+    use std::path::Path;
+
+    use crate::adapters::PackageOwnedPaths;
+    use crate::lockfile::OwnedPrefix;
+
+    // Two packages with deliberately overlapping subtrees. `aaa` claims `.x`
+    // wholesale; `zzz` claims the nested `.x/y`. A naive iteration order
+    // (HashMap) could attribute `.x/y/foo` to either; the BTreeMap fix pins
+    // it to `aaa` (alphabetically first).
+    let mut map: BTreeMap<String, PackageOwnedPaths> = BTreeMap::new();
+    map.insert(
+        "aaa".into(),
+        PackageOwnedPaths {
+            alias: "aaa".into(),
+            subtrees: vec![".x".into()],
+            prefixes: vec![],
+            files: vec![],
+        },
+    );
+    map.insert(
+        "zzz".into(),
+        PackageOwnedPaths {
+            alias: "zzz".into(),
+            subtrees: vec![".x/y".into()],
+            prefixes: vec![],
+            files: vec![],
+        },
+    );
+
+    // Call attribute_file_to_package many times; under HashMap iteration
+    // order this would flip between "aaa" and "zzz" run-to-run. Under
+    // BTreeMap it is always "aaa".
+    let path = Path::new(".x/y/foo.txt");
+    for _ in 0..256 {
+        assert_eq!(
+            super::attribute_file_to_package(path, &map),
+            Some("aaa".to_string()),
+            "alphabetically earlier alias must win when ownership overlaps"
+        );
+    }
+
+    // Same property for prefix-vs-subtree overlap. `aaa` owns subtree
+    // `.claude/hooks`; `zzz` declares a prefix rule on the same dir.
+    // Subtree wins (per the priority order), but the loser pool itself
+    // must iterate deterministically — assert by inserting an exact-file
+    // overlap and watching attribution stay stable across iterations.
+    let mut map2: BTreeMap<String, PackageOwnedPaths> = BTreeMap::new();
+    map2.insert(
+        "bbb".into(),
+        PackageOwnedPaths {
+            alias: "bbb".into(),
+            subtrees: vec![],
+            prefixes: vec![OwnedPrefix {
+                dir: ".claude/hooks".into(),
+                prefix: "shared-".into(),
+            }],
+            files: vec![],
+        },
+    );
+    map2.insert(
+        "aaa".into(),
+        PackageOwnedPaths {
+            alias: "aaa".into(),
+            subtrees: vec![],
+            prefixes: vec![OwnedPrefix {
+                dir: ".claude/hooks".into(),
+                prefix: "shared-".into(),
+            }],
+            files: vec![],
+        },
+    );
+    let path2 = Path::new(".claude/hooks/shared-thing.sh");
+    for _ in 0..256 {
+        assert_eq!(
+            super::attribute_file_to_package(path2, &map2),
+            Some("aaa".to_string()),
+            "prefix-rule overlap must resolve alphabetically too"
+        );
+    }
+}

@@ -3,7 +3,7 @@ mod install_digest;
 mod resolve;
 mod support;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 pub use self::doctor::{
@@ -1355,7 +1355,12 @@ impl Resolution {
             },
         )?;
 
-        let mut per_package_owned: HashMap<String, PackageOwnedPaths> = output_plan
+        // BTreeMap (not HashMap) so attribute_file_to_package iterates aliases
+        // in deterministic alphabetical order. With a HashMap, two packages
+        // with overlapping ownership claims would attribute differently across
+        // runs and silently shift install_digest contents, breaking the
+        // byte-identical-idempotent guarantee.
+        let mut per_package_owned: BTreeMap<String, PackageOwnedPaths> = output_plan
             .managed_files_by_package
             .iter()
             .cloned()
@@ -1849,11 +1854,9 @@ fn count_owned_files(lockfile: &Lockfile) -> usize {
 fn install_digests_by_package(
     runtime_root: &Path,
     output_plan: &OutputPlan,
-    per_package_owned: &HashMap<String, PackageOwnedPaths>,
+    per_package_owned: &BTreeMap<String, PackageOwnedPaths>,
 ) -> Result<HashMap<String, String>> {
-    use std::collections::BTreeMap;
-
-    let mut per_package_entries: HashMap<String, BTreeMap<PathBuf, Vec<u8>>> = HashMap::new();
+    let mut per_package_entries: BTreeMap<String, BTreeMap<PathBuf, Vec<u8>>> = BTreeMap::new();
 
     for file in &output_plan.files {
         let target_relative = file
@@ -1896,11 +1899,15 @@ fn install_digests_by_package(
 /// digest computation can bucket files per package.
 fn attribute_file_to_package(
     target_relative: &Path,
-    per_package_owned: &HashMap<String, PackageOwnedPaths>,
+    per_package_owned: &BTreeMap<String, PackageOwnedPaths>,
 ) -> Option<String> {
     // Subtree match wins: a file living under a package's owned subtree is
     // attributed to that package regardless of whether another package also
     // declares an exact file match (the latter would be redundant).
+    //
+    // BTreeMap iteration is alphabetically deterministic — overlapping claims
+    // resolve in a stable order so install_digest distribution stays
+    // byte-identical across runs.
     for (alias, owned) in per_package_owned {
         if owned
             .subtrees
