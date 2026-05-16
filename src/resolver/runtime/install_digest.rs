@@ -380,25 +380,8 @@ mod tests {
         assert_ne!(original, mutated);
     }
 
-    #[test]
-    fn rejects_owned_files_entry_with_absolute_path() {
-        let temp = TempDir::new().unwrap();
-        let mut pkg = minimal_package("foo");
-        // Absolute path that would otherwise slip past `project_root.join`
-        // (Path::join drops the LHS when the RHS is absolute) and let the
-        // probe try to read /etc/passwd. We never want to touch the disk
-        // outside the workspace.
-        pkg.owned_files = vec!["/etc/passwd".into()];
-
-        let err = install_digest_from_disk(temp.path(), &pkg).unwrap_err();
-        let message = format!("{err:#}");
-        assert!(
-            message.contains("escapes project root")
-                || message.contains("outside the project root"),
-            "expected escape diagnostic, got: {message}"
-        );
-    }
-
+    /// `..` rejection is portable — `validate_managed_relative` rejects any
+    /// `ParentDir` component regardless of platform path semantics.
     #[test]
     fn rejects_owned_subtrees_entry_with_parent_dir_segment() {
         let temp = TempDir::new().unwrap();
@@ -414,13 +397,75 @@ mod tests {
         );
     }
 
+    // Absolute-path rejection has platform-specific shapes. On Unix
+    // `/etc/passwd` is absolute; on Windows it isn't (no drive prefix), and
+    // a malicious lockfile would instead carry `C:\...`. We exercise the
+    // shape native to each platform so the security property is verified on
+    // every OS we build for.
+    #[cfg(unix)]
     #[test]
-    fn rejects_owned_prefix_dir_with_absolute_path() {
+    fn rejects_owned_files_entry_with_absolute_unix_path() {
+        let temp = TempDir::new().unwrap();
+        let mut pkg = minimal_package("foo");
+        // `Path::join` drops the LHS when the RHS is absolute, so without
+        // validation this would let the probe try to read /etc/passwd.
+        pkg.owned_files = vec!["/etc/passwd".into()];
+
+        let err = install_digest_from_disk(temp.path(), &pkg).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("escapes project root")
+                || message.contains("outside the project root"),
+            "expected escape diagnostic, got: {message}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_owned_prefix_dir_with_absolute_unix_path() {
         let temp = TempDir::new().unwrap();
         let mut pkg = minimal_package("foo");
         pkg.owned_prefixes = vec![OwnedPrefix {
             dir: "/etc".into(),
             prefix: "passwd".into(),
+        }];
+
+        let err = install_digest_from_disk(temp.path(), &pkg).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("escapes project root")
+                || message.contains("outside the project root"),
+            "expected escape diagnostic, got: {message}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_owned_files_entry_with_absolute_windows_path() {
+        let temp = TempDir::new().unwrap();
+        let mut pkg = minimal_package("foo");
+        // Drive-anchored Windows absolute path — `Path::join` likewise drops
+        // the LHS here, so without validation the probe would try to read
+        // C:\Windows\System32\drivers\etc\hosts.
+        pkg.owned_files = vec![r"C:\Windows\System32\drivers\etc\hosts".into()];
+
+        let err = install_digest_from_disk(temp.path(), &pkg).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("escapes project root")
+                || message.contains("outside the project root"),
+            "expected escape diagnostic, got: {message}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_owned_prefix_dir_with_absolute_windows_path() {
+        let temp = TempDir::new().unwrap();
+        let mut pkg = minimal_package("foo");
+        pkg.owned_prefixes = vec![OwnedPrefix {
+            dir: r"C:\Windows\System32".into(),
+            prefix: "drivers".into(),
         }];
 
         let err = install_digest_from_disk(temp.path(), &pkg).unwrap_err();
