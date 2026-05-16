@@ -220,12 +220,28 @@ pub(crate) fn build_output_plan_with_options(
         .any(|(package, _)| package.manifest.manifest.activation_enabled());
     let codex_prefers_native_plugins =
         preferred_surface(Adapter::Codex) == PreferredSurface::PackagePluginWorkspaceMarketplace;
-    let emit_codex_hooks = selected_adapters.contains(Adapter::Codex)
-        && codex_prefers_native_plugins
-        && (has_activation
-            || hooks
+    let codex_plugin_hook_packages: BTreeSet<String> =
+        if selected_adapters.contains(Adapter::Codex) && codex_prefers_native_plugins {
+            packages
                 .iter()
-                .any(|hook| hook_targets_adapter(&hook.hook, selected_adapters, Adapter::Codex)));
+                .filter(|(package, _)| package_emits_codex_plugin_hooks(package))
+                .map(|(package, _)| package.alias.clone())
+                .collect()
+        } else {
+            BTreeSet::new()
+        };
+    let emit_codex_plugin_hooks = !codex_plugin_hook_packages.is_empty();
+    let emit_codex_workspace_hooks = selected_adapters.contains(Adapter::Codex)
+        && (hooks.iter().any(|hook| {
+            hook_targets_adapter(&hook.hook, selected_adapters, Adapter::Codex)
+                && hook_supported_by_adapter(&hook.hook, Adapter::Codex)
+                && (hook.emitted_from_root
+                    || !codex_plugin_hook_packages.contains(&hook.package_alias))
+        }) || packages.iter().any(|(package, _)| {
+            package.manifest.manifest.activation_enabled()
+                && !codex_plugin_hook_packages.contains(&package.alias)
+        }));
+    let emit_codex_hooks = emit_codex_workspace_hooks || emit_codex_plugin_hooks;
     warn_if_activation_unsupported(&mut plan.warnings, selected_adapters, has_activation);
 
     for (package, snapshot_root) in packages {
@@ -655,6 +671,13 @@ pub(crate) fn build_output_plan_with_options(
         } else {
             Vec::new()
         };
+        let package_codex_plugin_hooks = if selected_adapters.contains(Adapter::Codex)
+            && package_emits_codex_plugin_hooks(package)
+        {
+            hooks_for_package_and_adapter(&hooks, &package.alias, Adapter::Codex)
+        } else {
+            Vec::new()
+        };
         emit_native_package_plugins(
             &mut plan,
             project_root,
@@ -663,6 +686,7 @@ pub(crate) fn build_output_plan_with_options(
             selected_adapters,
             &managed_names,
             &package_claude_plugin_hooks,
+            &package_codex_plugin_hooks,
         )?;
 
         merge_files(
@@ -702,6 +726,7 @@ pub(crate) fn build_output_plan_with_options(
             existing_lockfile,
             options.merge_existing_mcp,
             emit_codex_hooks,
+            emit_codex_plugin_hooks,
         )?
     {
         track_owned_file(&mut plan, project_root, &workspace_alias, &file.path);
@@ -1223,6 +1248,7 @@ fn emit_native_package_plugins(
     selected_adapters: Adapters,
     managed_names: &ManagedArtifactNames,
     claude_plugin_hooks: &[ManagedHookSpec],
+    codex_plugin_hooks: &[ManagedHookSpec],
 ) -> Result<()> {
     if !package.emits_runtime_outputs() {
         return Ok(());
@@ -1272,9 +1298,30 @@ fn emit_native_package_plugins(
         && native_package_plugin_has_content(Adapter::Codex, package)
     {
         let plugin_root = super::native_package_plugin_root(project_root, Adapter::Codex, package);
+        let activation_hook = if package_emits_codex_plugin_hooks(package)
+            && package.manifest.manifest.activation_enabled()
+        {
+            Some(ManagedActivationHook {
+                package_alias: package.alias.clone(),
+                context: activation_context_text(
+                    package,
+                    snapshot_root,
+                    managed_names,
+                    Adapter::Codex,
+                )?,
+            })
+        } else {
+            None
+        };
         merge_files(
             &mut plan.files,
-            codex_native_package_plugin_files(&plugin_root, package, snapshot_root)?,
+            codex_native_package_plugin_files(
+                &plugin_root,
+                package,
+                snapshot_root,
+                codex_plugin_hooks,
+                activation_hook.as_ref(),
+            )?,
         )?;
         register_native_package_plugin_root(
             project_root,
@@ -1307,6 +1354,10 @@ fn native_package_plugin_has_content(adapter: Adapter, package: &ResolvedPackage
             && !matches!(package.source, PackageSource::Root)
             && (package_has_claude_targeted_hooks(package)
                 || package.manifest.manifest.activation_enabled()))
+        || (adapter == Adapter::Codex
+            && !matches!(package.source, PackageSource::Root)
+            && (package_has_codex_targeted_hooks(package)
+                || package.manifest.manifest.activation_enabled()))
 }
 
 /// True when a non-root package's portable hooks (and activation context)
@@ -1331,6 +1382,21 @@ fn package_emits_claude_plugin_hooks(package: &ResolvedPackage) -> bool {
             || package.manifest.manifest.activation_enabled())
 }
 
+fn package_emits_codex_plugin_hooks(package: &ResolvedPackage) -> bool {
+    if matches!(package.source, PackageSource::Root) {
+        return false;
+    }
+    if !package.emits_runtime_outputs() {
+        return false;
+    }
+    if preferred_surface(Adapter::Codex) != PreferredSurface::PackagePluginWorkspaceMarketplace {
+        return false;
+    }
+    native_package_plugin_has_content(Adapter::Codex, package)
+        && (package_has_codex_targeted_hooks(package)
+            || package.manifest.manifest.activation_enabled())
+}
+
 fn package_has_claude_targeted_hooks(package: &ResolvedPackage) -> bool {
     package
         .manifest
@@ -1340,8 +1406,21 @@ fn package_has_claude_targeted_hooks(package: &ResolvedPackage) -> bool {
         .any(|hook| hook_targets_claude(hook) && hook_supported_by_adapter(hook, Adapter::Claude))
 }
 
+fn package_has_codex_targeted_hooks(package: &ResolvedPackage) -> bool {
+    package
+        .manifest
+        .manifest
+        .hooks
+        .iter()
+        .any(|hook| hook_targets_codex(hook) && hook_supported_by_adapter(hook, Adapter::Codex))
+}
+
 fn hook_targets_claude(hook: &HookSpec) -> bool {
     hook.adapters.is_empty() || hook.adapters.contains(&Adapter::Claude)
+}
+
+fn hook_targets_codex(hook: &HookSpec) -> bool {
+    hook.adapters.is_empty() || hook.adapters.contains(&Adapter::Codex)
 }
 
 fn hooks_for_package_and_adapter(
@@ -1517,6 +1596,8 @@ fn codex_native_package_plugin_files(
     plugin_root: &Path,
     package: &ResolvedPackage,
     snapshot_root: &Path,
+    hooks: &[ManagedHookSpec],
+    activation_hook: Option<&ManagedActivationHook>,
 ) -> Result<Vec<ManagedFile>> {
     let names = ManagedArtifactNames::from_resolved_packages([package]);
     let mut files = BTreeMap::new();
@@ -1558,11 +1639,17 @@ fn codex_native_package_plugin_files(
         )?;
     }
 
+    let hook_emission =
+        super::codex::plugin_native_hook_files(plugin_root, package, hooks, activation_hook)?;
+    for file in hook_emission.files {
+        merge_file(&mut files, file)?;
+    }
+
     merge_file(
         &mut files,
         ManagedFile {
             path: plugin_root.join(".codex-plugin/plugin.json"),
-            contents: codex_native_package_plugin_json(package)?,
+            contents: codex_native_package_plugin_json(package, hook_emission.has_hooks_json)?,
         },
     )?;
     Ok(managed_files_from_map(files))
@@ -1650,9 +1737,18 @@ fn claude_native_package_plugin_json(
     json_bytes(root)
 }
 
-fn codex_native_package_plugin_json(package: &ResolvedPackage) -> Result<Vec<u8>> {
+fn codex_native_package_plugin_json(
+    package: &ResolvedPackage,
+    has_plugin_hooks_json: bool,
+) -> Result<Vec<u8>> {
     let mut root = native_plugin_metadata_base(package);
     let prefix = native_package_plugin_artifact_prefix(Adapter::Codex, package);
+    if has_plugin_hooks_json {
+        root.insert(
+            "hooks".into(),
+            JsonValue::String(format!("{prefix}{}", super::codex::PLUGIN_HOOKS_JSON_PATH)),
+        );
+    }
     if package.selects_component(DependencyComponent::Skills)
         && (!package.manifest.discovered.skills.is_empty()
             || (package.selects_component(DependencyComponent::Commands)
@@ -1969,7 +2065,8 @@ fn codex_mcp_config_file(
     codex_native_plugins_auto_enabled: bool,
     existing_lockfile: Option<&Lockfile>,
     merge_existing_mcp: bool,
-    emit_launch_sync: bool,
+    hooks_feature_required: bool,
+    plugin_hooks_feature_required: bool,
 ) -> Result<Option<ManagedFile>> {
     let path = project_root.join(".codex/config.toml");
     let previously_managed =
@@ -2019,7 +2116,11 @@ fn codex_mcp_config_file(
         desired_servers.insert("nodus".to_string(), TomlValue::Table(table));
     }
 
-    if desired_servers.is_empty() && previously_managed.is_empty() && !emit_launch_sync {
+    if desired_servers.is_empty()
+        && previously_managed.is_empty()
+        && !hooks_feature_required
+        && !plugin_hooks_feature_required
+    {
         return Ok(None);
     }
 
@@ -2034,12 +2135,19 @@ fn codex_mcp_config_file(
     });
     config.mcp_servers.extend(desired_servers);
     config.features.remove("codex_hooks");
-    if emit_launch_sync {
+    if hooks_feature_required {
         config
             .features
             .insert("hooks".into(), TomlValue::Boolean(true));
     } else {
         config.features.remove("hooks");
+    }
+    if plugin_hooks_feature_required {
+        config
+            .features
+            .insert("plugin_hooks".into(), TomlValue::Boolean(true));
+    } else {
+        config.features.remove("plugin_hooks");
     }
 
     if config.mcp_servers.is_empty() && config.features.is_empty() && config.extra.is_empty() {
@@ -2696,9 +2804,24 @@ fn hook_files(
                 .into(),
         );
     }
-    let codex_hooks = hooks_for_adapter(hooks, selected_adapters, Adapter::Codex);
+    let codex_plugin_hook_packages: BTreeSet<String> = packages
+        .iter()
+        .filter(|(package, _)| {
+            selected_adapters.contains(Adapter::Codex) && package_emits_codex_plugin_hooks(package)
+        })
+        .map(|(package, _)| package.alias.clone())
+        .collect();
+    let codex_hooks = hooks_for_adapter(hooks, selected_adapters, Adapter::Codex)
+        .into_iter()
+        .filter(|hook| {
+            hook.emitted_from_root || !codex_plugin_hook_packages.contains(&hook.package_alias)
+        })
+        .collect::<Vec<_>>();
     let codex_activation_hooks = if selected_adapters.contains(Adapter::Codex) {
         activation_hooks_for_adapter(packages, managed_names, Adapter::Codex)?
+            .into_iter()
+            .filter(|hook| !codex_plugin_hook_packages.contains(&hook.package_alias))
+            .collect::<Vec<_>>()
     } else {
         Vec::new()
     };
@@ -2914,8 +3037,23 @@ fn attribute_hook_owned_paths(
     workspace_alias: &str,
     selected_adapters: Adapters,
 ) {
+    let codex_plugin_hook_packages: BTreeSet<String> = packages
+        .iter()
+        .filter(|(package, _)| {
+            selected_adapters.contains(Adapter::Codex) && package_emits_codex_plugin_hooks(package)
+        })
+        .map(|(package, _)| package.alias.clone())
+        .collect();
+
     for hook in hooks {
-        attribute_single_hook(plan, project_root, hook, workspace_alias, selected_adapters);
+        attribute_single_hook(
+            plan,
+            project_root,
+            hook,
+            workspace_alias,
+            selected_adapters,
+            &codex_plugin_hook_packages,
+        );
     }
 
     // Activation hooks always come from non-root packages — Claude attaches
@@ -2938,12 +3076,14 @@ fn attribute_hook_owned_paths(
             );
         }
         if selected_adapters.contains(Adapter::Codex) {
-            track_owned_prefix(
-                plan,
-                alias,
-                ".codex/hooks".to_string(),
-                format!("nodus-hook-activation-{alias}-"),
-            );
+            if !codex_plugin_hook_packages.contains(alias) {
+                track_owned_prefix(
+                    plan,
+                    alias,
+                    ".codex/hooks".to_string(),
+                    format!("nodus-hook-activation-{alias}-"),
+                );
+            }
         }
     }
 
@@ -3013,10 +3153,17 @@ fn attribute_single_hook(
     hook: &ManagedHookSpec,
     workspace_alias: &str,
     selected_adapters: Adapters,
+    codex_plugin_hook_packages: &BTreeSet<String>,
 ) {
     for adapter in [Adapter::Claude, Adapter::Codex, Adapter::OpenCode] {
         if !hook_targets_adapter(&hook.hook, selected_adapters, adapter)
             || !hook_supported_by_adapter(&hook.hook, adapter)
+        {
+            continue;
+        }
+        if adapter == Adapter::Codex
+            && !hook.emitted_from_root
+            && codex_plugin_hook_packages.contains(&hook.package_alias)
         {
             continue;
         }
