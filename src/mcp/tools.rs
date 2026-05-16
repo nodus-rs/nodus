@@ -46,6 +46,14 @@ pub fn add_input_schema() -> JsonValue {
                 "type": "string",
                 "description": "Package URL, path, or GitHub shortcut (e.g. \"owner/repo\")"
             },
+            "global": {
+                "type": "boolean",
+                "description": "Install into the global Nodus config instead of the current project"
+            },
+            "dev": {
+                "type": "boolean",
+                "description": "Record the package under dev-dependencies"
+            },
             "tag": {
                 "type": "string",
                 "description": "Git tag to pin (e.g. \"v1.0.0\")"
@@ -57,6 +65,10 @@ pub fn add_input_schema() -> JsonValue {
             "version": {
                 "type": "string",
                 "description": "Semver version requirement (e.g. \"^1.0\")"
+            },
+            "revision": {
+                "type": "string",
+                "description": "Git commit revision to pin"
             },
             "adapter": {
                 "type": "array",
@@ -72,6 +84,18 @@ pub fn add_input_schema() -> JsonValue {
                 "type": "array",
                 "items": { "type": "string" },
                 "description": "Components to exclude (skills, agents, rules, commands, mcp)"
+            },
+            "sync_on_launch": {
+                "type": "boolean",
+                "description": "Persist startup hooks so supported tools run nodus sync when opening the project"
+            },
+            "accept_all_dependencies": {
+                "type": "boolean",
+                "description": "Enable every child package exposed by a workspace or marketplace wrapper"
+            },
+            "dry_run": {
+                "type": "boolean",
+                "description": "Preview project changes without writing to the project config"
             }
         },
         "required": ["package"]
@@ -123,4 +147,41 @@ pub fn check_updates_input_schema() -> JsonValue {
         "properties": {},
         "required": []
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_schema_exposes_cli_parity_options() {
+        let schema = add_input_schema();
+        let properties = schema["properties"].as_object().unwrap();
+
+        for key in [
+            "global",
+            "dev",
+            "revision",
+            "sync_on_launch",
+            "accept_all_dependencies",
+            "dry_run",
+        ] {
+            assert!(
+                properties.contains_key(key),
+                "missing schema property {key}"
+            );
+        }
+        assert_eq!(properties["global"]["type"].as_str(), Some("boolean"));
+        assert_eq!(properties["dev"]["type"].as_str(), Some("boolean"));
+        assert_eq!(
+            properties["sync_on_launch"]["type"].as_str(),
+            Some("boolean")
+        );
+        assert_eq!(
+            properties["accept_all_dependencies"]["type"].as_str(),
+            Some("boolean")
+        );
+        assert_eq!(properties["dry_run"]["type"].as_str(), Some("boolean"));
+        assert_eq!(properties["revision"]["type"].as_str(), Some("string"));
+    }
 }
