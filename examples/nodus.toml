@@ -171,6 +171,9 @@ tooling = { path = "vendor/tooling", components = ["skills"] }
 #
 # [workspace]
 # members = ["plugins/axiom", "plugins/firebase"]
+# # Optional. Prefixes generated member package aliases and native plugin names
+# # while keeping selectable member ids as `axiom` and `firebase`.
+# namespace = "acme"
 #
 # [workspace.package.axiom]
 # path = "plugins/axiom"

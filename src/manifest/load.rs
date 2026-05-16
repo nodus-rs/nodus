@@ -372,6 +372,9 @@ pub fn serialize_manifest(manifest: &Manifest) -> Result<String> {
             .collect::<Vec<_>>()
             .join(", ");
         output.push_str(&format!("members = [{encoded}]\n"));
+        if let Some(namespace) = &workspace.namespace {
+            output.push_str(&format!("namespace = {}\n", quote(namespace)));
+        }
 
         for (id, member) in &workspace.package {
             output.push('\n');

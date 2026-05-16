@@ -283,6 +283,60 @@ name = "Firebase"
 }
 
 #[test]
+fn accepts_workspace_namespace_and_resolves_member_aliases() {
+    let temp = TempDir::new().unwrap();
+    write_workspace_member(&temp.path().join("plugins/core"), "Core");
+    write_workspace_member(&temp.path().join("plugins/rust"), "Rust");
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[workspace]
+members = ["plugins/core", "plugins/rust"]
+namespace = "ena"
+
+[workspace.package.core]
+path = "plugins/core"
+name = "Core"
+
+[workspace.package.rust]
+path = "plugins/rust"
+name = "Rust"
+"#,
+    );
+
+    let loaded = load_root_from_dir(temp.path()).unwrap();
+    let members = loaded.resolved_workspace_members().unwrap();
+
+    assert_eq!(members[0].id, "core");
+    assert_eq!(members[0].alias, "ena_core");
+    assert_eq!(members[1].id, "rust");
+    assert_eq!(members[1].alias, "ena_rust");
+}
+
+#[test]
+fn rejects_non_normalized_workspace_namespace() {
+    let temp = TempDir::new().unwrap();
+    write_workspace_member(&temp.path().join("plugins/core"), "Core");
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[workspace]
+members = ["plugins/core"]
+namespace = "Ena Tools"
+
+[workspace.package.core]
+path = "plugins/core"
+name = "Core"
+"#,
+    );
+
+    let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+    assert!(
+        error.contains("workspace namespace `Ena Tools` must already be normalized as `ena_tools`")
+    );
+}
+
+#[test]
 fn accepts_workspace_dependency_wrapper() {
     let temp = TempDir::new().unwrap();
     write_workspace_member(&temp.path().join("plugins/axiom"), "Axiom");
@@ -2981,6 +3035,7 @@ fn serializes_workspace_and_dependency_members() {
                 PathBuf::from("plugins/axiom"),
                 PathBuf::from("plugins/firebase"),
             ],
+            namespace: Some("acme".into()),
             package: BTreeMap::from([
                 (
                     "axiom".into(),
@@ -3028,6 +3083,7 @@ fn serializes_workspace_and_dependency_members() {
 
     assert!(encoded.contains("[workspace]"));
     assert!(encoded.contains("members = [\"plugins/axiom\", \"plugins/firebase\"]"));
+    assert!(encoded.contains("namespace = \"acme\""));
     assert!(encoded.contains("[workspace.package.axiom]"));
     assert!(encoded.contains("[workspace.package.axiom.codex]"));
     assert!(encoded.contains("bundle = { github = \"acme/bundle\", tag = \"v1.0.0\", members = [\"axiom\", \"firebase\"] }"));

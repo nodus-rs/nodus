@@ -221,6 +221,8 @@ fn is_default_hook_working_directory(value: &HookWorkingDirectory) -> bool {
 pub struct WorkspaceConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub members: Vec<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub package: BTreeMap<String, WorkspaceMemberSpec>,
 }
@@ -447,6 +449,7 @@ pub struct LoadedManifest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedWorkspaceMember {
     pub id: String,
+    pub alias: String,
     pub path: PathBuf,
     pub name: Option<String>,
     pub codex: Option<WorkspaceMemberCodexSpec>,
@@ -504,6 +507,7 @@ pub(crate) enum ClaudePluginHookCompatSource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceMemberStatus {
     pub id: String,
+    pub alias: String,
     pub path: PathBuf,
     pub name: Option<String>,
     pub codex: Option<WorkspaceMemberCodexSpec>,

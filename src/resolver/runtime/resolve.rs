@@ -738,7 +738,7 @@ fn workspace_member_dependencies(
         .filter(|member| selected.contains(&member.id))
         .map(|member| {
             (
-                member.id,
+                member.alias,
                 DependencySpec {
                     github: None,
                     url: None,

@@ -1998,7 +1998,7 @@ fn package_dependency_aliases(
             workspace_members
                 .into_iter()
                 .filter(|member| selected.contains(&member.id))
-                .map(|member| member.id),
+                .map(|member| member.alias),
         );
     }
 
@@ -2061,12 +2061,11 @@ fn planned_workspace_marketplace_files(
             let mut value = serde_json::Map::from_iter([
                 (
                     "name".to_string(),
-                    serde_json::Value::String(
-                        member
-                            .name
-                            .clone()
-                            .unwrap_or_else(|| manifest.effective_name()),
-                    ),
+                    serde_json::Value::String(workspace_member_marketplace_plugin_name(
+                        root,
+                        member,
+                        || manifest.effective_name(),
+                    )),
                 ),
                 (
                     "source".to_string(),
@@ -2107,7 +2106,7 @@ fn planned_workspace_marketplace_files(
             };
             let member_root = root.resolve_path(&member.path)?;
             Ok(Some(serde_json::json!({
-                "name": member.name.clone().unwrap_or_else(|| member.id.clone()),
+                "name": workspace_member_marketplace_plugin_name(root, member, || member.id.clone()),
                 "source": {
                     "source": "local",
                     "path": crate::adapters::native_marketplace_plugin_source_path(
@@ -2138,6 +2137,24 @@ fn planned_workspace_marketplace_files(
     }
 
     Ok(files)
+}
+
+fn workspace_member_marketplace_plugin_name(
+    root: &LoadedManifest,
+    member: &crate::manifest::WorkspaceMemberStatus,
+    default_name: impl FnOnce() -> String,
+) -> String {
+    if root
+        .manifest
+        .workspace
+        .as_ref()
+        .and_then(|workspace| workspace.namespace.as_ref())
+        .is_some()
+    {
+        normalize_workspace_marketplace_name(&member.alias)
+    } else {
+        member.name.clone().unwrap_or_else(default_name)
+    }
 }
 
 fn workspace_marketplace_name(root: &LoadedManifest) -> String {

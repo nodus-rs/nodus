@@ -505,6 +505,37 @@ authentication = "ON_INSTALL"
     write_skill(&path.join("plugins/firebase/skills/checks"), "Checks");
 }
 
+fn write_namespaced_workspace_dependency(path: &Path) {
+    write_manifest(
+        path,
+        r#"
+[workspace]
+members = ["plugins/core", "plugins/rust"]
+namespace = "ena"
+
+[workspace.package.core]
+path = "plugins/core"
+name = "Core"
+
+[workspace.package.core.codex]
+category = "Productivity"
+installation = "AVAILABLE"
+authentication = "ON_INSTALL"
+
+[workspace.package.rust]
+path = "plugins/rust"
+name = "Rust"
+
+[workspace.package.rust.codex]
+category = "Productivity"
+installation = "AVAILABLE"
+authentication = "ON_INSTALL"
+"#,
+    );
+    write_skill(&path.join("plugins/core/skills/plan"), "Plan");
+    write_skill(&path.join("plugins/rust/skills/checks"), "Checks");
+}
+
 fn write_single_workspace_dependency(path: &Path) {
     write_manifest(
         path,
@@ -1898,6 +1929,73 @@ args = ["figma-developer-mcp"]
 }
 
 #[test]
+fn sync_uses_workspace_namespace_for_member_alias_and_plugin_name() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[dependencies]
+bundle = { path = "vendor/bundle", members = ["core"] }
+"#,
+    );
+    write_namespaced_workspace_dependency(&temp.path().join("vendor/bundle"));
+
+    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
+
+    let plugin_root = temp.path().join(".nodus/packages/ena_core/codex-plugin");
+    assert!(plugin_root.join("skills/plan/SKILL.md").exists());
+    assert!(
+        !temp
+            .path()
+            .join(".nodus/packages/core/codex-plugin")
+            .exists()
+    );
+
+    let plugin: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(plugin_root.join(".codex-plugin/plugin.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(plugin["name"].as_str(), Some("ena-core"));
+
+    let marketplace: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(generated_codex_marketplace_path(temp.path())).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(marketplace["plugins"][0]["name"].as_str(), Some("ena-core"));
+    assert_eq!(
+        marketplace["plugins"][0]["source"]["path"].as_str(),
+        Some("./packages/ena_core/codex-plugin")
+    );
+
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    assert!(
+        lockfile
+            .packages
+            .iter()
+            .any(|package| package.alias == "bundle")
+    );
+    assert!(
+        lockfile
+            .packages
+            .iter()
+            .any(|package| package.alias == "ena_core")
+    );
+    assert!(
+        !lockfile
+            .packages
+            .iter()
+            .any(|package| package.alias == "core")
+    );
+    let bundle = lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == "bundle")
+        .unwrap();
+    assert_eq!(bundle.dependencies, vec!["ena_core".to_string()]);
+}
+
+#[test]
 fn sync_enables_codex_native_plugins_in_user_config() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();
@@ -2322,6 +2420,54 @@ authentication = "ON_INSTALL"
     assert_eq!(
         claude["plugins"][0]["source"].as_str(),
         Some("../plugins/axiom")
+    );
+}
+
+#[test]
+fn sync_uses_workspace_namespace_for_workspace_marketplace_member_names() {
+    let repo = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        repo.path(),
+        r#"
+name = "Ena"
+
+[workspace]
+members = ["plugins/core"]
+namespace = "ena"
+
+[workspace.package.core]
+path = "plugins/core"
+name = "Core"
+
+[workspace.package.core.codex]
+category = "Productivity"
+installation = "AVAILABLE"
+authentication = "ON_INSTALL"
+"#,
+    );
+    write_skill(&repo.path().join("plugins/core/skills/review"), "Review");
+
+    sync_in_dir_with_adapters(repo.path(), cache.path(), false, false, &Adapter::ALL).unwrap();
+
+    let claude: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(generated_claude_marketplace_path(repo.path())).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(claude["plugins"][0]["name"].as_str(), Some("ena-core"));
+    assert_eq!(
+        claude["plugins"][0]["source"].as_str(),
+        Some("../plugins/core")
+    );
+
+    let codex: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(generated_codex_marketplace_path(repo.path())).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(codex["plugins"][0]["name"].as_str(), Some("ena-core"));
+    assert_eq!(
+        codex["plugins"][0]["source"]["path"].as_str(),
+        Some("../plugins/core")
     );
 }
 
