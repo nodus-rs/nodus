@@ -475,37 +475,52 @@ fn load_workspace_if_linked(
 }
 
 fn adapters_from_lockfile(lockfile: &Lockfile) -> Adapters {
-    lockfile
-        .legacy_managed_files
-        .iter()
-        .filter_map(|path| {
-            if path.starts_with(".agents/") {
-                Some(Adapter::Agents)
-            } else if path.starts_with(".claude/")
-                || path.starts_with(".claude-plugin/")
-                || path.starts_with(".nodus/.claude-plugin/")
-                || (path.starts_with(".nodus/packages/") && path.contains("/claude-plugin/"))
-            {
-                Some(Adapter::Claude)
-            } else if path.starts_with(".codex/")
-                || path.starts_with(".codex-plugin/")
-                || path.starts_with(".nodus/.agents/plugins/")
-                || (path.starts_with(".nodus/packages/") && path.contains("/codex-plugin/"))
-            {
-                Some(Adapter::Codex)
-            } else if path.starts_with(".github/skills/") || path.starts_with(".github/agents/") {
-                Some(Adapter::Copilot)
-            } else if path.starts_with(".cursor/") {
-                Some(Adapter::Cursor)
-            } else if path.starts_with(".opencode/") {
-                Some(Adapter::OpenCode)
-            } else {
-                None
-            }
-        })
+    // Consider both the v9 legacy flat list (still populated when reading a
+    // pre-v10 lockfile) and the v10 per-package ownership view. v10 writes
+    // never populate `legacy_managed_files`; the per-package
+    // `owned_subtrees`/`owned_prefixes`/`owned_files` are the source of truth
+    // for what adapters Nodus has been managing in this workspace.
+    let v9_paths = lockfile.legacy_managed_files.iter().map(String::as_str);
+    let v10_paths = lockfile.packages.iter().flat_map(|package| {
+        package
+            .owned_subtrees
+            .iter()
+            .map(String::as_str)
+            .chain(package.owned_files.iter().map(String::as_str))
+            .chain(package.owned_prefixes.iter().map(|rule| rule.dir.as_str()))
+    });
+    v9_paths
+        .chain(v10_paths)
+        .filter_map(adapter_for_managed_path)
         .fold(Adapters::NONE, |selected, adapter| {
             selected.union(adapter.into())
         })
+}
+
+fn adapter_for_managed_path(path: &str) -> Option<Adapter> {
+    if path.starts_with(".agents/") {
+        Some(Adapter::Agents)
+    } else if path.starts_with(".claude/")
+        || path.starts_with(".claude-plugin/")
+        || path.starts_with(".nodus/.claude-plugin/")
+        || (path.starts_with(".nodus/packages/") && path.contains("/claude-plugin"))
+    {
+        Some(Adapter::Claude)
+    } else if path.starts_with(".codex/")
+        || path.starts_with(".codex-plugin/")
+        || path.starts_with(".nodus/.agents/plugins/")
+        || (path.starts_with(".nodus/packages/") && path.contains("/codex-plugin"))
+    {
+        Some(Adapter::Codex)
+    } else if path.starts_with(".github/skills/") || path.starts_with(".github/agents/") {
+        Some(Adapter::Copilot)
+    } else if path.starts_with(".cursor/") {
+        Some(Adapter::Cursor)
+    } else if path.starts_with(".opencode/") {
+        Some(Adapter::OpenCode)
+    } else {
+        None
+    }
 }
 
 fn dependency_context(workspace: &RelayWorkspace, package: &str) -> Result<DependencyContext> {

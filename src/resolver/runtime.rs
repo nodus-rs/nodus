@@ -19,10 +19,11 @@ use self::support::{
 #[cfg(test)]
 use self::support::{prune_empty_parent_dirs, write_managed_files};
 use crate::adapters::{
-    Adapter, Adapters, ArtifactKind, ManagedFile, OutputPlanOptions,
+    Adapter, Adapters, ManagedFile, OutputPlan, OutputPlanOptions, PackageOwnedPaths,
     build_output_plan_with_options, codex_user_plugin_config_file,
 };
 use crate::execution::ExecutionMode;
+use crate::hashing::content_digest;
 use crate::install_paths::{InstallPaths, InstallScope};
 use crate::lockfile::{LOCKFILE_NAME, LockedPackage, LockedSource, Lockfile};
 use crate::manifest::{
@@ -1039,6 +1040,68 @@ impl Resolution {
         runtime_root: &Path,
         codex_native_plugins_auto_enabled: bool,
     ) -> Result<Lockfile> {
+        // Build the output plan ONCE. We feed it twice: once to attribute
+        // per-package ownership (subtrees/prefixes/files), and once more (via
+        // `output_plan.files`) to compute each package's `install_digest`.
+        let package_roots = self
+            .packages
+            .iter()
+            .map(|package| (package.clone(), package.root.clone()))
+            .collect::<Vec<_>>();
+        let output_plan = build_output_plan_with_options(
+            runtime_root,
+            &package_roots,
+            selected_adapters,
+            None,
+            OutputPlanOptions {
+                merge_existing_mcp: false,
+                codex_native_plugins_auto_enabled,
+            },
+        )?;
+
+        let mut per_package_owned: HashMap<String, PackageOwnedPaths> = output_plan
+            .managed_files_by_package
+            .iter()
+            .cloned()
+            .map(|owned| (owned.alias.clone(), owned))
+            .collect();
+
+        // The workspace marketplace files (`.nodus/.claude-plugin/marketplace.json`
+        // and `.nodus/.agents/plugins/marketplace.json`) are emitted by the
+        // sync loop, not by `build_output_plan_with_options`. Attribute them
+        // to the workspace owner (root package) so the lockfile records them
+        // as Nodus-owned — sync's collision detector and cleanup pass both
+        // consult the per-package ownership view to decide whether a runtime
+        // file is allowed to exist.
+        let workspace_marketplace_files =
+            planned_workspace_marketplace_files_lockfile(self, runtime_root)?;
+        if !workspace_marketplace_files.is_empty() {
+            let workspace_alias = self
+                .packages
+                .iter()
+                .find(|package| matches!(package.source, PackageSource::Root))
+                .map(|package| package.alias.clone())
+                .unwrap_or_else(|| "root".to_string());
+            let bucket = per_package_owned
+                .entry(workspace_alias.clone())
+                .or_insert_with(|| PackageOwnedPaths {
+                    alias: workspace_alias,
+                    subtrees: Vec::new(),
+                    prefixes: Vec::new(),
+                    files: Vec::new(),
+                });
+            for file in &workspace_marketplace_files {
+                let relative = display_path(file.strip_prefix(runtime_root).unwrap_or(file));
+                if !bucket.files.contains(&relative) {
+                    bucket.files.push(relative);
+                }
+            }
+            bucket.files.sort();
+        }
+
+        let per_package_install_digests =
+            install_digests_by_package(runtime_root, &output_plan, &per_package_owned)?;
+
         let mut packages = Vec::new();
 
         for package in &self.packages {
@@ -1081,6 +1144,12 @@ impl Resolution {
             };
             let mut dependencies = package_dependency_aliases(package, package_role)?;
             dependencies.sort();
+
+            let owned = per_package_owned.remove(&package.alias).unwrap_or_default();
+            let install_digest = per_package_install_digests
+                .get(&package.alias)
+                .cloned()
+                .or_else(|| Some(content_digest(&[])));
 
             packages.push(LockedPackage {
                 alias: package.alias.clone(),
@@ -1147,27 +1216,14 @@ impl Resolution {
                 ),
                 dependencies,
                 capabilities: package.manifest.manifest.capabilities.clone(),
-                // Slice 3 owns emission of these per-package ownership fields.
-                owned_subtrees: Vec::new(),
-                owned_prefixes: Vec::new(),
-                owned_files: Vec::new(),
-                install_digest: None,
+                owned_subtrees: owned.subtrees,
+                owned_prefixes: owned.prefixes,
+                owned_files: owned.files,
+                install_digest,
             });
         }
 
-        let mut lockfile = Lockfile::new(packages);
-        // Slice 1 bridge: the v10 schema replaces the top-level `managed_files`
-        // list with per-package ownership rules
-        // (`owned_subtrees`/`owned_prefixes`/`owned_files`). Slice 3 will move
-        // the emission below into those per-package fields. Until then, we
-        // continue to populate the legacy field so the existing read-path
-        // expansion (and the inline resolver tests) keep working.
-        lockfile.legacy_managed_files = self.lockfile_managed_files(
-            selected_adapters,
-            runtime_root,
-            codex_native_plugins_auto_enabled,
-        )?;
-        Ok(lockfile)
+        Ok(Lockfile::new(packages))
     }
 
     #[allow(dead_code)]
@@ -1185,20 +1241,33 @@ impl Resolution {
         selected_adapters: Adapters,
         codex_native_plugins_auto_enabled: bool,
     ) -> Result<HashSet<PathBuf>> {
+        // v10 lockfiles no longer populate `legacy_managed_files`, so
+        // `Lockfile::managed_paths` returns an empty set on v10 input. Derive
+        // the owned root paths directly from the per-package ownership view:
+        // subtree roots, exact files, prefix dirs. Doctor and sync consume
+        // this list to decide which on-disk paths they may inspect / write /
+        // adopt.
         let lockfile = self.to_lockfile_with_options(
             selected_adapters,
             runtime_root,
             codex_native_plugins_auto_enabled,
         )?;
-        lockfile.managed_paths(runtime_root)
-    }
+        let owned = lockfile.owned_set(runtime_root)?;
+        let mut paths: HashSet<PathBuf> = owned.exact;
+        paths.extend(owned.subtrees.iter().cloned());
+        paths.extend(owned.prefixes.iter().map(|rule| rule.dir.clone()));
 
-    fn lockfile_managed_files(
-        &self,
-        selected_adapters: Adapters,
-        runtime_root: &Path,
-        codex_native_plugins_auto_enabled: bool,
-    ) -> Result<Vec<String>> {
+        // For each subtree we own, surface the immediate sub-directories
+        // that hold one-artifact-per-subdir (skill folders inside a native
+        // plugin: `.nodus/packages/<alias>/<runtime>-plugin/skills/`, agent
+        // folders in similar positions). The pre-Slice-3 behavior compressed
+        // these subdirs into `desired_paths` via `derivable_runtime_artifact_entries`
+        // so `recover_runtime_owned_paths_from_disk` could match an
+        // exactly-equivalent pre-written directory tree without needing the
+        // whole plugin folder to already exist. We mirror that here by
+        // recording any direct child of a subtree that the output plan plans
+        // to populate, so the on-disk adoption logic keeps working through
+        // the schema bump.
         let package_roots = self
             .packages
             .iter()
@@ -1214,181 +1283,121 @@ impl Resolution {
                 codex_native_plugins_auto_enabled,
             },
         )?;
-        let mut managed_files = compress_lockfile_managed_files(
-            self,
-            selected_adapters,
-            runtime_root,
-            output_plan.managed_files,
-        )?;
-        managed_files.extend(workspace_marketplace_managed_files(self)?);
-        managed_files.sort();
-        managed_files.dedup();
-        Ok(managed_files)
-    }
-}
-
-fn compress_lockfile_managed_files(
-    resolution: &Resolution,
-    selected_adapters: Adapters,
-    runtime_root: &Path,
-    managed_files: Vec<String>,
-) -> Result<Vec<String>> {
-    let derivable_runtime_entries =
-        derivable_runtime_artifact_entries(resolution, selected_adapters, runtime_root);
-    let compressed_runtime_roots = derivable_runtime_entries
-        .iter()
-        .filter_map(|entry| Path::new(entry).parent().map(display_path))
-        .collect::<HashSet<_>>();
-    let managed_export_roots = resolution
-        .packages
-        .iter()
-        .flat_map(|package| {
-            package.managed_paths().iter().filter(|mapping| {
-                matches!(
-                    mapping.origin,
-                    ResolvedManagedPathOrigin::PackageManagedExport { .. }
-                )
-            })
-        })
-        .map(|mapping| display_path(&mapping.ownership_root))
-        .collect::<HashSet<_>>();
-
-    let mut compressed = managed_files
-        .into_iter()
-        .filter(|entry| {
-            !derivable_runtime_entries.contains(entry)
-                && !managed_export_roots
-                    .iter()
-                    .any(|root| entry != root && Path::new(entry).starts_with(root))
-        })
-        .collect::<Vec<_>>();
-    compressed.extend(compressed_runtime_roots);
-    compressed.extend(managed_export_roots);
-    compressed.sort();
-    compressed.dedup();
-    Ok(compressed)
-}
-
-fn derivable_runtime_artifact_entries(
-    resolution: &Resolution,
-    selected_adapters: Adapters,
-    runtime_root: &Path,
-) -> HashSet<String> {
-    let names =
-        crate::adapters::ManagedArtifactNames::from_resolved_packages(resolution.packages.iter());
-    let mut entries = HashSet::new();
-
-    for package in &resolution.packages {
-        if matches!(package.source, PackageSource::Root) && !package.manifest.manifest.publish_root
-        {
-            continue;
-        }
-
-        if package.selects_component(DependencyComponent::Skills) {
-            for skill in &package.manifest.discovered.skills {
-                for adapter in ArtifactKind::Skill.supported_adapters().iter() {
-                    if !selected_adapters.contains(adapter) {
-                        continue;
-                    }
-                    let path = crate::adapters::managed_skill_root(
-                        &names,
-                        runtime_root,
-                        adapter,
-                        package,
-                        &skill.id,
-                    );
-                    entries.insert(display_path(
-                        path.strip_prefix(runtime_root).unwrap_or(&path),
-                    ));
-                }
-            }
-        }
-
-        if package.selects_component(DependencyComponent::Agents) {
-            for adapter in ArtifactKind::Agent.supported_adapters().iter() {
-                if !selected_adapters.contains(adapter) {
+        for owned_subtree in &owned.subtrees {
+            for file in &output_plan.files {
+                let Some(rest) = file.path.strip_prefix(owned_subtree).ok() else {
                     continue;
-                }
-                for agent in package.manifest.discovered.selected_agents(adapter) {
-                    if let Some(path) = crate::adapters::managed_artifact_path(
-                        &names,
-                        runtime_root,
-                        adapter,
-                        ArtifactKind::Agent,
-                        package,
-                        &agent.id,
-                    ) {
-                        entries.insert(display_path(
-                            path.strip_prefix(runtime_root).unwrap_or(&path),
-                        ));
+                };
+                // Capture only the IMMEDIATE child directory (e.g. `skills`,
+                // `agents`, `commands`, `.codex-plugin` inside a plugin
+                // folder). Deeper paths are still owned via the subtree.
+                if let Some(first) = rest.components().next() {
+                    let child = owned_subtree.join(first.as_os_str());
+                    if child != file.path {
+                        paths.insert(child);
                     }
                 }
             }
         }
+        Ok(paths)
+    }
+}
 
-        if package.selects_component(DependencyComponent::Rules) {
-            for rule in &package.manifest.discovered.rules {
-                for adapter in ArtifactKind::Rule.supported_adapters().iter() {
-                    if !selected_adapters.contains(adapter) {
-                        continue;
-                    }
-                    if let Some(path) = crate::adapters::managed_artifact_path(
-                        &names,
-                        runtime_root,
-                        adapter,
-                        ArtifactKind::Rule,
-                        package,
-                        &rule.id,
-                    ) {
-                        entries.insert(display_path(
-                            path.strip_prefix(runtime_root).unwrap_or(&path),
-                        ));
-                    }
-                }
-            }
-        }
+/// Compute per-package `install_digest` (`blake3:<hex>`) from the output plan.
+///
+/// Each emitted file is attributed to the owning package by consulting
+/// `per_package_owned` (the same per-package ownership rules we emit into the
+/// lockfile). Files are sorted by `target_relative_path` before hashing so the
+/// digest is stable across equivalent resolutions. The digest covers
+/// `(target_relative_path, contents)` for every attributed file.
+///
+/// Packages with no attributed files don't appear in the returned map; the
+/// caller stamps `content_digest(&[])` on them so v10 lockfiles always carry a
+/// digest (Slice 4's drift fast-path needs a stable empty-install baseline).
+fn install_digests_by_package(
+    runtime_root: &Path,
+    output_plan: &OutputPlan,
+    per_package_owned: &HashMap<String, PackageOwnedPaths>,
+) -> Result<HashMap<String, String>> {
+    use std::collections::BTreeMap;
 
-        if package.selects_component(DependencyComponent::Commands) {
-            for command in &package.manifest.discovered.commands {
-                if selected_adapters.contains(Adapter::Codex) {
-                    let skill_id = crate::adapters::codex::synthetic_command_skill_id(
-                        &names,
-                        package,
-                        &command.id,
-                    );
-                    let path = crate::adapters::managed_skill_root(
-                        &names,
-                        runtime_root,
-                        Adapter::Codex,
-                        package,
-                        &skill_id,
-                    );
-                    entries.insert(display_path(
-                        path.strip_prefix(runtime_root).unwrap_or(&path),
-                    ));
-                }
-                for adapter in ArtifactKind::Command.supported_adapters().iter() {
-                    if !selected_adapters.contains(adapter) {
-                        continue;
-                    }
-                    if let Some(path) = crate::adapters::managed_artifact_path(
-                        &names,
-                        runtime_root,
-                        adapter,
-                        ArtifactKind::Command,
-                        package,
-                        &command.id,
-                    ) {
-                        entries.insert(display_path(
-                            path.strip_prefix(runtime_root).unwrap_or(&path),
-                        ));
-                    }
-                }
-            }
-        }
+    let mut per_package_entries: HashMap<String, BTreeMap<PathBuf, Vec<u8>>> = HashMap::new();
+
+    for file in &output_plan.files {
+        let target_relative = file
+            .path
+            .strip_prefix(runtime_root)
+            .unwrap_or(&file.path)
+            .to_path_buf();
+        let Some(alias) = attribute_file_to_package(&target_relative, per_package_owned) else {
+            // Unattributed files exist in the on-disk plan but aren't part of
+            // any package's ownership view (e.g. Codex user-config edits that
+            // live outside runtime_root). They don't contribute to a
+            // per-package install_digest.
+            continue;
+        };
+        per_package_entries
+            .entry(alias)
+            .or_default()
+            .insert(target_relative, file.contents.clone());
     }
 
-    entries
+    let mut digests = HashMap::with_capacity(per_package_entries.len());
+    for (alias, entries) in per_package_entries {
+        let entries_for_digest: Vec<(String, Vec<u8>)> = entries
+            .into_iter()
+            .map(|(path, contents)| (display_path(&path), contents))
+            .collect();
+        let digest_input: Vec<(&str, &[u8])> = entries_for_digest
+            .iter()
+            .map(|(path, contents)| (path.as_str(), contents.as_slice()))
+            .collect();
+        digests.insert(alias, content_digest(&digest_input));
+    }
+    Ok(digests)
+}
+
+/// Return the package alias that owns `target_relative` according to the
+/// per-package categorization we've already built. Mirrors
+/// `OwnedSet::contains` (subtree starts_with, exact path match, prefix dir +
+/// stem prefix) but returns the alias instead of a boolean so the install
+/// digest computation can bucket files per package.
+fn attribute_file_to_package(
+    target_relative: &Path,
+    per_package_owned: &HashMap<String, PackageOwnedPaths>,
+) -> Option<String> {
+    // Subtree match wins: a file living under a package's owned subtree is
+    // attributed to that package regardless of whether another package also
+    // declares an exact file match (the latter would be redundant).
+    for (alias, owned) in per_package_owned {
+        if owned
+            .subtrees
+            .iter()
+            .any(|subtree| target_relative.starts_with(Path::new(subtree)))
+        {
+            return Some(alias.clone());
+        }
+    }
+    for (alias, owned) in per_package_owned {
+        if owned.files.iter().any(|file| {
+            let owned = Path::new(file);
+            target_relative == owned || target_relative.starts_with(owned)
+        }) {
+            return Some(alias.clone());
+        }
+    }
+    for (alias, owned) in per_package_owned {
+        if owned.prefixes.iter().any(|rule| {
+            target_relative.parent() == Some(Path::new(&rule.dir))
+                && target_relative
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(&rule.prefix))
+        }) {
+            return Some(alias.clone());
+        }
+    }
+    None
 }
 
 fn package_dependency_aliases(
@@ -1437,6 +1446,29 @@ fn package_dependency_aliases(
     dependencies.sort();
     dependencies.dedup();
     Ok(dependencies)
+}
+
+/// Resolver-side view of [`planned_workspace_marketplace_files`] for the
+/// lockfile-emission path. Returns just the on-disk paths the workspace
+/// marketplace planner would emit; we use them in `to_lockfile_with_options`
+/// to seed per-package ownership for the workspace owner (without forcing
+/// every call site that just wants ownership to construct the JSON bodies).
+fn planned_workspace_marketplace_files_lockfile(
+    resolution: &Resolution,
+    runtime_root: &Path,
+) -> Result<Vec<PathBuf>> {
+    let Some(root) = resolution
+        .packages
+        .iter()
+        .find(|package| matches!(package.source, PackageSource::Root))
+        .map(|package| &package.manifest)
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(planned_workspace_marketplace_files(root, runtime_root)?
+        .into_iter()
+        .map(|file| file.path)
+        .collect())
 }
 
 fn planned_workspace_marketplace_files(
@@ -1593,21 +1625,6 @@ fn normalize_workspace_marketplace_name(value: &str) -> String {
     } else {
         normalized
     }
-}
-
-fn workspace_marketplace_managed_files(resolution: &Resolution) -> Result<Vec<String>> {
-    let Some(root) = resolution
-        .packages
-        .iter()
-        .find(|package| matches!(package.source, PackageSource::Root))
-        .map(|package| &package.manifest)
-    else {
-        return Ok(Vec::new());
-    };
-    Ok(planned_workspace_marketplace_files(root, &root.root)?
-        .into_iter()
-        .map(|file| display_path(file.path.strip_prefix(&root.root).unwrap_or(&file.path)))
-        .collect())
 }
 
 fn sorted_ids<'a>(ids: impl Iterator<Item = &'a String>) -> Vec<String> {

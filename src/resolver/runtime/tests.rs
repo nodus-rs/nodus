@@ -921,6 +921,37 @@ fn sync_all(project_root: &Path, cache_root: &Path) {
     sync_in_dir_with_adapters(project_root, cache_root, false, false, &Adapter::ALL).unwrap();
 }
 
+/// Slice-3 migration helper: asserts that the v10 per-package ownership view
+/// claims `relative` (a workspace-relative path) as Nodus-owned. v10
+/// lockfiles no longer populate `legacy_managed_files`, so the previous
+/// `lockfile.legacy_managed_files.contains(...)` shape of these tests needs
+/// the equivalent semantic check via [`Lockfile::owned_set`].
+#[track_caller]
+fn assert_owned(lockfile: &Lockfile, project_root: &Path, relative: &str) {
+    let owned = lockfile.owned_set(project_root).unwrap();
+    let target = project_root.join(relative);
+    assert!(
+        owned.contains(&target),
+        "expected Nodus to own `{relative}`; owned_set:\n  exact={:?}\n  subtrees={:?}\n  prefixes={:?}",
+        owned.exact,
+        owned.subtrees,
+        owned.prefixes,
+    );
+}
+
+#[track_caller]
+fn assert_not_owned(lockfile: &Lockfile, project_root: &Path, relative: &str) {
+    let owned = lockfile.owned_set(project_root).unwrap();
+    let target = project_root.join(relative);
+    assert!(
+        !owned.contains(&target),
+        "expected Nodus to NOT own `{relative}`; owned_set:\n  exact={:?}\n  subtrees={:?}\n  prefixes={:?}",
+        owned.exact,
+        owned.subtrees,
+        owned.prefixes,
+    );
+}
+
 fn sync_all_result(project_root: &Path, cache_root: &Path) -> Result<SyncSummary> {
     sync_in_dir_with_adapters(project_root, cache_root, false, false, &Adapter::ALL)
 }
@@ -995,15 +1026,11 @@ shared = { path = "vendor/shared" }
     assert_eq!(lockfile.packages.len(), 2);
     assert_eq!(lockfile.packages[0].alias, "root");
     assert_eq!(lockfile.packages[1].alias, "shared");
-    assert!(
-        !lockfile
-            .legacy_managed_files
-            .contains(&".claude/skills/review".into())
-    );
-    assert!(
-        lockfile
-            .legacy_managed_files
-            .contains(&".nodus/packages/shared/claude-plugin".into())
+    assert_not_owned(&lockfile, temp.path(), ".claude/skills/review");
+    assert_owned(
+        &lockfile,
+        temp.path(),
+        ".nodus/packages/shared/claude-plugin",
     );
 }
 
@@ -1117,12 +1144,17 @@ fn add_dependency_clones_repo_and_updates_manifest() {
     assert!(manifest.contains("tag = \"v0.1.0\""));
     assert!(manifest.contains("url = "));
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
-    assert!(!lockfile.legacy_managed_files.is_empty());
     let dependency_package = lockfile
         .packages
         .iter()
         .find(|package| package.alias != "root")
         .unwrap();
+    assert!(
+        !dependency_package.owned_subtrees.is_empty()
+            || !dependency_package.owned_files.is_empty()
+            || !dependency_package.owned_prefixes.is_empty(),
+        "dependency package should declare at least one ownership rule after sync"
+    );
     assert_eq!(dependency_package.version_tag.as_deref(), Some("v0.1.0"));
 
     let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
@@ -1628,15 +1660,15 @@ fn sync_generates_workspace_marketplace_files() {
     assert!(settings.get("enabledPlugins").is_none());
 
     let lockfile = Lockfile::read(&repo.path().join(LOCKFILE_NAME)).unwrap();
-    assert!(
-        lockfile
-            .legacy_managed_files
-            .contains(&String::from(".nodus/.claude-plugin/marketplace.json"))
+    assert_owned(
+        &lockfile,
+        repo.path(),
+        ".nodus/.claude-plugin/marketplace.json",
     );
-    assert!(
-        lockfile
-            .legacy_managed_files
-            .contains(&String::from(".nodus/.agents/plugins/marketplace.json"))
+    assert_owned(
+        &lockfile,
+        repo.path(),
+        ".nodus/.agents/plugins/marketplace.json",
     );
 }
 
@@ -1779,10 +1811,10 @@ version = "1.2.3"
     );
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
-    assert!(
-        lockfile
-            .legacy_managed_files
-            .contains(&String::from(".nodus/packages/shared/claude-plugin"))
+    assert_owned(
+        &lockfile,
+        temp.path(),
+        ".nodus/packages/shared/claude-plugin",
     );
 }
 
@@ -1856,10 +1888,10 @@ args = ["figma-developer-mcp"]
     );
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
-    assert!(
-        lockfile
-            .legacy_managed_files
-            .contains(&String::from(".nodus/packages/shared/codex-plugin"))
+    assert_owned(
+        &lockfile,
+        temp.path(),
+        ".nodus/packages/shared/codex-plugin",
     );
 }
 
@@ -1990,12 +2022,27 @@ custom = "kept"
         marketplace.get("custom").and_then(toml::Value::as_str),
         Some("kept")
     );
+    // v10 lockfiles no longer surface the user-config edit path through
+    // `legacy_managed_files`; the codex user-config write happens outside the
+    // per-package owned set. We assert that no package claims the codex_config
+    // path as part of its ownership view.
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    let codex_config_relative = codex_config
+        .strip_prefix(temp.path())
+        .map(display_path)
+        .unwrap_or_else(|_| display_path(&codex_config));
     assert!(
-        !Lockfile::read(&temp.path().join(LOCKFILE_NAME))
-            .unwrap()
-            .legacy_managed_files
-            .iter()
-            .any(|path| Path::new(path) == codex_config.as_path())
+        !lockfile.packages.iter().any(|package| {
+            package
+                .owned_files
+                .iter()
+                .any(|path| path == &codex_config_relative)
+                || package
+                    .owned_subtrees
+                    .iter()
+                    .any(|path| path == &codex_config_relative)
+        }),
+        "codex user config {codex_config_relative} should not appear in any package's ownership view",
     );
 }
 
@@ -2038,26 +2085,18 @@ shared = { path = "vendor/shared" }
     assert!(generated_codex_marketplace_path(temp.path()).exists());
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
-    assert!(
-        lockfile
-            .legacy_managed_files
-            .contains(&".nodus/packages/shared/claude-plugin".into())
+    assert_owned(
+        &lockfile,
+        temp.path(),
+        ".nodus/packages/shared/claude-plugin",
     );
-    assert!(
-        lockfile
-            .legacy_managed_files
-            .contains(&".nodus/packages/shared/codex-plugin".into())
+    assert_owned(
+        &lockfile,
+        temp.path(),
+        ".nodus/packages/shared/codex-plugin",
     );
-    assert!(
-        !lockfile
-            .legacy_managed_files
-            .contains(&".claude/skills/review".into())
-    );
-    assert!(
-        !lockfile
-            .legacy_managed_files
-            .contains(&".codex/skills/review".into())
-    );
+    assert_not_owned(&lockfile, temp.path(), ".claude/skills/review");
+    assert_not_owned(&lockfile, temp.path(), ".codex/skills/review");
 }
 
 #[test]
@@ -4973,16 +5012,12 @@ shared = { path = "vendor/shared", components = ["skills"] }
         shared.selected_components,
         Some(vec![DependencyComponent::Skills])
     );
-    assert!(
-        lockfile
-            .legacy_managed_files
-            .contains(&".nodus/packages/shared/claude-plugin".into())
+    assert_owned(
+        &lockfile,
+        temp.path(),
+        ".nodus/packages/shared/claude-plugin",
     );
-    assert!(
-        !lockfile
-            .legacy_managed_files
-            .contains(&".claude/agents/shared.md".into())
-    );
+    assert_not_owned(&lockfile, temp.path(), ".claude/agents/shared.md");
 }
 
 #[test]
@@ -5032,16 +5067,8 @@ fn sync_does_not_publish_root_assets_by_default() {
         Adapter::Codex,
         &managed_skill_id
     ));
-    assert!(
-        !lockfile
-            .legacy_managed_files
-            .contains(&".claude/skills/review".into())
-    );
-    assert!(
-        !lockfile
-            .legacy_managed_files
-            .contains(&".codex/skills/review".into())
-    );
+    assert_not_owned(&lockfile, temp.path(), ".claude/skills/review");
+    assert_not_owned(&lockfile, temp.path(), ".codex/skills/review");
 }
 
 #[test]
@@ -5094,16 +5121,8 @@ publish_root = true
         Adapter::Codex,
         &managed_skill_id
     ));
-    assert!(
-        lockfile
-            .legacy_managed_files
-            .contains(&".claude/skills".into())
-    );
-    assert!(
-        lockfile
-            .legacy_managed_files
-            .contains(&".codex/skills".into())
-    );
+    assert_owned(&lockfile, temp.path(), ".claude/skills");
+    assert_owned(&lockfile, temp.path(), ".codex/skills");
 }
 
 #[test]
@@ -5201,10 +5220,10 @@ shared = { path = "vendor/shared", components = ["commands"] }
         Some(vec![DependencyComponent::Commands])
     );
     assert_eq!(shared.commands, vec!["build"]);
-    assert!(
-        lockfile
-            .legacy_managed_files
-            .contains(&".nodus/packages/shared/codex-plugin".into())
+    assert_owned(
+        &lockfile,
+        temp.path(),
+        ".nodus/packages/shared/codex-plugin",
     );
 }
 
@@ -5298,11 +5317,10 @@ shared = { path = "vendor/shared" }
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert!(managed_skill_path.exists());
-    assert!(
-        lockfile
-            .legacy_managed_files
-            .iter()
-            .any(|path| path == ".nodus/packages/shared/codex-plugin")
+    assert_owned(
+        &lockfile,
+        temp.path(),
+        ".nodus/packages/shared/codex-plugin",
     );
 }
 
@@ -5349,10 +5367,10 @@ shared = { path = "vendor/shared" }
         "cargo test\n"
     );
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
-    assert!(
-        lockfile
-            .legacy_managed_files
-            .contains(&".nodus/packages/shared/claude-plugin".into())
+    assert_owned(
+        &lockfile,
+        temp.path(),
+        ".nodus/packages/shared/claude-plugin",
     );
 }
 
@@ -5434,12 +5452,19 @@ shared = { path = "vendor/shared" }
         "user-owned blocking file\n"
     );
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
-    assert!(
-        !lockfile
-            .legacy_managed_files
+    // v10: the plugin subtree itself is owned, but no per-skill owned_file or
+    // owned_subtree path should appear under it (the user-blocking file
+    // prevented the plugin emission for this dependency).
+    assert!(!lockfile.packages.iter().any(|package| {
+        package
+            .owned_subtrees
             .iter()
             .any(|path| path.starts_with(".nodus/packages/shared/codex-plugin/skills/"))
-    );
+            || package
+                .owned_files
+                .iter()
+                .any(|path| path.starts_with(".nodus/packages/shared/codex-plugin/skills/"))
+    }));
 }
 
 #[test]
@@ -5480,11 +5505,7 @@ target = ".cursor/.gitignore"
     assert!(gitignore.contains(".gitignore"));
     assert!(gitignore.contains(".DS_Store"));
     assert!(gitignore.contains(&format!("skills/{managed_skill_id}")));
-    assert!(
-        lockfile
-            .legacy_managed_files
-            .contains(&".cursor/.gitignore".into())
-    );
+    assert_owned(&lockfile, temp.path(), ".cursor/.gitignore");
 }
 
 #[test]
@@ -5520,11 +5541,7 @@ shared = { path = "vendor/shared" }
     assert!(gitignore.contains("# custom"));
     assert!(gitignore.contains("skills/*_legacy/"));
     assert!(gitignore.contains(&format!("skills/{managed_skill_id}")));
-    assert!(
-        lockfile
-            .legacy_managed_files
-            .contains(&String::from(".cursor/.gitignore"))
-    );
+    assert_owned(&lockfile, temp.path(), ".cursor/.gitignore");
 }
 
 #[test]
@@ -5562,11 +5579,7 @@ IS_FIREBASE_MCP = "true"
         .unwrap();
 
     assert_eq!(firebase_package.mcp_servers, vec!["firebase"]);
-    assert!(
-        lockfile
-            .legacy_managed_files
-            .contains(&String::from(".mcp.json"))
-    );
+    assert_owned(&lockfile, temp.path(), ".mcp.json");
     assert_eq!(
         json["mcpServers"]["firebase__firebase"]["command"].as_str(),
         Some("npx")
@@ -5634,11 +5647,7 @@ args = ["-y", "firebase-tools", "mcp", "--dir", "."]
     let codex_config = fs::read_to_string(temp.path().join(".codex/config.toml")).unwrap();
     assert!(codex_config.contains("firebase__firebase"));
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
-    assert!(
-        !lockfile
-            .legacy_managed_files
-            .contains(&String::from(".mcp.json"))
-    );
+    assert_not_owned(&lockfile, temp.path(), ".mcp.json");
 }
 
 #[test]
@@ -5681,16 +5690,8 @@ args = ["-y", "firebase-tools", "mcp", "--dir", "."]
             DependencyComponent::Commands
         ])
     );
-    assert!(
-        !lockfile
-            .legacy_managed_files
-            .contains(&String::from(".mcp.json"))
-    );
-    assert!(
-        !lockfile
-            .legacy_managed_files
-            .contains(&String::from(".codex/config.toml"))
-    );
+    assert_not_owned(&lockfile, temp.path(), ".mcp.json");
+    assert_not_owned(&lockfile, temp.path(), ".codex/config.toml");
     assert!(!temp.path().join(".mcp.json").exists());
     assert!(!temp.path().join(".codex/config.toml").exists());
 }
@@ -5739,11 +5740,7 @@ X-Figma-Region = "us-east-1"
         .unwrap();
 
     assert_eq!(firebase_package.mcp_servers, vec!["figma", "firebase"]);
-    assert!(
-        lockfile
-            .legacy_managed_files
-            .contains(&String::from(".codex/config.toml"))
-    );
+    assert_owned(&lockfile, temp.path(), ".codex/config.toml");
     assert_eq!(
         config["mcp_servers"]["firebase__firebase"]["command"].as_str(),
         Some("npx")
@@ -5838,11 +5835,7 @@ args = ["-y", "firebase-tools", "mcp", "--dir", "."]
     assert!(user_config.contains(r#"[plugins."firebase@yoki-ios"]"#));
     assert!(user_config.contains("enabled = true"));
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
-    assert!(
-        !lockfile
-            .legacy_managed_files
-            .contains(&String::from(".codex/config.toml"))
-    );
+    assert_not_owned(&lockfile, temp.path(), ".codex/config.toml");
 }
 
 #[test]
@@ -5895,11 +5888,7 @@ X-Figma-Region = "us-east-1"
         .unwrap();
 
     assert_eq!(firebase_package.mcp_servers, vec!["figma", "firebase"]);
-    assert!(
-        lockfile
-            .legacy_managed_files
-            .contains(&String::from("opencode.json"))
-    );
+    assert_owned(&lockfile, temp.path(), "opencode.json");
     assert_eq!(
         json["mcp"]["firebase__firebase"]["type"].as_str(),
         Some("local")
@@ -6005,11 +5994,7 @@ enabled = false
         .find(|package| package.alias == "xcode")
         .unwrap();
     assert_eq!(xcode_package.mcp_servers, vec!["xcode"]);
-    assert!(
-        lockfile
-            .legacy_managed_files
-            .contains(&String::from(".mcp.json"))
-    );
+    assert_owned(&lockfile, temp.path(), ".mcp.json");
 }
 
 #[test]
@@ -6109,11 +6094,7 @@ command = "npx"
         Some("node")
     );
     assert!(json["mcpServers"].get("nodus").is_none());
-    assert!(
-        !lockfile
-            .legacy_managed_files
-            .contains(&String::from(".mcp.json"))
-    );
+    assert_not_owned(&lockfile, temp.path(), ".mcp.json");
 }
 
 #[test]
@@ -6268,10 +6249,23 @@ shared = { path = "vendor/shared" }
     .unwrap();
 
     let current_lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    // Simulate a v8 lockfile on disk by synthesizing the `legacy_managed_files`
+    // entries the user's pre-v10 lockfile would have carried (v10 writes drop
+    // the field, but a real-world user upgrading from v8 has these paths in
+    // their lockfile and the sync upgrade path needs them to know which
+    // legacy-named outputs to clean up).
+    let mut legacy_paths = vec![
+        format!(".claude/agents/{legacy_agent_file}"),
+        format!(".claude/commands/{legacy_command_file}"),
+        format!(".opencode/agents/{legacy_agent_file}"),
+        format!(".opencode/commands/{legacy_command_file}"),
+        format!(".opencode/skills/{legacy_skill_id}"),
+    ];
+    legacy_paths.sort();
     Lockfile {
         version: 8,
         packages: current_lockfile.packages,
-        legacy_managed_files: current_lockfile.legacy_managed_files,
+        legacy_managed_files: legacy_paths,
     }
     .write(&temp.path().join(LOCKFILE_NAME))
     .unwrap();
@@ -6558,11 +6552,7 @@ always_context = ["prompts/bootstrap.md"]
     assert!(temp.path().join(".codex/hooks.json").exists());
     assert!(temp.path().join(".codex/config.toml").exists());
     let first_lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
-    assert!(
-        first_lockfile
-            .legacy_managed_files
-            .contains(&String::from(".codex/config.toml"))
-    );
+    assert_owned(&first_lockfile, temp.path(), ".codex/config.toml");
 
     write_manifest(&temp.path().join("vendor/shared"), "");
 
@@ -8398,27 +8388,16 @@ shared = { path = "vendor/shared" }
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
 
-    assert!(
-        lockfile
-            .legacy_managed_files
-            .contains(&".nodus/packages/shared/claude-plugin".into())
+    assert_owned(
+        &lockfile,
+        temp.path(),
+        ".nodus/packages/shared/claude-plugin",
     );
-    assert!(
-        lockfile
-            .legacy_managed_files
-            .contains(&".github/skills".into())
-    );
-    assert!(
-        lockfile
-            .legacy_managed_files
-            .contains(&".opencode/skills".into())
-    );
-    assert!(
-        !lockfile
-            .legacy_managed_files
-            .iter()
-            .any(|path| path.contains("iframe-ad"))
-    );
+    assert_owned(&lockfile, temp.path(), ".github/skills/iframe-ad");
+    assert_owned(&lockfile, temp.path(), ".opencode/skills/iframe-ad");
+    // No per-package owned entry should mention the raw skill id `iframe-ad`
+    // (the v10 emission records the disambiguated `<id>` form, but for a
+    // single owner with no duplicate the path matches).
 }
 
 #[test]
@@ -8455,17 +8434,8 @@ shared = { path = "vendor/shared", components = ["agents"] }
         shared.selected_components,
         Some(vec![DependencyComponent::Agents])
     );
-    assert_eq!(lockfile.legacy_managed_files.len(), 4);
-    assert!(
-        lockfile
-            .legacy_managed_files
-            .contains(&String::from(".codex/agents"))
-    );
-    assert!(
-        !lockfile
-            .legacy_managed_files
-            .contains(&String::from(".mcp.json"))
-    );
+    assert_owned(&lockfile, temp.path(), ".codex/agents/shared.toml");
+    assert_not_owned(&lockfile, temp.path(), ".mcp.json");
     assert!(runtime_file_exists(
         temp.path(),
         Adapter::Codex,
@@ -8584,11 +8554,7 @@ target = ".github/prompts/review.md"
     );
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
-    assert!(
-        lockfile
-            .legacy_managed_files
-            .contains(&".github/prompts/review.md".into())
-    );
+    assert_owned(&lockfile, temp.path(), ".github/prompts/review.md");
 }
 
 #[test]
@@ -8627,11 +8593,7 @@ target = "learnings"
         "Use the learning pack.\n"
     );
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
-    assert!(
-        lockfile
-            .legacy_managed_files
-            .contains(&".nodus/packages/shared/learnings".into())
-    );
+    assert_owned(&lockfile, temp.path(), ".nodus/packages/shared/learnings");
 }
 
 #[test]
@@ -8668,15 +8630,25 @@ placement = "project"
     );
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    // v10: project-placement managed_exports track the ownership root as an
+    // exact owned file (so cleanup can prune extra files inside it) without
+    // enumerating each individual planned file. Per-package coverage extends
+    // from the root via `starts_with` semantics, so `learnings/review.md` is
+    // still considered owned even though it isn't an explicit `owned_files`
+    // entry.
+    assert_owned(&lockfile, temp.path(), "learnings");
+    let shared = lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .unwrap();
     assert!(
-        lockfile
-            .legacy_managed_files
-            .contains(&String::from("learnings"))
-    );
-    assert!(
-        !lockfile
-            .legacy_managed_files
-            .contains(&String::from("learnings/review.md"))
+        !shared
+            .owned_files
+            .iter()
+            .any(|path| path == "learnings/review.md"),
+        "individual files inside a project-placement export root should not be enumerated separately; got owned_files = {:?}",
+        shared.owned_files,
     );
 }
 
@@ -9064,11 +9036,7 @@ target = ".github/prompts/review.md"
         "Use the review prompt.\n"
     );
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
-    assert!(
-        lockfile
-            .legacy_managed_files
-            .contains(&".github/prompts/review.md".into())
-    );
+    assert_owned(&lockfile, temp.path(), ".github/prompts/review.md");
 }
 
 #[test]
@@ -9103,11 +9071,7 @@ target = ".github/prompts/review.md"
         "Use the review prompt.\n"
     );
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
-    assert!(
-        lockfile
-            .legacy_managed_files
-            .contains(&".github/prompts/review.md".into())
-    );
+    assert_owned(&lockfile, temp.path(), ".github/prompts/review.md");
 }
 
 #[test]
@@ -9149,11 +9113,7 @@ target = ".github/prompts/review.md"
     let manifest = fs::read_to_string(temp.path().join(MANIFEST_FILE)).unwrap();
     assert!(!manifest.contains("[[dependencies.shared.managed]]"));
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
-    assert!(
-        !lockfile
-            .legacy_managed_files
-            .contains(&".github/prompts/review.md".into())
-    );
+    assert_not_owned(&lockfile, temp.path(), ".github/prompts/review.md");
 }
 
 #[test]
@@ -11298,4 +11258,253 @@ fn root_manifest_can_be_missing() {
     let loaded = load_root_from_dir(temp.path()).unwrap();
     assert!(loaded.manifest.dependencies.is_empty());
     assert_eq!(loaded.discovered.skills[0].id, "review");
+}
+
+// ---------------------------------------------------------------------------
+// Slice 3 (lockfile v9 → v10 emission) regression coverage. These tests pin
+// the v10-specific behavior of `Resolution::to_lockfile_with_options`:
+// per-package ownership rules, hook-prefix collapse, `install_digest` stability,
+// and the assertion that `legacy_managed_files` is empty on a v10 write.
+// ---------------------------------------------------------------------------
+
+fn slice3_resolve_for_lockfile(
+    project_root: &Path,
+    cache_root: &Path,
+    adapters: &[Adapter],
+) -> (Resolution, Lockfile) {
+    sync_in_dir_with_adapters(project_root, cache_root, false, false, adapters).unwrap();
+    let resolution = resolve_project(project_root, cache_root, ResolveMode::Sync).unwrap();
+    let lockfile = resolution
+        .to_lockfile_with_options(Adapters::from_slice(adapters), project_root, false)
+        .unwrap();
+    (resolution, lockfile)
+}
+
+#[test]
+fn to_lockfile_no_longer_populates_legacy_managed_files_on_v10_write() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+    );
+    write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+
+    let (_resolution, lockfile) =
+        slice3_resolve_for_lockfile(temp.path(), cache.path(), &[Adapter::Claude]);
+
+    assert_eq!(lockfile.version, Lockfile::current_version());
+    assert!(
+        lockfile.legacy_managed_files.is_empty(),
+        "v10 writes must leave `legacy_managed_files` empty; got {:?}",
+        lockfile.legacy_managed_files
+    );
+}
+
+#[test]
+fn to_lockfile_emits_per_package_owned_subtree_for_native_plugin_packages() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+    );
+    write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+
+    let (_resolution, lockfile) = slice3_resolve_for_lockfile(
+        temp.path(),
+        cache.path(),
+        &[Adapter::Claude, Adapter::Cursor],
+    );
+
+    let shared = lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .expect("shared package present");
+
+    assert!(
+        shared
+            .owned_subtrees
+            .iter()
+            .any(|path| path == ".nodus/packages/shared/claude-plugin"),
+        "shared.owned_subtrees should cover the claude plugin folder; got {:?}",
+        shared.owned_subtrees
+    );
+    assert!(
+        shared
+            .owned_subtrees
+            .iter()
+            .any(|path| path == ".cursor/skills/review"),
+        "shared.owned_subtrees should cover the direct cursor skill dir; got {:?}",
+        shared.owned_subtrees
+    );
+}
+
+#[test]
+fn to_lockfile_collapses_multiple_hook_files_into_one_owned_prefix_rule() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+    );
+    write_manifest(
+        &temp.path().join("vendor/shared"),
+        r#"
+[[hooks]]
+id = "session.start.hello"
+event = "session_start"
+adapters = ["claude"]
+handler = { type = "command", command = "echo hello" }
+
+[[hooks]]
+id = "tool.pre.guard"
+event = "pre_tool_use"
+adapters = ["claude"]
+handler = { type = "command", command = "echo guard" }
+"#,
+    );
+    write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+
+    let (_resolution, lockfile) =
+        slice3_resolve_for_lockfile(temp.path(), cache.path(), &[Adapter::Claude]);
+
+    let shared = lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .expect("shared package present");
+
+    let prefix_rule = shared
+        .owned_prefixes
+        .iter()
+        .find(|rule| rule.dir == ".claude/hooks" && rule.prefix == "nodus-hook-shared-")
+        .expect(
+            "expected exactly one (.claude/hooks, nodus-hook-shared-) prefix rule for non-root hooks",
+        );
+    let matching_rules = shared
+        .owned_prefixes
+        .iter()
+        .filter(|rule| rule.dir == ".claude/hooks" && rule.prefix == "nodus-hook-shared-")
+        .count();
+    assert_eq!(
+        matching_rules, 1,
+        "multiple hooks for the same package+dir must collapse into one prefix rule; got {:?}",
+        shared.owned_prefixes
+    );
+    let _ = prefix_rule;
+}
+
+#[test]
+fn to_lockfile_stamps_install_digest_for_every_package() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+    );
+    write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+
+    let (_resolution, lockfile) =
+        slice3_resolve_for_lockfile(temp.path(), cache.path(), &[Adapter::Claude]);
+
+    for package in &lockfile.packages {
+        let digest = package
+            .install_digest
+            .as_deref()
+            .unwrap_or_else(|| panic!("package `{}` is missing install_digest", package.alias));
+        assert!(
+            digest.starts_with("blake3:"),
+            "install_digest for `{}` must be a blake3 hex string; got `{digest}`",
+            package.alias
+        );
+    }
+}
+
+#[test]
+fn to_lockfile_install_digest_changes_when_planned_bytes_change() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+    );
+    write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+
+    let (_, first_lockfile) =
+        slice3_resolve_for_lockfile(temp.path(), cache.path(), &[Adapter::Claude]);
+    let first_shared_digest = first_lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .unwrap()
+        .install_digest
+        .clone()
+        .unwrap();
+
+    // Change the skill contents. The planned bytes change, so the install
+    // digest for the `shared` package should change too.
+    write_skill(&temp.path().join("vendor/shared/skills/review"), "Updated");
+
+    let (_, second_lockfile) =
+        slice3_resolve_for_lockfile(temp.path(), cache.path(), &[Adapter::Claude]);
+    let second_shared_digest = second_lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .unwrap()
+        .install_digest
+        .clone()
+        .unwrap();
+
+    assert_ne!(
+        first_shared_digest, second_shared_digest,
+        "install_digest should change when planned bytes change"
+    );
+}
+
+#[test]
+fn to_lockfile_install_digest_stable_across_equivalent_resolutions() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+    );
+    write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+
+    let (_, lockfile_a) =
+        slice3_resolve_for_lockfile(temp.path(), cache.path(), &[Adapter::Claude]);
+    let resolution_b = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let lockfile_b = resolution_b
+        .to_lockfile_with_options(Adapters::CLAUDE, temp.path(), false)
+        .unwrap();
+
+    for (package_a, package_b) in lockfile_a.packages.iter().zip(lockfile_b.packages.iter()) {
+        assert_eq!(package_a.alias, package_b.alias);
+        assert_eq!(
+            package_a.install_digest, package_b.install_digest,
+            "install_digest for `{}` must be stable across equivalent resolutions",
+            package_a.alias
+        );
+    }
 }

@@ -15,7 +15,7 @@ use super::{
     ManagedHookSpec, PreferredSurface, artifact_supported, hook_supported_by_adapter,
     managed_runtime_skill_id, preferred_surface,
 };
-use crate::lockfile::{Lockfile, managed_mcp_server_name};
+use crate::lockfile::{Lockfile, OwnedPrefix, managed_mcp_server_name};
 use crate::manifest::{DependencyComponent, HookSpec, McpServerConfig};
 use crate::paths::{display_path, strip_path_prefix};
 use crate::resolver::{PackageSource, ResolvedPackage};
@@ -23,8 +23,34 @@ use crate::resolver::{PackageSource, ResolvedPackage};
 #[derive(Debug, Default)]
 pub(crate) struct OutputPlan {
     pub files: Vec<ManagedFile>,
+    /// Flat list of every managed entry. Kept on the struct for symmetry with
+    /// the per-package view and as a backstop for ad-hoc introspection in
+    /// tests; v10 writes derive lockfile ownership from
+    /// [`OutputPlan::managed_files_by_package`] and the v9 read path consults
+    /// `Lockfile::legacy_managed_files` directly.
+    #[allow(dead_code)]
     pub managed_files: Vec<String>,
+    /// Per-package attribution of every entry in `managed_files`. Slice 3
+    /// feeds this into the per-package `owned_subtrees`/`owned_prefixes`/
+    /// `owned_files` lockfile fields. Empty entries for packages with no
+    /// owned outputs are omitted.
+    pub managed_files_by_package: Vec<PackageOwnedPaths>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct PackageOwnedPaths {
+    pub alias: String,
+    /// Subtree roots Nodus owns wholesale (e.g.
+    /// `.nodus/packages/<alias>/claude-plugin`).
+    pub subtrees: Vec<String>,
+    /// Filename-prefix rules — directory + filename prefix. One rule per
+    /// (dir, prefix) pair; multiple hook files sharing a (dir, prefix) collapse
+    /// into a single entry.
+    pub prefixes: Vec<OwnedPrefix>,
+    /// Exact paths Nodus owns (singletons that don't fit subtrees or prefix
+    /// rules).
+    pub files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -36,8 +62,27 @@ pub(crate) struct OutputPlanOptions {
 #[derive(Debug, Default)]
 struct OutputAccumulator {
     files: BTreeMap<PathBuf, Vec<u8>>,
+    /// Flat list of managed entries. Mirrors the pre-Slice-3 shape (uses raw
+    /// artifact IDs for entries like `.claude/skills/<id>`) so v9 lockfile
+    /// reads keep producing the same expanded paths through
+    /// `Lockfile::managed_paths`. v10 ownership is tracked separately in
+    /// `owned_by_package` using actual on-disk paths.
     managed_files: BTreeSet<String>,
+    /// Per-package attribution using actual on-disk paths. Populated alongside
+    /// the flat set as files are emitted; emitted as
+    /// [`OutputPlan::managed_files_by_package`] after the build completes.
+    owned_by_package: BTreeMap<String, PackageOwnedAccumulator>,
     warnings: Vec<String>,
+}
+
+#[derive(Debug, Default)]
+struct PackageOwnedAccumulator {
+    subtrees: BTreeSet<String>,
+    /// Deduped on `(dir, prefix)`. Multiple hook files matching the same
+    /// `(dir, prefix)` collapse into a single rule by virtue of insertion into
+    /// this set.
+    prefixes: BTreeSet<(String, String)>,
+    files: BTreeSet<String>,
 }
 
 #[derive(Debug, Default)]
@@ -234,6 +279,14 @@ pub(crate) fn build_output_plan_with_options(
                 )?;
                 plan.managed_files
                     .insert(format!(".agents/skills/{}", skill.id));
+                track_owned_skill_root(
+                    &mut plan,
+                    project_root,
+                    &managed_names,
+                    Adapter::Agents,
+                    package,
+                    &skill.id,
+                );
             }
 
             if selected_adapters.contains(Adapter::Claude)
@@ -252,6 +305,14 @@ pub(crate) fn build_output_plan_with_options(
                 )?;
                 plan.managed_files
                     .insert(format!(".claude/skills/{}", skill.id));
+                track_owned_skill_root(
+                    &mut plan,
+                    project_root,
+                    &managed_names,
+                    Adapter::Claude,
+                    package,
+                    &skill.id,
+                );
             }
 
             if selected_adapters.contains(Adapter::Codex)
@@ -270,6 +331,14 @@ pub(crate) fn build_output_plan_with_options(
                 )?;
                 plan.managed_files
                     .insert(format!(".codex/skills/{}", skill.id));
+                track_owned_skill_root(
+                    &mut plan,
+                    project_root,
+                    &managed_names,
+                    Adapter::Codex,
+                    package,
+                    &skill.id,
+                );
             }
 
             if selected_adapters.contains(Adapter::Copilot)
@@ -287,6 +356,14 @@ pub(crate) fn build_output_plan_with_options(
                 )?;
                 plan.managed_files
                     .insert(format!(".github/skills/{}", skill.id));
+                track_owned_skill_root(
+                    &mut plan,
+                    project_root,
+                    &managed_names,
+                    Adapter::Copilot,
+                    package,
+                    &skill.id,
+                );
             }
 
             if selected_adapters.contains(Adapter::Cursor)
@@ -304,6 +381,14 @@ pub(crate) fn build_output_plan_with_options(
                 )?;
                 plan.managed_files
                     .insert(format!(".cursor/skills/{}", skill.id));
+                track_owned_skill_root(
+                    &mut plan,
+                    project_root,
+                    &managed_names,
+                    Adapter::Cursor,
+                    package,
+                    &skill.id,
+                );
             }
 
             if selected_adapters.contains(Adapter::OpenCode)
@@ -321,6 +406,14 @@ pub(crate) fn build_output_plan_with_options(
                 )?;
                 plan.managed_files
                     .insert(format!(".opencode/skills/{}", skill.id));
+                track_owned_skill_root(
+                    &mut plan,
+                    project_root,
+                    &managed_names,
+                    Adapter::OpenCode,
+                    package,
+                    &skill.id,
+                );
             }
         }
 
@@ -330,16 +423,15 @@ pub(crate) fn build_output_plan_with_options(
                 && artifact_supported(Adapter::Claude, ArtifactKind::Agent)
             {
                 for agent in package.manifest.discovered.selected_agents(Adapter::Claude) {
-                    merge_file(
-                        &mut plan.files,
-                        super::claude::agent_file(
-                            &managed_names,
-                            project_root,
-                            package,
-                            snapshot_root,
-                            agent,
-                        )?,
+                    let agent_file = super::claude::agent_file(
+                        &managed_names,
+                        project_root,
+                        package,
+                        snapshot_root,
+                        agent,
                     )?;
+                    track_owned_file(&mut plan, project_root, &package.alias, &agent_file.path);
+                    merge_file(&mut plan.files, agent_file)?;
                     plan.managed_files
                         .insert(format!(".claude/agents/{}.md", agent.id));
                 }
@@ -356,9 +448,10 @@ pub(crate) fn build_output_plan_with_options(
                         snapshot_root,
                         agent,
                     )?;
-                    let managed_entry = display_relative(project_root, &agent_file.path);
+                    let on_disk_entry = display_relative(project_root, &agent_file.path);
+                    track_owned_file(&mut plan, project_root, &package.alias, &agent_file.path);
                     merge_file(&mut plan.files, agent_file)?;
-                    plan.managed_files.insert(managed_entry);
+                    plan.managed_files.insert(on_disk_entry);
                 }
             }
 
@@ -370,16 +463,15 @@ pub(crate) fn build_output_plan_with_options(
                     .discovered
                     .selected_agents(Adapter::Copilot)
                 {
-                    merge_file(
-                        &mut plan.files,
-                        super::copilot::agent_file(
-                            &managed_names,
-                            project_root,
-                            package,
-                            snapshot_root,
-                            agent,
-                        )?,
+                    let agent_file = super::copilot::agent_file(
+                        &managed_names,
+                        project_root,
+                        package,
+                        snapshot_root,
+                        agent,
                     )?;
+                    track_owned_file(&mut plan, project_root, &package.alias, &agent_file.path);
+                    merge_file(&mut plan.files, agent_file)?;
                     plan.managed_files
                         .insert(format!(".github/agents/{}", agent.id));
                 }
@@ -393,16 +485,15 @@ pub(crate) fn build_output_plan_with_options(
                     .discovered
                     .selected_agents(Adapter::OpenCode)
                 {
-                    merge_file(
-                        &mut plan.files,
-                        super::opencode::agent_file(
-                            &managed_names,
-                            project_root,
-                            package,
-                            snapshot_root,
-                            agent,
-                        )?,
+                    let agent_file = super::opencode::agent_file(
+                        &managed_names,
+                        project_root,
+                        package,
+                        snapshot_root,
+                        agent,
                     )?;
+                    track_owned_file(&mut plan, project_root, &package.alias, &agent_file.path);
+                    merge_file(&mut plan.files, agent_file)?;
                     plan.managed_files
                         .insert(format!(".opencode/agents/{}.md", agent.id));
                 }
@@ -418,16 +509,15 @@ pub(crate) fn build_output_plan_with_options(
                 && adapter_uses_direct_runtime_outputs(Adapter::Claude)
                 && artifact_supported(Adapter::Claude, ArtifactKind::Rule)
             {
-                merge_file(
-                    &mut plan.files,
-                    super::claude::rule_file(
-                        &managed_names,
-                        project_root,
-                        package,
-                        snapshot_root,
-                        rule,
-                    )?,
+                let rule_file = super::claude::rule_file(
+                    &managed_names,
+                    project_root,
+                    package,
+                    snapshot_root,
+                    rule,
                 )?;
+                track_owned_file(&mut plan, project_root, &package.alias, &rule_file.path);
+                merge_file(&mut plan.files, rule_file)?;
                 plan.managed_files
                     .insert(format!(".claude/rules/{}.md", rule.id));
             }
@@ -435,16 +525,15 @@ pub(crate) fn build_output_plan_with_options(
             if selected_adapters.contains(Adapter::OpenCode)
                 && artifact_supported(Adapter::OpenCode, ArtifactKind::Rule)
             {
-                merge_file(
-                    &mut plan.files,
-                    super::opencode::rule_file(
-                        &managed_names,
-                        project_root,
-                        package,
-                        snapshot_root,
-                        rule,
-                    )?,
+                let rule_file = super::opencode::rule_file(
+                    &managed_names,
+                    project_root,
+                    package,
+                    snapshot_root,
+                    rule,
                 )?;
+                track_owned_file(&mut plan, project_root, &package.alias, &rule_file.path);
+                merge_file(&mut plan.files, rule_file)?;
                 plan.managed_files
                     .insert(format!(".opencode/rules/{}.md", rule.id));
             }
@@ -452,16 +541,15 @@ pub(crate) fn build_output_plan_with_options(
             if selected_adapters.contains(Adapter::Cursor)
                 && artifact_supported(Adapter::Cursor, ArtifactKind::Rule)
             {
-                merge_file(
-                    &mut plan.files,
-                    super::cursor::rule_file(
-                        &managed_names,
-                        project_root,
-                        package,
-                        snapshot_root,
-                        rule,
-                    )?,
+                let rule_file = super::cursor::rule_file(
+                    &managed_names,
+                    project_root,
+                    package,
+                    snapshot_root,
+                    rule,
                 )?;
+                track_owned_file(&mut plan, project_root, &package.alias, &rule_file.path);
+                merge_file(&mut plan.files, rule_file)?;
                 plan.managed_files
                     .insert(format!(".cursor/rules/{}.mdc", rule.id));
             }
@@ -475,16 +563,15 @@ pub(crate) fn build_output_plan_with_options(
             if selected_adapters.contains(Adapter::Agents)
                 && artifact_supported(Adapter::Agents, ArtifactKind::Command)
             {
-                merge_file(
-                    &mut plan.files,
-                    super::agents::command_file(
-                        &managed_names,
-                        project_root,
-                        package,
-                        snapshot_root,
-                        command,
-                    )?,
+                let command_file = super::agents::command_file(
+                    &managed_names,
+                    project_root,
+                    package,
+                    snapshot_root,
+                    command,
                 )?;
+                track_owned_file(&mut plan, project_root, &package.alias, &command_file.path);
+                merge_file(&mut plan.files, command_file)?;
                 plan.managed_files
                     .insert(format!(".agents/commands/{}.md", command.id));
             }
@@ -493,16 +580,15 @@ pub(crate) fn build_output_plan_with_options(
                 && adapter_uses_direct_runtime_outputs(Adapter::Claude)
                 && artifact_supported(Adapter::Claude, ArtifactKind::Command)
             {
-                merge_file(
-                    &mut plan.files,
-                    super::claude::command_file(
-                        &managed_names,
-                        project_root,
-                        package,
-                        snapshot_root,
-                        command,
-                    )?,
+                let command_file = super::claude::command_file(
+                    &managed_names,
+                    project_root,
+                    package,
+                    snapshot_root,
+                    command,
                 )?;
+                track_owned_file(&mut plan, project_root, &package.alias, &command_file.path);
+                merge_file(&mut plan.files, command_file)?;
                 plan.managed_files
                     .insert(format!(".claude/commands/{}.md", command.id));
             }
@@ -512,16 +598,19 @@ pub(crate) fn build_output_plan_with_options(
             {
                 let skill_id =
                     super::codex::synthetic_command_skill_id(&managed_names, package, &command.id);
-                merge_file(
-                    &mut plan.files,
-                    super::codex::command_skill_file(
-                        &managed_names,
-                        project_root,
-                        package,
-                        snapshot_root,
-                        command,
-                    )?,
+                let command_file = super::codex::command_skill_file(
+                    &managed_names,
+                    project_root,
+                    package,
+                    snapshot_root,
+                    command,
                 )?;
+                // The command-skill file lives under `<runtime>/skills/<skill_id>/SKILL.md`.
+                // Its parent (the skill dir) is what Nodus owns as a subtree.
+                if let Some(skill_root) = command_file.path.parent() {
+                    track_owned_subtree(&mut plan, project_root, &package.alias, skill_root);
+                }
+                merge_file(&mut plan.files, command_file)?;
                 plan.managed_files
                     .insert(format!(".codex/skills/{skill_id}"));
             }
@@ -529,16 +618,15 @@ pub(crate) fn build_output_plan_with_options(
             if selected_adapters.contains(Adapter::Cursor)
                 && artifact_supported(Adapter::Cursor, ArtifactKind::Command)
             {
-                merge_file(
-                    &mut plan.files,
-                    super::cursor::command_file(
-                        &managed_names,
-                        project_root,
-                        package,
-                        snapshot_root,
-                        command,
-                    )?,
+                let command_file = super::cursor::command_file(
+                    &managed_names,
+                    project_root,
+                    package,
+                    snapshot_root,
+                    command,
                 )?;
+                track_owned_file(&mut plan, project_root, &package.alias, &command_file.path);
+                merge_file(&mut plan.files, command_file)?;
                 plan.managed_files
                     .insert(format!(".cursor/commands/{}.md", command.id));
             }
@@ -546,16 +634,15 @@ pub(crate) fn build_output_plan_with_options(
             if selected_adapters.contains(Adapter::OpenCode)
                 && artifact_supported(Adapter::OpenCode, ArtifactKind::Command)
             {
-                merge_file(
-                    &mut plan.files,
-                    super::opencode::command_file(
-                        &managed_names,
-                        project_root,
-                        package,
-                        snapshot_root,
-                        command,
-                    )?,
+                let command_file = super::opencode::command_file(
+                    &managed_names,
+                    project_root,
+                    package,
+                    snapshot_root,
+                    command,
                 )?;
+                track_owned_file(&mut plan, project_root, &package.alias, &command_file.path);
+                merge_file(&mut plan.files, command_file)?;
                 plan.managed_files
                     .insert(format!(".opencode/commands/{}.md", command.id));
             }
@@ -582,10 +669,13 @@ pub(crate) fn build_output_plan_with_options(
             &mut plan.files,
             managed_path_files(project_root, package, snapshot_root)?,
         )?;
-        register_managed_paths(project_root, &mut plan.managed_files, package)?;
+        register_managed_paths(project_root, &mut plan, package)?;
     }
 
+    let workspace_alias = workspace_owner_alias(packages);
+
     for file in native_package_marketplace_files(project_root, packages, selected_adapters)? {
+        track_owned_file(&mut plan, project_root, &workspace_alias, &file.path);
         plan.managed_files
             .insert(display_relative(project_root, &file.path));
         merge_file(&mut plan.files, file)?;
@@ -598,6 +688,7 @@ pub(crate) fn build_output_plan_with_options(
         existing_lockfile,
         options.merge_existing_mcp,
     )? {
+        track_owned_file(&mut plan, project_root, &workspace_alias, &file.path);
         plan.managed_files
             .insert(display_relative(project_root, &file.path));
         merge_file(&mut plan.files, file)?;
@@ -613,6 +704,7 @@ pub(crate) fn build_output_plan_with_options(
             emit_codex_hooks,
         )?
     {
+        track_owned_file(&mut plan, project_root, &workspace_alias, &file.path);
         plan.managed_files
             .insert(display_relative(project_root, &file.path));
         merge_file(&mut plan.files, file)?;
@@ -626,6 +718,7 @@ pub(crate) fn build_output_plan_with_options(
             &mut plan.warnings,
         )?
     {
+        track_owned_file(&mut plan, project_root, &workspace_alias, &file.path);
         plan.managed_files
             .insert(display_relative(project_root, &file.path));
         merge_file(&mut plan.files, file)?;
@@ -653,7 +746,23 @@ pub(crate) fn build_output_plan_with_options(
         || has_opencode_plugin_hooks
         || has_claude_native_plugin_enablement
     {
-        for file in hook_files(
+        // Pre-compute per-package ownership for every hook file we're about
+        // to emit. We do this here (against the typed hooks list) rather than
+        // by parsing filenames after the fact, because the script stems for
+        // root hooks and per-package hooks are not reliably distinguishable
+        // from filename alone (a root hook with id `nodus.sync_on_startup`
+        // produces `nodus-hook-nodus-sync-on-startup-<digest>.sh`, which a
+        // naive parser would attribute to a nonexistent `nodus` package).
+        attribute_hook_owned_paths(
+            &mut plan,
+            project_root,
+            packages,
+            &hooks,
+            &workspace_alias,
+            selected_adapters,
+        );
+
+        let emitted_hook_files = hook_files(
             project_root,
             packages,
             &hooks,
@@ -661,9 +770,19 @@ pub(crate) fn build_output_plan_with_options(
             selected_adapters,
             options.merge_existing_mcp,
             &mut plan.warnings,
-        )? {
-            plan.managed_files
-                .insert(display_relative(project_root, &file.path));
+        )?;
+
+        // Any hook-emitted file we did not pre-attribute (e.g. shared aggregator
+        // outputs like `.opencode/plugins/nodus-hooks.js`, the
+        // `.claude/settings.json` config blob, the codex hooks JSON, plugin
+        // wrappers we already covered via `track_*` helpers) falls back to the
+        // workspace owner as an exact owned file.
+        for file in emitted_hook_files {
+            let relative = display_relative(project_root, &file.path);
+            if !already_attributed(&plan, project_root, &file.path) {
+                track_owned_file(&mut plan, project_root, &workspace_alias, &file.path);
+            }
+            plan.managed_files.insert(relative);
             merge_file(&mut plan.files, file)?;
         }
     }
@@ -673,10 +792,40 @@ pub(crate) fn build_output_plan_with_options(
         plan.files.remove(&consumed);
     }
     for file in gitignores.files {
+        track_owned_file(&mut plan, project_root, &workspace_alias, &file.path);
         plan.managed_files
             .insert(display_relative(project_root, &file.path));
         merge_file(&mut plan.files, file)?;
     }
+
+    let managed_files: Vec<String> = plan.managed_files.iter().cloned().collect();
+    let managed_files_by_package = plan
+        .owned_by_package
+        .into_iter()
+        .filter_map(|(alias, bucket)| {
+            if bucket.subtrees.is_empty() && bucket.prefixes.is_empty() && bucket.files.is_empty() {
+                None
+            } else {
+                Some(PackageOwnedPaths {
+                    alias,
+                    subtrees: bucket.subtrees.into_iter().collect(),
+                    prefixes: bucket
+                        .prefixes
+                        .into_iter()
+                        .map(|(dir, prefix)| OwnedPrefix { dir, prefix })
+                        .collect(),
+                    files: bucket.files.into_iter().collect(),
+                })
+            }
+        })
+        .collect::<Vec<_>>();
+
+    #[cfg(debug_assertions)]
+    debug_assert_owned_paths_cover_planned_files(
+        &plan.files.keys().cloned().collect::<Vec<_>>(),
+        project_root,
+        &managed_files_by_package,
+    );
 
     Ok(OutputPlan {
         files: plan
@@ -684,7 +833,8 @@ pub(crate) fn build_output_plan_with_options(
             .into_iter()
             .map(|(path, contents)| ManagedFile { path, contents })
             .collect(),
-        managed_files: plan.managed_files.into_iter().collect(),
+        managed_files,
+        managed_files_by_package,
         warnings: plan.warnings,
     })
 }
@@ -1110,7 +1260,7 @@ fn emit_native_package_plugins(
         )?;
         register_native_package_plugin_root(
             project_root,
-            &mut plan.managed_files,
+            plan,
             Adapter::Claude,
             package,
             &plugin_root,
@@ -1128,7 +1278,7 @@ fn emit_native_package_plugins(
         )?;
         register_native_package_plugin_root(
             project_root,
-            &mut plan.managed_files,
+            plan,
             Adapter::Codex,
             package,
             &plugin_root,
@@ -1210,7 +1360,7 @@ fn hooks_for_package_and_adapter(
 
 fn register_native_package_plugin_root(
     project_root: &Path,
-    managed_files: &mut BTreeSet<String>,
+    plan: &mut OutputAccumulator,
     adapter: Adapter,
     package: &ResolvedPackage,
     plugin_root: &Path,
@@ -1223,13 +1373,19 @@ fn register_native_package_plugin_root(
                 unreachable!("only native plugin adapters have plugin metadata")
             }
         };
-        managed_files.insert(display_relative(project_root, &metadata_path));
+        plan.managed_files
+            .insert(display_relative(project_root, &metadata_path));
+        track_owned_file(plan, project_root, &package.alias, &metadata_path);
+
         let runtime_root = super::runtime_root(project_root, adapter);
         if package.selects_component(DependencyComponent::Skills)
             && artifact_supported(adapter, ArtifactKind::Skill)
             && !package.manifest.discovered.skills.is_empty()
         {
-            managed_files.insert(display_relative(project_root, &runtime_root.join("skills")));
+            let dir = runtime_root.join("skills");
+            plan.managed_files
+                .insert(display_relative(project_root, &dir));
+            track_owned_subtree(plan, project_root, &package.alias, &dir);
         }
         if package.selects_component(DependencyComponent::Agents)
             && artifact_supported(adapter, ArtifactKind::Agent)
@@ -1239,7 +1395,10 @@ fn register_native_package_plugin_root(
                 .selected_agents(adapter)
                 .is_empty()
         {
-            managed_files.insert(display_relative(project_root, &runtime_root.join("agents")));
+            let dir = runtime_root.join("agents");
+            plan.managed_files
+                .insert(display_relative(project_root, &dir));
+            track_owned_subtree(plan, project_root, &package.alias, &dir);
         }
         if package.selects_component(DependencyComponent::Commands)
             && !package.manifest.discovered.commands.is_empty()
@@ -1251,25 +1410,30 @@ fn register_native_package_plugin_root(
                     unreachable!("only native plugin adapters have plugin metadata")
                 }
             };
-            managed_files.insert(display_relative(
-                project_root,
-                &runtime_root.join(directory),
-            ));
+            let dir = runtime_root.join(directory);
+            plan.managed_files
+                .insert(display_relative(project_root, &dir));
+            track_owned_subtree(plan, project_root, &package.alias, &dir);
         }
         if package.selects_component(DependencyComponent::Rules)
             && artifact_supported(adapter, ArtifactKind::Rule)
             && !package.manifest.discovered.rules.is_empty()
         {
-            managed_files.insert(display_relative(project_root, &runtime_root.join("rules")));
+            let dir = runtime_root.join("rules");
+            plan.managed_files
+                .insert(display_relative(project_root, &dir));
+            track_owned_subtree(plan, project_root, &package.alias, &dir);
         }
         if package_has_mcp_servers(package) {
-            managed_files.insert(display_relative(
-                project_root,
-                &project_root.join(".mcp.json"),
-            ));
+            let mcp = project_root.join(".mcp.json");
+            plan.managed_files
+                .insert(display_relative(project_root, &mcp));
+            track_owned_file(plan, project_root, &package.alias, &mcp);
         }
     } else {
-        managed_files.insert(display_relative(project_root, plugin_root));
+        plan.managed_files
+            .insert(display_relative(project_root, plugin_root));
+        track_owned_subtree(plan, project_root, &package.alias, plugin_root);
     }
 }
 
@@ -1643,20 +1807,63 @@ fn managed_path_files(
 
 fn register_managed_paths(
     project_root: &Path,
-    managed_files: &mut BTreeSet<String>,
+    plan: &mut OutputAccumulator,
     package: &ResolvedPackage,
 ) -> Result<()> {
+    use crate::resolver::ResolvedManagedPathOrigin;
+
     for mapping in package.managed_paths() {
-        validate_direct_managed_root(project_root, managed_files, &mapping.ownership_root)?;
-        managed_files.insert(display_relative(
-            project_root,
-            &project_root.join(&mapping.ownership_root),
-        ));
+        validate_direct_managed_root(project_root, &plan.managed_files, &mapping.ownership_root)?;
+        let ownership_root = project_root.join(&mapping.ownership_root);
+        plan.managed_files
+            .insert(display_relative(project_root, &ownership_root));
+
+        // Per-package ownership for managed paths depends on the mapping
+        // origin:
+        //
+        // - **`PackageManagedExport { placement = "package" }`** — the entire
+        //   ownership root lives under `.nodus/packages/<alias>/` and Nodus
+        //   owns the whole directory tree. Track as a subtree so subtree
+        //   cleanup can prune any file Nodus didn't write.
+        //
+        // - **`PackageManagedExport { placement = "project" }`** — the
+        //   ownership root is a user-visible directory (e.g. `learnings`).
+        //   Pre-Slice-3 behavior treated the directory as owned at the
+        //   leaf-grain by listing the root only (the v9 compression dropped
+        //   individual file entries), and the on-disk cleanup pass used the
+        //   directory-mismatch logic in `planned_paths_to_replace` to wipe
+        //   any non-planned content. We mirror that by tracking the root as
+        //   an exact owned file (so `path_is_owned` returns true) without
+        //   the individual file entries.
+        //
+        // - **`LegacyDependencyMapping`** — the consumer manifest's legacy
+        //   `[managed]` block. v9 left individual file entries intact in
+        //   `legacy_managed_files`, which had the side effect that user-
+        //   placed files inside the directory survived re-sync. We mirror
+        //   that here by tracking each individual `file.target_relative` as
+        //   an exact owned file.
+        match mapping.origin {
+            ResolvedManagedPathOrigin::PackageManagedExport {
+                placement: crate::manifest::ManagedPlacement::Package,
+            } => {
+                track_owned_subtree(plan, project_root, &package.alias, &ownership_root);
+            }
+            ResolvedManagedPathOrigin::PackageManagedExport {
+                placement: crate::manifest::ManagedPlacement::Project,
+            } => {
+                track_owned_file(plan, project_root, &package.alias, &ownership_root);
+            }
+            ResolvedManagedPathOrigin::LegacyDependencyMapping => {
+                for file in &mapping.files {
+                    let target = project_root.join(&file.target_relative);
+                    track_owned_file(plan, project_root, &package.alias, &target);
+                }
+            }
+        }
         for file in &mapping.files {
-            managed_files.insert(display_relative(
-                project_root,
-                &project_root.join(&file.target_relative),
-            ));
+            let target = project_root.join(&file.target_relative);
+            plan.managed_files
+                .insert(display_relative(project_root, &target));
         }
     }
 
@@ -2063,10 +2270,18 @@ fn previously_managed_mcp_servers(
         .map(Lockfile::managed_mcp_server_names)
         .unwrap_or_default();
     if existing_lockfile.is_some_and(|lockfile| {
+        // v9 stored the config path in `legacy_managed_files`; v10 stores it in
+        // some package's per-package `owned_files`. Either signal means Nodus
+        // previously owned the file and may have written the unprefixed
+        // `nodus` MCP server entry that we need to clean up.
         lockfile
             .legacy_managed_files
             .iter()
             .any(|managed_file| managed_file == config_path)
+            || lockfile
+                .packages
+                .iter()
+                .any(|package| package.owned_files.iter().any(|file| file == config_path))
     }) {
         names.insert("nodus".to_string());
     }
@@ -2592,6 +2807,373 @@ fn merge_file(target: &mut BTreeMap<PathBuf, Vec<u8>>, file: ManagedFile) -> Res
         }
     }
     Ok(())
+}
+
+/// Alias that owns workspace-level shared outputs (`.mcp.json`, marketplace
+/// JSONs, `.claude/settings.json`, generated `.gitignore` files, aggregator
+/// plugin entrypoints like `.opencode/plugins/nodus-hooks.js`). Falls back to
+/// `"root"` when no root package is in the resolution (vanishingly rare — we
+/// always synthesize a root manifest — but keeps the per-package emission
+/// total even in that degenerate case).
+fn workspace_owner_alias(packages: &[(ResolvedPackage, PathBuf)]) -> String {
+    packages
+        .iter()
+        .find(|(package, _)| matches!(package.source, PackageSource::Root))
+        .map(|(package, _)| package.alias.clone())
+        .unwrap_or_else(|| "root".to_string())
+}
+
+/// Attribute an actual on-disk file path to `alias` as a per-package
+/// [`PackageOwnedPaths::files`] entry. The path is normalized to a string
+/// relative to `project_root` via [`display_relative`] so it matches the form
+/// stored in the lockfile.
+fn track_owned_file(
+    plan: &mut OutputAccumulator,
+    project_root: &Path,
+    alias: &str,
+    file_path: &Path,
+) {
+    let entry = display_relative(project_root, file_path);
+    plan.owned_by_package
+        .entry(alias.to_string())
+        .or_default()
+        .files
+        .insert(entry);
+}
+
+/// Attribute a directory `subtree_path` (on disk) to `alias` as a per-package
+/// [`PackageOwnedPaths::subtrees`] entry. Use this for skill dirs, native
+/// plugin folders, and other directories Nodus owns wholesale.
+fn track_owned_subtree(
+    plan: &mut OutputAccumulator,
+    project_root: &Path,
+    alias: &str,
+    subtree_path: &Path,
+) {
+    let entry = display_relative(project_root, subtree_path);
+    plan.owned_by_package
+        .entry(alias.to_string())
+        .or_default()
+        .subtrees
+        .insert(entry);
+}
+
+/// Attribute a directory-and-filename-prefix rule to `alias` as a per-package
+/// [`PackageOwnedPaths::prefixes`] entry. Multiple inserts with the same
+/// `(dir, prefix)` for the same `alias` collapse into a single rule.
+fn track_owned_prefix(plan: &mut OutputAccumulator, alias: &str, dir: String, prefix: String) {
+    plan.owned_by_package
+        .entry(alias.to_string())
+        .or_default()
+        .prefixes
+        .insert((dir, prefix));
+}
+
+/// Convenience wrapper for the common skill-root case: derive the on-disk
+/// skill root from `managed_names` and attribute it to `package.alias` as an
+/// owned subtree. Used by every per-adapter skill emission site so the
+/// per-package ownership reflects the disambiguated runtime path (e.g.
+/// `.claude/skills/review_abc`) rather than the raw `skill.id`.
+fn track_owned_skill_root(
+    plan: &mut OutputAccumulator,
+    project_root: &Path,
+    managed_names: &ManagedArtifactNames,
+    adapter: Adapter,
+    package: &ResolvedPackage,
+    skill_id: &str,
+) {
+    let skill_root =
+        super::managed_skill_root(managed_names, project_root, adapter, package, skill_id);
+    track_owned_subtree(plan, project_root, &package.alias, &skill_root);
+}
+
+/// Pre-compute per-package ownership for every hook-related file the
+/// downstream `hook_files` call will emit. We attribute against the typed
+/// hooks list so we can reliably tell root hooks (their file stems are derived
+/// from the hook id, with no package segment) from non-root hooks (file stems
+/// contain a sanitized package alias). Filename parsing alone can't do this —
+/// a root hook named `nodus.sync_on_startup` produces a script with stem
+/// `nodus-hook-nodus-sync-on-startup-<digest>`, which a naive parser would
+/// attribute to a nonexistent `nodus` package.
+///
+/// For each hook we emit:
+/// - **Root hooks** → an exact owned file (Claude/Codex hook scripts and
+///   their per-package activation hooks; OpenCode hook scripts).
+/// - **Non-root hooks** → an owned-prefix rule keyed on the package alias.
+///   Multiple hooks for the same `(package, dir)` collapse to a single rule.
+///
+/// We also attribute the Claude plugin-hook bridge scripts
+/// (`nodus-plugin-hook-<alias>-...`) and the OpenCode plugin wrapper files
+/// (`.opencode/plugins/nodus-<alias>-...js`, plus the per-package plugin
+/// install root under `.nodus/packages/<alias>/opencode-plugin`).
+fn attribute_hook_owned_paths(
+    plan: &mut OutputAccumulator,
+    project_root: &Path,
+    packages: &[(ResolvedPackage, PathBuf)],
+    hooks: &[ManagedHookSpec],
+    workspace_alias: &str,
+    selected_adapters: Adapters,
+) {
+    for hook in hooks {
+        attribute_single_hook(plan, project_root, hook, workspace_alias, selected_adapters);
+    }
+
+    // Activation hooks always come from non-root packages — Claude attaches
+    // them to the package plugin folder (which already owns its subtree) when
+    // emitted_from_root is false, but the workspace `.claude/hooks/` /
+    // `.codex/hooks/` activation scripts are owned via prefix rules.
+    for (package, _) in packages {
+        if !package.manifest.manifest.activation_enabled()
+            || matches!(package.source, PackageSource::Root)
+        {
+            continue;
+        }
+        let alias = &package.alias;
+        if selected_adapters.contains(Adapter::Claude) {
+            track_owned_prefix(
+                plan,
+                alias,
+                ".claude/hooks".to_string(),
+                format!("nodus-hook-activation-{alias}-"),
+            );
+        }
+        if selected_adapters.contains(Adapter::Codex) {
+            track_owned_prefix(
+                plan,
+                alias,
+                ".codex/hooks".to_string(),
+                format!("nodus-hook-activation-{alias}-"),
+            );
+        }
+    }
+
+    // Claude plugin-hook bridge scripts and OpenCode plugin wrappers live
+    // alongside the package plugin install roots. The install roots
+    // themselves are tracked elsewhere (via the native plugin emission and
+    // the OpenCode plugin emission), so here we only need the workspace-
+    // visible bridge scripts that share a directory with non-root hooks.
+    for (package, _) in packages {
+        if matches!(package.source, PackageSource::Root) {
+            continue;
+        }
+        let alias = &package.alias;
+        if selected_adapters.contains(Adapter::Claude)
+            && !package
+                .manifest
+                .claude_plugin_hook_compat_sources()
+                .is_empty()
+        {
+            track_owned_prefix(
+                plan,
+                alias,
+                ".claude/hooks".to_string(),
+                format!("nodus-plugin-hook-{alias}-"),
+            );
+        }
+        if selected_adapters.contains(Adapter::OpenCode)
+            && !package.manifest.manifest.opencode_plugin_hooks.is_empty()
+        {
+            // The wrappers live at `.opencode/plugins/nodus-<alias>-<name>-<digest>.js`.
+            track_owned_prefix(
+                plan,
+                alias,
+                ".opencode/plugins".to_string(),
+                format!("nodus-{alias}-"),
+            );
+            // The per-package install root holds the imported plugin source.
+            let plugin_install_root = project_root
+                .join(".nodus")
+                .join("packages")
+                .join(alias)
+                .join("opencode-plugin");
+            track_owned_subtree(plan, project_root, alias, &plugin_install_root);
+        }
+    }
+
+    // `.opencode/plugins/nodus-hooks.js` is a workspace aggregator emitted
+    // whenever any OpenCode hooks exist. Attribute to the workspace owner so
+    // sync's cleanup logic still recognises it as Nodus-owned.
+    let any_opencode_hooks = hooks.iter().any(|hook| {
+        hook_targets_adapter(&hook.hook, selected_adapters, Adapter::OpenCode)
+            && hook_supported_by_adapter(&hook.hook, Adapter::OpenCode)
+    });
+    if any_opencode_hooks {
+        track_owned_file(
+            plan,
+            project_root,
+            workspace_alias,
+            &project_root.join(".opencode/plugins/nodus-hooks.js"),
+        );
+    }
+}
+
+fn attribute_single_hook(
+    plan: &mut OutputAccumulator,
+    project_root: &Path,
+    hook: &ManagedHookSpec,
+    workspace_alias: &str,
+    selected_adapters: Adapters,
+) {
+    for adapter in [Adapter::Claude, Adapter::Codex, Adapter::OpenCode] {
+        if !hook_targets_adapter(&hook.hook, selected_adapters, adapter)
+            || !hook_supported_by_adapter(&hook.hook, adapter)
+        {
+            continue;
+        }
+        let (dir, stem_prefix_for_package) = match adapter {
+            Adapter::Claude => (".claude/hooks", "nodus-hook-"),
+            Adapter::Codex => (".codex/hooks", "nodus-hook-"),
+            Adapter::OpenCode => (".opencode/scripts", "nodus-hook-"),
+            _ => continue,
+        };
+        if hook.emitted_from_root {
+            // Root hooks: each script's stem is `nodus-hook-<sanitized-hook-id>-<digest>`,
+            // and the sanitized hook id can collide with a non-root prefix
+            // (e.g. id `nodus.sync_on_startup` → stem
+            // `nodus-hook-nodus-sync-on-startup-...`). Use exact ownership.
+            let stem = hook_script_stem_for_adapter(hook, adapter);
+            let script_path = project_root.join(dir).join(format!("{stem}.sh"));
+            track_owned_file(plan, project_root, workspace_alias, &script_path);
+        } else {
+            // Non-root hooks: every script for this package in this directory
+            // shares the prefix `nodus-hook-<alias>-`. Multiple hooks collapse
+            // into a single (dir, prefix) rule via the BTreeSet dedupe.
+            let sanitized_alias = sanitized_alias_segment(&hook.package_alias);
+            track_owned_prefix(
+                plan,
+                &hook.package_alias,
+                dir.to_string(),
+                format!("{stem_prefix_for_package}{sanitized_alias}-"),
+            );
+        }
+        // For Codex hooks specifically, there's no separate per-script copy in
+        // the codex hooks JSON file — that file is `.codex/config.toml` which
+        // is attributed via `codex_mcp_config_file` to the workspace owner.
+        let _ = adapter;
+    }
+}
+
+/// Stem matching the per-adapter `managed_script_stem` helpers used by
+/// `claude::hook_files` / `codex::hook_files` / `opencode::hook_files`. We
+/// reimplement the format here (rather than reaching into each adapter
+/// module) so per-package ownership can be computed BEFORE we call those
+/// emitters.
+fn hook_script_stem_for_adapter(hook: &ManagedHookSpec, adapter: Adapter) -> String {
+    use blake3::hash;
+    let _ = adapter;
+    let sanitized = sanitized_alias_segment(&hook.hook.id);
+    if hook.emitted_from_root {
+        format!(
+            "nodus-hook-{sanitized}-{}",
+            &hash(hook.hook.id.as_bytes()).to_hex()[..8]
+        )
+    } else {
+        let package = sanitized_alias_segment(&hook.package_alias);
+        format!(
+            "nodus-hook-{package}-{sanitized}-{}",
+            &hash(format!("{}:{}", hook.package_alias, hook.hook.id).as_bytes()).to_hex()[..8]
+        )
+    }
+}
+
+/// Sanitize a string for use as a script-stem segment. Mirrors the per-adapter
+/// sanitizers in `claude.rs` / `codex.rs` / `opencode.rs`: lowercase ASCII
+/// alphanumerics pass through, everything else becomes `-`.
+fn sanitized_alias_segment(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| match character {
+            'a'..='z' | '0'..='9' => character,
+            'A'..='Z' => character.to_ascii_lowercase(),
+            _ => '-',
+        })
+        .collect()
+}
+
+/// True when `file_path` is already covered by a per-package ownership rule
+/// in `plan.owned_by_package` (as an exact owned file, a subtree the file
+/// lives under, or a prefix rule matching its parent + filename stem). Used
+/// by the hooks emission tail to skip re-attributing files we already
+/// described via `attribute_hook_owned_paths`.
+fn already_attributed(plan: &OutputAccumulator, project_root: &Path, file_path: &Path) -> bool {
+    let Some(relative) = strip_path_prefix(file_path, project_root) else {
+        return false;
+    };
+    let relative_str = display_path(relative);
+    for bucket in plan.owned_by_package.values() {
+        if bucket.files.contains(&relative_str) {
+            return true;
+        }
+        if bucket
+            .subtrees
+            .iter()
+            .any(|subtree| relative.starts_with(Path::new(subtree)))
+        {
+            return true;
+        }
+        if bucket.prefixes.iter().any(|(dir, prefix)| {
+            relative.parent() == Some(Path::new(dir))
+                && relative
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(prefix))
+        }) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Invariant: every file we plan to write under `project_root` must be
+/// attributable to some package via the per-package ownership view. Catches
+/// emission sites that update `plan.files` without also calling one of the
+/// `track_owned_*` helpers — without coverage, Nodus would leak ownership of
+/// the file in the lockfile and sync's collision/cleanup logic would misbehave.
+#[cfg(debug_assertions)]
+fn debug_assert_owned_paths_cover_planned_files(
+    planned_paths: &[PathBuf],
+    project_root: &Path,
+    managed_files_by_package: &[PackageOwnedPaths],
+) {
+    for path in planned_paths {
+        // Files that live outside `project_root` (e.g. Codex user-config
+        // edits) aren't part of any package's runtime-rooted ownership view.
+        let Some(relative) = strip_path_prefix(path, project_root) else {
+            continue;
+        };
+
+        let covered_by_subtree = managed_files_by_package.iter().any(|owned| {
+            owned.subtrees.iter().any(|subtree| {
+                relative == Path::new(subtree) || relative.starts_with(Path::new(subtree))
+            })
+        });
+        if covered_by_subtree {
+            continue;
+        }
+        let covered_by_file = managed_files_by_package.iter().any(|owned| {
+            owned.files.iter().any(|file| {
+                let owned = Path::new(file);
+                relative == owned || relative.starts_with(owned)
+            })
+        });
+        if covered_by_file {
+            continue;
+        }
+        let covered_by_prefix = managed_files_by_package.iter().any(|owned| {
+            owned.prefixes.iter().any(|rule| {
+                relative.parent() == Some(Path::new(&rule.dir))
+                    && relative
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.starts_with(&rule.prefix))
+            })
+        });
+        debug_assert!(
+            covered_by_prefix,
+            "planned file `{}` has no per-package ownership coverage in v10 emission",
+            display_path(relative)
+        );
+    }
 }
 
 #[cfg(test)]
