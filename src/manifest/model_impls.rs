@@ -323,6 +323,7 @@ impl LoadedManifest {
             .filter(|member| member.enabled)
             .map(|member| ResolvedWorkspaceMember {
                 id: member.id,
+                alias: member.alias,
                 path: member.path,
                 name: member.name,
                 codex: member.codex,
@@ -388,12 +389,26 @@ impl LoadedManifest {
         };
         Ok(WorkspaceMemberStatus {
             id: id.to_string(),
+            alias: self.workspace_member_alias(id)?,
             path: member.path.clone(),
             name: member.name.clone(),
             codex: member.codex.clone(),
             enabled: warning.is_none(),
             warning,
         })
+    }
+
+    pub fn workspace_member_alias(&self, id: &str) -> Result<String> {
+        let Some(namespace) = self
+            .manifest
+            .workspace
+            .as_ref()
+            .and_then(|workspace| workspace.namespace.as_deref())
+        else {
+            return Ok(id.to_string());
+        };
+
+        normalize_dependency_alias(&format!("{namespace}_{id}"))
     }
 }
 
@@ -1026,6 +1041,17 @@ fn validate_workspace(package: &LoadedManifest) -> Result<()> {
     }
     if workspace.package.is_empty() {
         bail!("manifest field `workspace.package` must not be empty");
+    }
+    if let Some(namespace) = workspace.namespace.as_deref() {
+        if namespace.trim().is_empty() {
+            bail!("manifest field `workspace.namespace` must not be empty");
+        }
+        let normalized_namespace = normalize_dependency_alias(namespace)?;
+        if normalized_namespace != namespace {
+            bail!(
+                "workspace namespace `{namespace}` must already be normalized as `{normalized_namespace}`"
+            );
+        }
     }
 
     let mut seen_paths = HashSet::new();
