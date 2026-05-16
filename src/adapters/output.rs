@@ -697,8 +697,10 @@ pub(crate) fn build_output_plan_with_options(
             snapshot_root,
             selected_adapters,
             &managed_names,
-            &package_claude_plugin_hooks,
-            &package_codex_plugin_hooks,
+            NativePackagePluginHooks {
+                claude: &package_claude_plugin_hooks,
+                codex: &package_codex_plugin_hooks,
+            },
         )?;
 
         merge_files(
@@ -737,8 +739,10 @@ pub(crate) fn build_output_plan_with_options(
             options.codex_native_plugins_auto_enabled,
             existing_lockfile,
             options.merge_existing_mcp,
-            emit_codex_hooks,
-            emit_codex_plugin_hooks,
+            CodexFeatureRequirements {
+                hooks: emit_codex_hooks,
+                plugin_hooks: emit_codex_plugin_hooks,
+            },
         )?
     {
         track_owned_file(&mut plan, project_root, &workspace_alias, &file.path);
@@ -1259,8 +1263,7 @@ fn emit_native_package_plugins(
     snapshot_root: &Path,
     selected_adapters: Adapters,
     managed_names: &ManagedArtifactNames,
-    claude_plugin_hooks: &[ManagedHookSpec],
-    codex_plugin_hooks: &[ManagedHookSpec],
+    plugin_hooks: NativePackagePluginHooks<'_>,
 ) -> Result<()> {
     if !package.emits_runtime_outputs() {
         return Ok(());
@@ -1292,7 +1295,7 @@ fn emit_native_package_plugins(
                 &plugin_root,
                 package,
                 snapshot_root,
-                claude_plugin_hooks,
+                plugin_hooks.claude,
                 activation_hook.as_ref(),
             )?,
         )?;
@@ -1331,7 +1334,7 @@ fn emit_native_package_plugins(
                 &plugin_root,
                 package,
                 snapshot_root,
-                codex_plugin_hooks,
+                plugin_hooks.codex,
                 activation_hook.as_ref(),
             )?,
         )?;
@@ -2117,8 +2120,7 @@ fn codex_mcp_config_file(
     codex_native_plugins_auto_enabled: bool,
     existing_lockfile: Option<&Lockfile>,
     merge_existing_mcp: bool,
-    hooks_feature_required: bool,
-    plugin_hooks_feature_required: bool,
+    feature_requirements: CodexFeatureRequirements,
 ) -> Result<Option<ManagedFile>> {
     let path = project_root.join(".codex/config.toml");
     let previously_managed =
@@ -2170,8 +2172,8 @@ fn codex_mcp_config_file(
 
     if desired_servers.is_empty()
         && previously_managed.is_empty()
-        && !hooks_feature_required
-        && !plugin_hooks_feature_required
+        && !feature_requirements.hooks
+        && !feature_requirements.plugin_hooks
     {
         return Ok(None);
     }
@@ -2187,14 +2189,14 @@ fn codex_mcp_config_file(
     });
     config.mcp_servers.extend(desired_servers);
     config.features.remove("codex_hooks");
-    if hooks_feature_required {
+    if feature_requirements.hooks {
         config
             .features
             .insert("hooks".into(), TomlValue::Boolean(true));
     } else {
         config.features.remove("hooks");
     }
-    if plugin_hooks_feature_required {
+    if feature_requirements.plugin_hooks {
         config
             .features
             .insert("plugin_hooks".into(), TomlValue::Boolean(true));
@@ -3127,15 +3129,14 @@ fn attribute_hook_owned_paths(
                 format!("nodus-hook-activation-{alias}-"),
             );
         }
-        if selected_adapters.contains(Adapter::Codex) {
-            if !codex_plugin_hook_packages.contains(alias) {
-                track_owned_prefix(
-                    plan,
-                    alias,
-                    ".codex/hooks".to_string(),
-                    format!("nodus-hook-activation-{alias}-"),
-                );
-            }
+        if selected_adapters.contains(Adapter::Codex) && !codex_plugin_hook_packages.contains(alias)
+        {
+            track_owned_prefix(
+                plan,
+                alias,
+                ".codex/hooks".to_string(),
+                format!("nodus-hook-activation-{alias}-"),
+            );
         }
     }
 
