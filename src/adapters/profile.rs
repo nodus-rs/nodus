@@ -67,6 +67,12 @@ const ALL_SESSION_START_SOURCES: &[HookSessionSource] = &[
 const STARTUP_AND_RESUME: &[HookSessionSource] =
     &[HookSessionSource::Startup, HookSessionSource::Resume];
 
+const STARTUP_RESUME_CLEAR: &[HookSessionSource] = &[
+    HookSessionSource::Startup,
+    HookSessionSource::Resume,
+    HookSessionSource::Clear,
+];
+
 const STARTUP_ONLY: &[HookSessionSource] = &[HookSessionSource::Startup];
 
 const CLAUDE_TOOL_MATCHERS: &[(HookTool, &str)] = &[
@@ -82,7 +88,12 @@ const CLAUDE_TOOL_MATCHERS: &[(HookTool, &str)] = &[
     (HookTool::Task, "Task"),
 ];
 
-const CODEX_TOOL_MATCHERS: &[(HookTool, &str)] = &[(HookTool::Bash, "Bash")];
+const CODEX_TOOL_MATCHERS: &[(HookTool, &str)] = &[
+    (HookTool::ApplyPatch, "apply_patch"),
+    (HookTool::Bash, "Bash"),
+    (HookTool::Edit, "Edit"),
+    (HookTool::Write, "Write"),
+];
 
 const OPENCODE_TOOL_MATCHERS: &[(HookTool, &str)] = &[
     (HookTool::ApplyPatch, "apply_patch"),
@@ -159,7 +170,7 @@ const CODEX_PROFILE: AdapterProfile = AdapterProfile {
     artifacts: CODEX_ARTIFACTS,
     hooks: HookSupport {
         events: CODEX_HOOK_EVENTS,
-        session_start_sources: STARTUP_AND_RESUME,
+        session_start_sources: STARTUP_RESUME_CLEAR,
         tool_matchers: CODEX_TOOL_MATCHERS,
     },
 };
@@ -377,24 +388,39 @@ mod tests {
             assert!(session_start_source_supported(Adapter::Claude, *source));
         }
 
-        for adapter in [Adapter::Codex, Adapter::Copilot] {
-            assert!(session_start_source_supported(
-                adapter,
-                HookSessionSource::Startup
-            ));
-            assert!(session_start_source_supported(
-                adapter,
-                HookSessionSource::Resume
-            ));
-            assert!(!session_start_source_supported(
-                adapter,
-                HookSessionSource::Clear
-            ));
-            assert!(!session_start_source_supported(
-                adapter,
-                HookSessionSource::Compact
-            ));
-        }
+        assert!(session_start_source_supported(
+            Adapter::Codex,
+            HookSessionSource::Startup
+        ));
+        assert!(session_start_source_supported(
+            Adapter::Codex,
+            HookSessionSource::Resume
+        ));
+        assert!(session_start_source_supported(
+            Adapter::Codex,
+            HookSessionSource::Clear
+        ));
+        assert!(!session_start_source_supported(
+            Adapter::Codex,
+            HookSessionSource::Compact
+        ));
+
+        assert!(session_start_source_supported(
+            Adapter::Copilot,
+            HookSessionSource::Startup
+        ));
+        assert!(session_start_source_supported(
+            Adapter::Copilot,
+            HookSessionSource::Resume
+        ));
+        assert!(!session_start_source_supported(
+            Adapter::Copilot,
+            HookSessionSource::Clear
+        ));
+        assert!(!session_start_source_supported(
+            Adapter::Copilot,
+            HookSessionSource::Compact
+        ));
 
         assert!(session_start_source_supported(
             Adapter::OpenCode,
@@ -422,6 +448,18 @@ mod tests {
         assert_eq!(
             hook_tool_matcher(Adapter::Codex, HookTool::Bash),
             Some("Bash")
+        );
+        assert_eq!(
+            hook_tool_matcher(Adapter::Codex, HookTool::ApplyPatch),
+            Some("apply_patch")
+        );
+        assert_eq!(
+            hook_tool_matcher(Adapter::Codex, HookTool::Edit),
+            Some("Edit")
+        );
+        assert_eq!(
+            hook_tool_matcher(Adapter::Codex, HookTool::Write),
+            Some("Write")
         );
         assert_eq!(
             hook_tool_matcher(Adapter::OpenCode, HookTool::ApplyPatch),

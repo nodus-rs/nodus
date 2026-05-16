@@ -7572,7 +7572,10 @@ command = "./scripts/read.sh"
             .unwrap();
     let codex_pre_tool = codex_hooks["hooks"]["PreToolUse"].as_array().unwrap();
     assert_eq!(codex_pre_tool.len(), 1);
-    assert_eq!(codex_pre_tool[0]["matcher"].as_str(), Some("Bash"));
+    assert_eq!(
+        codex_pre_tool[0]["matcher"].as_str(),
+        Some("Bash|apply_patch")
+    );
 
     let copilot_hooks: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(temp.path().join(".github/hooks/nodus-hooks.json")).unwrap(),
@@ -7625,6 +7628,41 @@ command = "./scripts/log-prompt.sh"
             .as_str()
             .unwrap()
             .contains("/.codex/hooks/nodus-hook-")
+    );
+}
+
+#[test]
+fn sync_emits_codex_apply_patch_edit_and_write_matchers() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_skill(&temp.path().join("skills/review"), "Review");
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[adapters]
+enabled = ["codex"]
+
+[[hooks]]
+id = "mutation-audit"
+event = "pre_tool_use"
+
+[hooks.matcher]
+tool_names = ["apply_patch", "edit", "write"]
+
+[hooks.handler]
+type = "command"
+command = "./scripts/audit.sh"
+"#,
+    );
+
+    sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+
+    let codex_hooks: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(temp.path().join(".codex/hooks.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        codex_hooks["hooks"]["PreToolUse"][0]["matcher"].as_str(),
+        Some("apply_patch|Edit|Write")
     );
 }
 
@@ -8002,7 +8040,7 @@ command = "./scripts/session-memory.sh"
     );
     assert_eq!(
         codex_hooks["hooks"]["SessionStart"][0]["matcher"].as_str(),
-        Some("startup")
+        Some("startup|clear")
     );
     assert!(
         temp.path()

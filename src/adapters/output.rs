@@ -3193,9 +3193,8 @@ fn attribute_single_hook(
                 format!("{stem_prefix_for_package}{sanitized_alias}-"),
             );
         }
-        // For Codex hooks specifically, there's no separate per-script copy in
-        // the codex hooks JSON file — that file is `.codex/config.toml` which
-        // is attributed via `codex_mcp_config_file` to the workspace owner.
+        // Codex's shared config is attributed via `codex_mcp_config_file`;
+        // hook scripts and plugin hook roots are attributed above.
         let _ = adapter;
     }
 }

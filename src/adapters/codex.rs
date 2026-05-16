@@ -635,7 +635,9 @@ fn matcher_string(hook: &ManagedHookSpec) -> Option<String> {
                     .filter(|source| {
                         matches!(
                             source,
-                            HookSessionSource::Startup | HookSessionSource::Resume
+                            HookSessionSource::Startup
+                                | HookSessionSource::Resume
+                                | HookSessionSource::Clear
                         )
                     })
                     .collect::<Vec<_>>()

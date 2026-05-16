@@ -1281,7 +1281,7 @@ command = "fuli integration claude hook session-end"
         );
         assert_eq!(
             codex.supported_events[0].session_start_sources,
-            vec!["startup", "resume"]
+            vec!["startup", "resume", "clear"]
         );
 
         let opencode = info
@@ -1340,7 +1340,7 @@ command = "fuli integration claude hook session-end"
         assert!(output.contains("session_end"));
         assert!(output.contains("subagent_stop"));
         assert!(output.contains(
-            "codex    = session_start(startup,resume), user_prompt_submit, post_tool_use, stop"
+            "codex    = session_start(startup,resume,clear), user_prompt_submit, post_tool_use, stop"
         ));
         assert!(output.contains("opencode = session_start(startup), post_tool_use, stop"));
         assert!(output.contains("agents   = none"));
