@@ -6558,6 +6558,16 @@ always_context = ["prompts/bootstrap.md"]
     let first_lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert_owned(&first_lockfile, temp.path(), ".codex/config.toml");
 
+    // The path-dep freshness probe (`path_dep_source_is_newer`) decides drift
+    // via file mtime. Many filesystems (HFS+, some Linux configs) round mtime
+    // to 1-second granularity, so if the first sync's lockfile write and this
+    // manifest rewrite land in the same wall-clock second, the probe sees
+    // equal mtimes and treats the dep as unchanged — fast-path triggers and
+    // the prune we're asserting never runs. Sleep past the granularity
+    // boundary so the manifest's mtime is unambiguously after the lockfile's.
+    // Storing a source-manifest digest in the lockfile would be the
+    // production-correct fix (tracked as a Slice 5 review follow-up).
+    std::thread::sleep(std::time::Duration::from_millis(1100));
     write_manifest(&temp.path().join("vendor/shared"), "");
 
     sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
