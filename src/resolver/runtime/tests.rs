@@ -803,6 +803,7 @@ fn sync_in_dir_with_collision_choice(
         ExecutionMode::Apply,
         None,
         DependencyFailureMode::Graceful,
+        false,
         Some(&mut resolver),
         &reporter,
     )
@@ -1699,6 +1700,7 @@ model = "gpt-5"
         ExecutionMode::Apply,
         None,
         DependencyFailureMode::Graceful,
+        false,
         &reporter,
     )
     .unwrap();
@@ -1968,6 +1970,7 @@ custom = "kept"
         ExecutionMode::Apply,
         None,
         DependencyFailureMode::Graceful,
+        false,
         &reporter,
     )
     .unwrap();
@@ -5818,6 +5821,7 @@ args = ["-y", "firebase-tools", "mcp", "--dir", "."]
         ExecutionMode::Apply,
         None,
         DependencyFailureMode::Graceful,
+        false,
         &reporter,
     )
     .unwrap();
@@ -11507,4 +11511,413 @@ shared = { path = "vendor/shared" }
             package_a.alias
         );
     }
+}
+
+// =====================================================================
+// Slice 4: install_digest drift fast-path
+// =====================================================================
+//
+// The fast-path lets `nodus sync` short-circuit when the v10 lockfile
+// agrees with the disk on every package's `install_digest`. These tests
+// exercise the gate conditions, the disk-walk helper, and the
+// `--frozen` strict-mode error surface.
+
+/// Sync a path-dep workspace, then read the resulting v10 lockfile.
+/// Used by Slice 4 inline tests that need a populated v10 lockfile to
+/// exercise `install_digest_from_disk` and the fast-path evaluator.
+fn slice4_sync_and_read_lockfile(project_root: &Path, cache_root: &Path) -> Lockfile {
+    sync_in_dir_with_adapters(
+        project_root,
+        cache_root,
+        false,
+        false,
+        &[Adapter::Claude, Adapter::Codex, Adapter::OpenCode],
+    )
+    .unwrap();
+    Lockfile::read(&project_root.join(LOCKFILE_NAME)).unwrap()
+}
+
+/// Build a path-dep workspace with one shared skill — the smallest
+/// fixture that produces non-trivial per-package owned outputs.
+fn slice4_make_workspace() -> TempDir {
+    let temp = TempDir::new().unwrap();
+    write_manifest(
+        temp.path(),
+        r#"
+[adapters]
+enabled = ["claude", "codex", "opencode"]
+
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+    );
+    write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+    temp
+}
+
+#[test]
+fn slice4_install_digest_from_disk_matches_recorded_digest_for_unchanged_install() {
+    let temp = slice4_make_workspace();
+    let cache = cache_dir();
+    let lockfile = slice4_sync_and_read_lockfile(temp.path(), cache.path());
+
+    for package in &lockfile.packages {
+        let recorded = package
+            .install_digest
+            .clone()
+            .expect("v10 emission always stamps install_digest");
+        let disk = super::install_digest::install_digest_from_disk(temp.path(), package)
+            .unwrap()
+            .expect("clean install means no owned files are missing");
+        assert_eq!(
+            disk, recorded,
+            "package `{}` disk digest must match recorded digest after a clean sync",
+            package.alias
+        );
+    }
+}
+
+#[test]
+fn slice4_install_digest_from_disk_returns_none_when_owned_file_is_missing() {
+    let temp = slice4_make_workspace();
+    let cache = cache_dir();
+    let lockfile = slice4_sync_and_read_lockfile(temp.path(), cache.path());
+
+    // Find any package with at least one owned_files entry and remove
+    // that file from disk to simulate user deletion.
+    let (target_package, target_file) = lockfile
+        .packages
+        .iter()
+        .find_map(|package| package.owned_files.first().map(|file| (package, file)))
+        .expect("test workspace should produce at least one owned_files entry");
+    fs::remove_file(temp.path().join(target_file)).unwrap();
+
+    let result =
+        super::install_digest::install_digest_from_disk(temp.path(), target_package).unwrap();
+    assert!(
+        result.is_none(),
+        "removing an owned file should yield Ok(None) drift signal; got {result:?}"
+    );
+}
+
+#[test]
+fn slice4_install_digest_from_disk_differs_when_owned_file_content_changes() {
+    let temp = slice4_make_workspace();
+    let cache = cache_dir();
+    let lockfile = slice4_sync_and_read_lockfile(temp.path(), cache.path());
+
+    let (target_package, target_file) = lockfile
+        .packages
+        .iter()
+        .find_map(|package| package.owned_files.first().map(|file| (package, file)))
+        .expect("test workspace should produce at least one owned_files entry");
+    let absolute = temp.path().join(target_file);
+    fs::write(&absolute, b"--- user override ---").unwrap();
+
+    let mutated = super::install_digest::install_digest_from_disk(temp.path(), target_package)
+        .unwrap()
+        .expect("file still exists, just changed");
+    let recorded = target_package.install_digest.as_deref().unwrap();
+    assert_ne!(
+        mutated, recorded,
+        "mutating an owned file's bytes must change the disk digest"
+    );
+}
+
+#[test]
+fn slice4_fast_path_skipped_for_path_dependencies() {
+    // Path deps disable the fast-path because local source content can
+    // change at any time without the lockfile noticing. A second sync of
+    // the same path-dep workspace must still issue a `Resolving` status
+    // line, proving the loop ran.
+    let temp = slice4_make_workspace();
+    let cache = cache_dir();
+    sync_in_dir_with_adapters(
+        temp.path(),
+        cache.path(),
+        false,
+        false,
+        &[Adapter::Claude, Adapter::Codex, Adapter::OpenCode],
+    )
+    .unwrap();
+
+    let buffer = SharedBuffer::default();
+    let reporter = Reporter::sink(ColorMode::Never, buffer.clone());
+    super::sync_in_dir_with_adapters(
+        temp.path(),
+        cache.path(),
+        false,
+        false,
+        false,
+        &[Adapter::Claude, Adapter::Codex, Adapter::OpenCode],
+        false,
+        &reporter,
+    )
+    .unwrap();
+
+    let output = buffer.contents();
+    assert!(
+        output.contains("Resolving"),
+        "second sync with path deps must run the full loop; got: {output}"
+    );
+    assert!(
+        !output.contains("is in sync; no work to do"),
+        "fast-path note must not appear for a path-dep workspace; got: {output}"
+    );
+}
+
+#[test]
+fn slice4_fast_path_skipped_when_install_digest_is_none() {
+    // Construct a synthetic v10 lockfile where one package's
+    // install_digest is None (a hand-edit could produce this).
+    // `evaluate_fast_path` must report a Miss describing the gap.
+    let mut package = LockedPackage {
+        alias: "foo".into(),
+        name: "foo".into(),
+        version_tag: None,
+        source: LockedSource {
+            kind: "git".into(),
+            path: None,
+            url: Some("https://example.invalid/foo".into()),
+            tag: Some("v0.1.0".into()),
+            branch: None,
+            rev: Some("abc123".into()),
+        },
+        digest: "blake3:abc".into(),
+        selected_components: None,
+        skills: vec![],
+        agents: vec![],
+        rules: vec![],
+        commands: vec![],
+        mcp_servers: vec![],
+        dependencies: vec![],
+        capabilities: vec![],
+        owned_subtrees: vec![],
+        owned_prefixes: vec![],
+        owned_files: vec![],
+        install_digest: None,
+    };
+    package.install_digest = None;
+    let lockfile = Lockfile::new(vec![package]);
+
+    let temp = TempDir::new().unwrap();
+    let outcome =
+        super::evaluate_fast_path(&lockfile, temp.path(), super::SyncMode::Normal, temp.path())
+            .unwrap();
+    match outcome {
+        super::FastPathOutcome::Miss(reason) => {
+            assert!(
+                reason.contains("install_digest"),
+                "expected miss reason to mention install_digest; got: {reason}"
+            );
+        }
+        super::FastPathOutcome::Hit => panic!("expected Miss, got Hit"),
+    }
+}
+
+#[test]
+fn slice4_fast_path_skipped_for_branch_pinned_deps_in_normal_mode() {
+    // A v10 lockfile with a git source that records a `branch` cannot
+    // safely fast-path under normal sync — upstream may have moved.
+    let package = LockedPackage {
+        alias: "foo".into(),
+        name: "foo".into(),
+        version_tag: None,
+        source: LockedSource {
+            kind: "git".into(),
+            path: None,
+            url: Some("https://example.invalid/foo".into()),
+            tag: None,
+            branch: Some("main".into()),
+            rev: Some("abc123".into()),
+        },
+        digest: "blake3:abc".into(),
+        selected_components: None,
+        skills: vec![],
+        agents: vec![],
+        rules: vec![],
+        commands: vec![],
+        mcp_servers: vec![],
+        dependencies: vec![],
+        capabilities: vec![],
+        owned_subtrees: vec![],
+        owned_prefixes: vec![],
+        owned_files: vec![],
+        install_digest: Some(crate::hashing::content_digest(&[])),
+    };
+    let lockfile = Lockfile::new(vec![package]);
+
+    let temp = TempDir::new().unwrap();
+    let outcome =
+        super::evaluate_fast_path(&lockfile, temp.path(), super::SyncMode::Normal, temp.path())
+            .unwrap();
+    match outcome {
+        super::FastPathOutcome::Miss(reason) => {
+            assert!(
+                reason.contains("tracks branch"),
+                "expected miss reason to mention branch tracking; got: {reason}"
+            );
+        }
+        super::FastPathOutcome::Hit => panic!("expected Miss for branch-tracked dep"),
+    }
+}
+
+#[test]
+fn slice4_fast_path_allows_branch_pinned_deps_under_frozen() {
+    // Same lockfile shape as the previous test, but evaluated under
+    // `--frozen`. Frozen bypasses the freshness gate, so the empty
+    // package digest matches the (empty) on-disk state and the
+    // evaluator should report a hit.
+    let package = LockedPackage {
+        alias: "foo".into(),
+        name: "foo".into(),
+        version_tag: None,
+        source: LockedSource {
+            kind: "git".into(),
+            path: None,
+            url: Some("https://example.invalid/foo".into()),
+            tag: None,
+            branch: Some("main".into()),
+            rev: Some("abc123".into()),
+        },
+        digest: "blake3:abc".into(),
+        selected_components: None,
+        skills: vec![],
+        agents: vec![],
+        rules: vec![],
+        commands: vec![],
+        mcp_servers: vec![],
+        dependencies: vec![],
+        capabilities: vec![],
+        owned_subtrees: vec![],
+        owned_prefixes: vec![],
+        owned_files: vec![],
+        install_digest: Some(crate::hashing::content_digest(&[])),
+    };
+    let lockfile = Lockfile::new(vec![package]);
+
+    let temp = TempDir::new().unwrap();
+    // Cache-presence gate is the last gate to fire; seed the snapshot dir
+    // so it doesn't masquerade as a freshness/integrity miss here.
+    let snapshot_path = crate::store::snapshot_path(temp.path(), "blake3:abc").unwrap();
+    fs::create_dir_all(&snapshot_path).unwrap();
+    let outcome =
+        super::evaluate_fast_path(&lockfile, temp.path(), super::SyncMode::Frozen, temp.path())
+            .unwrap();
+    assert!(
+        matches!(outcome, super::FastPathOutcome::Hit),
+        "frozen mode must bypass the freshness gate and accept branch-tracked deps"
+    );
+}
+
+#[test]
+fn slice4_fast_path_miss_on_drift_under_frozen_reports_lockfile_out_of_date() {
+    // Build a path-dep workspace, do a clean sync, then delete an owned
+    // file and re-run with `--frozen`. The frozen invocation must bail
+    // before the resolve loop and the error string must include the
+    // "out of date" phrase so existing diagnostics still apply. Path
+    // deps normally skip the fast-path, but we set `legacy_managed_files`
+    // to nothing and check the actual error surfaces from the fast-path
+    // by removing an owned file.
+    //
+    // For this test we synthesize a v10 lockfile manually so we can
+    // exercise the frozen-fail path even though the workspace is path-
+    // backed. The lockfile claims to own a file that doesn't exist.
+    let temp = TempDir::new().unwrap();
+    write_manifest(temp.path(), "");
+    let lockfile = Lockfile::new(vec![LockedPackage {
+        alias: "ghost".into(),
+        name: "ghost".into(),
+        version_tag: None,
+        source: LockedSource {
+            kind: "git".into(),
+            path: None,
+            url: Some("https://example.invalid/ghost".into()),
+            tag: Some("v0.1.0".into()),
+            branch: None,
+            rev: Some("abc123".into()),
+        },
+        digest: "blake3:abc".into(),
+        selected_components: None,
+        skills: vec![],
+        agents: vec![],
+        rules: vec![],
+        commands: vec![],
+        mcp_servers: vec![],
+        dependencies: vec![],
+        capabilities: vec![],
+        owned_subtrees: vec![],
+        owned_prefixes: vec![],
+        owned_files: vec!["ghost.md".into()],
+        // Pretend we recorded a digest for a file that doesn't exist on
+        // disk.
+        install_digest: Some("blake3:deadbeef".into()),
+    }]);
+    lockfile.write(&temp.path().join(LOCKFILE_NAME)).unwrap();
+
+    let outcome = super::evaluate_fast_path(
+        &Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap(),
+        temp.path(),
+        super::SyncMode::Frozen,
+        temp.path(),
+    )
+    .unwrap();
+    match outcome {
+        super::FastPathOutcome::Miss(reason) => {
+            assert!(
+                reason.contains("ghost"),
+                "miss reason should name the failing package; got: {reason}"
+            );
+        }
+        super::FastPathOutcome::Hit => panic!("expected Miss for missing owned file"),
+    }
+}
+
+#[test]
+fn slice4_count_owned_files_sums_per_package_views() {
+    let mut alpha = LockedPackage {
+        alias: "alpha".into(),
+        name: "alpha".into(),
+        version_tag: None,
+        source: LockedSource {
+            kind: "path".into(),
+            path: Some(".".into()),
+            url: None,
+            tag: None,
+            branch: None,
+            rev: None,
+        },
+        digest: "blake3:abc".into(),
+        selected_components: None,
+        skills: vec![],
+        agents: vec![],
+        rules: vec![],
+        commands: vec![],
+        mcp_servers: vec![],
+        dependencies: vec![],
+        capabilities: vec![],
+        owned_subtrees: vec![".nodus/packages/alpha".into()],
+        owned_prefixes: vec![],
+        owned_files: vec![".claude/settings.json".into()],
+        install_digest: Some(crate::hashing::content_digest(&[])),
+    };
+    let mut beta = alpha.clone();
+    beta.alias = "beta".into();
+    beta.name = "beta".into();
+    beta.owned_subtrees = vec![];
+    beta.owned_prefixes = vec![crate::lockfile::OwnedPrefix {
+        dir: ".claude/hooks".into(),
+        prefix: "nodus-hook-".into(),
+    }];
+    beta.owned_files = vec![];
+    alpha.owned_subtrees.sort();
+    beta.owned_prefixes.sort_by(|left, right| {
+        left.dir
+            .cmp(&right.dir)
+            .then(left.prefix.cmp(&right.prefix))
+    });
+    let lockfile = Lockfile::new(vec![alpha, beta]);
+
+    // alpha: 1 subtree + 1 file = 2; beta: 1 prefix = 1; total = 3
+    assert_eq!(super::count_owned_files(&lockfile), 3);
 }

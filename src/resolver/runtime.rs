@@ -1,4 +1,5 @@
 mod doctor;
+mod install_digest;
 mod resolve;
 mod support;
 
@@ -9,6 +10,7 @@ pub use self::doctor::{
     DoctorActionRecord, DoctorFinding, DoctorFindingKind, DoctorMode, DoctorStatus, DoctorSummary,
     doctor_in_dir_with_mode,
 };
+use self::install_digest::install_digest_from_disk;
 use self::resolve::{ResolveProjectOptions, resolve_project};
 use self::support::{
     build_sync_execution_plan, enforce_capabilities, execute_sync_plan, find_managed_collision,
@@ -138,6 +140,12 @@ struct SyncExecutionOptions<'a> {
     sync_on_launch: bool,
     execution_mode: ExecutionMode,
     dependency_failure_mode: DependencyFailureMode,
+    /// When true, skip the v10 `install_digest` drift fast-path even if all
+    /// preconditions hold (lockfile is current schema, all pins are exact,
+    /// every package has an `install_digest`). Slice 4 added the fast-path for
+    /// the common "nothing changed on disk" case; this flag is the escape
+    /// hatch for users who want to force a full re-render.
+    force_rebuild: bool,
 }
 
 impl<'a> SyncExecutionOptions<'a> {
@@ -148,6 +156,7 @@ impl<'a> SyncExecutionOptions<'a> {
         sync_on_launch: bool,
         execution_mode: ExecutionMode,
         dependency_failure_mode: DependencyFailureMode,
+        force_rebuild: bool,
     ) -> Self {
         Self {
             allow_high_sensitivity,
@@ -156,6 +165,7 @@ impl<'a> SyncExecutionOptions<'a> {
             sync_on_launch,
             execution_mode,
             dependency_failure_mode,
+            force_rebuild,
         }
     }
 }
@@ -257,6 +267,38 @@ pub fn sync_in_dir_with_adapters(
     sync_on_launch: bool,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
+    sync_in_dir_with_adapters_full(
+        cwd,
+        cache_root,
+        locked,
+        allow_high_sensitivity,
+        force,
+        adapters,
+        sync_on_launch,
+        false,
+        reporter,
+    )
+}
+
+/// `sync_in_dir_with_adapters` plus the v10 fast-path opt-out.
+///
+/// Slice 4 added the `install_digest` drift fast-path that lets `nodus sync`
+/// exit early when the lockfile and disk agree. Pass `force_rebuild = true` to
+/// skip that check and always run a full resolve + render. The CLI surfaces
+/// this as `--no-fast-path`; library callers default to `false` so they keep
+/// the speedup.
+#[allow(clippy::too_many_arguments)]
+pub fn sync_in_dir_with_adapters_full(
+    cwd: &Path,
+    cache_root: &Path,
+    locked: bool,
+    allow_high_sensitivity: bool,
+    force: bool,
+    adapters: &[Adapter],
+    sync_on_launch: bool,
+    force_rebuild: bool,
+    reporter: &Reporter,
+) -> Result<SyncSummary> {
     sync_in_dir_with_adapters_with_failure_mode(
         cwd,
         cache_root,
@@ -268,12 +310,13 @@ pub fn sync_in_dir_with_adapters(
             sync_on_launch,
             ExecutionMode::Apply,
             DependencyFailureMode::Graceful,
+            force_rebuild,
         ),
         reporter,
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, dead_code)]
 pub fn sync_in_dir_with_adapters_strict(
     cwd: &Path,
     cache_root: &Path,
@@ -282,6 +325,32 @@ pub fn sync_in_dir_with_adapters_strict(
     force: bool,
     adapters: &[Adapter],
     sync_on_launch: bool,
+    reporter: &Reporter,
+) -> Result<SyncSummary> {
+    sync_in_dir_with_adapters_strict_full(
+        cwd,
+        cache_root,
+        locked,
+        allow_high_sensitivity,
+        force,
+        adapters,
+        sync_on_launch,
+        false,
+        reporter,
+    )
+}
+
+/// `sync_in_dir_with_adapters_strict` plus the v10 fast-path opt-out.
+#[allow(clippy::too_many_arguments)]
+pub fn sync_in_dir_with_adapters_strict_full(
+    cwd: &Path,
+    cache_root: &Path,
+    locked: bool,
+    allow_high_sensitivity: bool,
+    force: bool,
+    adapters: &[Adapter],
+    sync_on_launch: bool,
+    force_rebuild: bool,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
     sync_in_dir_with_adapters_with_failure_mode(
@@ -295,6 +364,7 @@ pub fn sync_in_dir_with_adapters_strict(
             sync_on_launch,
             ExecutionMode::Apply,
             DependencyFailureMode::Strict,
+            force_rebuild,
         ),
         reporter,
     )
@@ -323,10 +393,12 @@ fn sync_in_dir_with_adapters_with_failure_mode(
         options.execution_mode,
         None,
         options.dependency_failure_mode,
+        options.force_rebuild,
         reporter,
     )
 }
 
+#[allow(dead_code)]
 pub fn sync_in_dir_with_adapters_frozen(
     cwd: &Path,
     cache_root: &Path,
@@ -334,6 +406,30 @@ pub fn sync_in_dir_with_adapters_frozen(
     force: bool,
     adapters: &[Adapter],
     sync_on_launch: bool,
+    reporter: &Reporter,
+) -> Result<SyncSummary> {
+    sync_in_dir_with_adapters_frozen_full(
+        cwd,
+        cache_root,
+        allow_high_sensitivity,
+        force,
+        adapters,
+        sync_on_launch,
+        false,
+        reporter,
+    )
+}
+
+/// `sync_in_dir_with_adapters_frozen` plus the v10 fast-path opt-out.
+#[allow(clippy::too_many_arguments)]
+pub fn sync_in_dir_with_adapters_frozen_full(
+    cwd: &Path,
+    cache_root: &Path,
+    allow_high_sensitivity: bool,
+    force: bool,
+    adapters: &[Adapter],
+    sync_on_launch: bool,
+    force_rebuild: bool,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
     sync_in_dir_with_adapters_frozen_with_failure_mode(
@@ -346,11 +442,13 @@ pub fn sync_in_dir_with_adapters_frozen(
             sync_on_launch,
             ExecutionMode::Apply,
             DependencyFailureMode::Graceful,
+            force_rebuild,
         ),
         reporter,
     )
 }
 
+#[allow(dead_code)]
 pub fn sync_in_dir_with_adapters_frozen_strict(
     cwd: &Path,
     cache_root: &Path,
@@ -358,6 +456,30 @@ pub fn sync_in_dir_with_adapters_frozen_strict(
     force: bool,
     adapters: &[Adapter],
     sync_on_launch: bool,
+    reporter: &Reporter,
+) -> Result<SyncSummary> {
+    sync_in_dir_with_adapters_frozen_strict_full(
+        cwd,
+        cache_root,
+        allow_high_sensitivity,
+        force,
+        adapters,
+        sync_on_launch,
+        false,
+        reporter,
+    )
+}
+
+/// `sync_in_dir_with_adapters_frozen_strict` plus the v10 fast-path opt-out.
+#[allow(clippy::too_many_arguments)]
+pub fn sync_in_dir_with_adapters_frozen_strict_full(
+    cwd: &Path,
+    cache_root: &Path,
+    allow_high_sensitivity: bool,
+    force: bool,
+    adapters: &[Adapter],
+    sync_on_launch: bool,
+    force_rebuild: bool,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
     sync_in_dir_with_adapters_frozen_with_failure_mode(
@@ -370,6 +492,7 @@ pub fn sync_in_dir_with_adapters_frozen_strict(
             sync_on_launch,
             ExecutionMode::Apply,
             DependencyFailureMode::Strict,
+            force_rebuild,
         ),
         reporter,
     )
@@ -393,11 +516,12 @@ fn sync_in_dir_with_adapters_frozen_with_failure_mode(
         options.execution_mode,
         None,
         options.dependency_failure_mode,
+        options.force_rebuild,
         reporter,
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, dead_code)]
 pub fn sync_in_dir_with_adapters_dry_run(
     cwd: &Path,
     cache_root: &Path,
@@ -408,6 +532,32 @@ pub fn sync_in_dir_with_adapters_dry_run(
     sync_on_launch: bool,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
+    sync_in_dir_with_adapters_dry_run_full(
+        cwd,
+        cache_root,
+        locked,
+        allow_high_sensitivity,
+        force,
+        adapters,
+        sync_on_launch,
+        false,
+        reporter,
+    )
+}
+
+/// `sync_in_dir_with_adapters_dry_run` plus the v10 fast-path opt-out.
+#[allow(clippy::too_many_arguments)]
+pub fn sync_in_dir_with_adapters_dry_run_full(
+    cwd: &Path,
+    cache_root: &Path,
+    locked: bool,
+    allow_high_sensitivity: bool,
+    force: bool,
+    adapters: &[Adapter],
+    sync_on_launch: bool,
+    force_rebuild: bool,
+    reporter: &Reporter,
+) -> Result<SyncSummary> {
     sync_in_dir_with_adapters_with_failure_mode(
         cwd,
         cache_root,
@@ -419,12 +569,13 @@ pub fn sync_in_dir_with_adapters_dry_run(
             sync_on_launch,
             ExecutionMode::DryRun,
             DependencyFailureMode::Graceful,
+            force_rebuild,
         ),
         reporter,
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, dead_code)]
 pub fn sync_in_dir_with_adapters_strict_dry_run(
     cwd: &Path,
     cache_root: &Path,
@@ -435,6 +586,32 @@ pub fn sync_in_dir_with_adapters_strict_dry_run(
     sync_on_launch: bool,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
+    sync_in_dir_with_adapters_strict_dry_run_full(
+        cwd,
+        cache_root,
+        locked,
+        allow_high_sensitivity,
+        force,
+        adapters,
+        sync_on_launch,
+        false,
+        reporter,
+    )
+}
+
+/// `sync_in_dir_with_adapters_strict_dry_run` plus the v10 fast-path opt-out.
+#[allow(clippy::too_many_arguments)]
+pub fn sync_in_dir_with_adapters_strict_dry_run_full(
+    cwd: &Path,
+    cache_root: &Path,
+    locked: bool,
+    allow_high_sensitivity: bool,
+    force: bool,
+    adapters: &[Adapter],
+    sync_on_launch: bool,
+    force_rebuild: bool,
+    reporter: &Reporter,
+) -> Result<SyncSummary> {
     sync_in_dir_with_adapters_with_failure_mode(
         cwd,
         cache_root,
@@ -446,11 +623,13 @@ pub fn sync_in_dir_with_adapters_strict_dry_run(
             sync_on_launch,
             ExecutionMode::DryRun,
             DependencyFailureMode::Strict,
+            force_rebuild,
         ),
         reporter,
     )
 }
 
+#[allow(dead_code)]
 pub fn sync_in_dir_with_adapters_frozen_dry_run(
     cwd: &Path,
     cache_root: &Path,
@@ -458,6 +637,30 @@ pub fn sync_in_dir_with_adapters_frozen_dry_run(
     force: bool,
     adapters: &[Adapter],
     sync_on_launch: bool,
+    reporter: &Reporter,
+) -> Result<SyncSummary> {
+    sync_in_dir_with_adapters_frozen_dry_run_full(
+        cwd,
+        cache_root,
+        allow_high_sensitivity,
+        force,
+        adapters,
+        sync_on_launch,
+        false,
+        reporter,
+    )
+}
+
+/// `sync_in_dir_with_adapters_frozen_dry_run` plus the v10 fast-path opt-out.
+#[allow(clippy::too_many_arguments)]
+pub fn sync_in_dir_with_adapters_frozen_dry_run_full(
+    cwd: &Path,
+    cache_root: &Path,
+    allow_high_sensitivity: bool,
+    force: bool,
+    adapters: &[Adapter],
+    sync_on_launch: bool,
+    force_rebuild: bool,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
     sync_in_dir_with_adapters_frozen_with_failure_mode(
@@ -470,11 +673,13 @@ pub fn sync_in_dir_with_adapters_frozen_dry_run(
             sync_on_launch,
             ExecutionMode::DryRun,
             DependencyFailureMode::Graceful,
+            force_rebuild,
         ),
         reporter,
     )
 }
 
+#[allow(dead_code)]
 pub fn sync_in_dir_with_adapters_frozen_strict_dry_run(
     cwd: &Path,
     cache_root: &Path,
@@ -482,6 +687,31 @@ pub fn sync_in_dir_with_adapters_frozen_strict_dry_run(
     force: bool,
     adapters: &[Adapter],
     sync_on_launch: bool,
+    reporter: &Reporter,
+) -> Result<SyncSummary> {
+    sync_in_dir_with_adapters_frozen_strict_dry_run_full(
+        cwd,
+        cache_root,
+        allow_high_sensitivity,
+        force,
+        adapters,
+        sync_on_launch,
+        false,
+        reporter,
+    )
+}
+
+/// `sync_in_dir_with_adapters_frozen_strict_dry_run` plus the v10 fast-path
+/// opt-out.
+#[allow(clippy::too_many_arguments)]
+pub fn sync_in_dir_with_adapters_frozen_strict_dry_run_full(
+    cwd: &Path,
+    cache_root: &Path,
+    allow_high_sensitivity: bool,
+    force: bool,
+    adapters: &[Adapter],
+    sync_on_launch: bool,
+    force_rebuild: bool,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
     sync_in_dir_with_adapters_frozen_with_failure_mode(
@@ -494,6 +724,7 @@ pub fn sync_in_dir_with_adapters_frozen_strict_dry_run(
             sync_on_launch,
             ExecutionMode::DryRun,
             DependencyFailureMode::Strict,
+            force_rebuild,
         ),
         reporter,
     )
@@ -511,6 +742,7 @@ fn sync_in_dir_with_adapters_mode(
     execution_mode: ExecutionMode,
     root_override: Option<LoadedManifest>,
     dependency_failure_mode: DependencyFailureMode,
+    force_rebuild: bool,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
     let mut collision_resolver = TtyManagedCollisionResolver;
@@ -525,6 +757,7 @@ fn sync_in_dir_with_adapters_mode(
         execution_mode,
         root_override,
         dependency_failure_mode,
+        force_rebuild,
         if sync_mode.checks_lockfile() || !should_prompt_for_adapter() {
             None
         } else {
@@ -546,6 +779,7 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
     execution_mode: ExecutionMode,
     root_override: Option<LoadedManifest>,
     dependency_failure_mode: DependencyFailureMode,
+    force_rebuild: bool,
     mut collision_resolver: Option<&mut dyn ManagedCollisionResolver>,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
@@ -633,6 +867,67 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
             "`--frozen` requires an existing {} in {}",
             LOCKFILE_NAME,
             install_paths.config_root.display()
+        );
+    }
+
+    // ---- v10 install_digest drift fast-path ----------------------------
+    //
+    // Slice 4: when the lockfile is v10, all packages are exactly pinned,
+    // each package's `install_digest` is populated, and the on-disk state
+    // matches every recorded digest, we can skip the full resolve + render
+    // and return a synthetic `SyncSummary` immediately. This is the common
+    // case at the start of an editor session ("`nodus sync` on a clean
+    // repo") and shaves seconds off the wall time.
+    //
+    // The fast-path gate is intentionally conservative: any condition we
+    // can't cheaply verify (branch-tracking deps, missing digests, root
+    // manifest mutation in flight, opt-out flag) falls through to the
+    // full sync loop below. `--frozen` is the one mode where a failing
+    // gate becomes an error instead of a fallthrough, since the user has
+    // explicitly opted into "trust the lockfile".
+    let manifest_mutation_pending = has_root_override
+        || selection.should_persist
+        || sync_on_launch
+        || legacy_launch_hook_config;
+    let attempt_fast_path = !force_rebuild
+        && !manifest_mutation_pending
+        && existing_lockfile
+            .as_ref()
+            .is_some_and(Lockfile::uses_current_schema);
+    if attempt_fast_path {
+        let lockfile = existing_lockfile
+            .as_ref()
+            .expect("attempt_fast_path implies existing_lockfile is Some");
+        match evaluate_fast_path(lockfile, &install_paths.runtime_root, sync_mode, cache_root)? {
+            FastPathOutcome::Hit => {
+                reporter.note(format!("{LOCKFILE_NAME} is in sync; no work to do"))?;
+                let summary = SyncSummary {
+                    package_count: lockfile.packages.len(),
+                    adapters: selection.adapters.clone(),
+                    managed_file_count: count_owned_files(lockfile),
+                };
+                return Ok(summary);
+            }
+            FastPathOutcome::Miss(reason) => {
+                if sync_mode.installs_from_lockfile() {
+                    bail!(
+                        "{LOCKFILE_NAME} is out of date for {}: {reason}. Rerun plain `nodus sync` to repair the lockfile and managed outputs.",
+                        sync_mode.flag(),
+                    );
+                }
+                // For non-frozen modes the miss reason is debug-level
+                // information only — fall through to the full resolve
+                // loop which will repair any drift.
+            }
+        }
+    } else if sync_mode.installs_from_lockfile() && force_rebuild {
+        // `--frozen` requires the lockfile to be trusted. An explicit
+        // `--no-fast-path` (force_rebuild) flag contradicts that intent —
+        // bail before doing any work rather than silently honoring one
+        // flag and ignoring the other.
+        bail!(
+            "{} cannot be combined with `--no-fast-path`",
+            sync_mode.flag(),
         );
     }
 
@@ -972,6 +1267,7 @@ pub(crate) fn sync_with_loaded_root_at_paths(
         execution_mode,
         Some(root),
         DependencyFailureMode::Graceful,
+        false,
         reporter,
     )
 }
@@ -1301,6 +1597,242 @@ impl Resolution {
         }
         Ok(paths)
     }
+}
+
+/// Outcome of evaluating the v10 install_digest drift fast-path.
+///
+/// `Hit` means the lockfile and disk agree exactly — the caller can return a
+/// synthetic `SyncSummary` without doing any further work. `Miss(reason)`
+/// surfaces a human-readable explanation of which gate condition failed; the
+/// caller logs it under `--frozen` (where missing the fast-path is fatal) and
+/// silently falls through under normal sync.
+enum FastPathOutcome {
+    Hit,
+    Miss(String),
+}
+
+/// Decide whether the v10 install_digest drift fast-path can short-circuit a
+/// sync.
+///
+/// The lockfile is already known to be v10 and the caller has already filtered
+/// out modes that mutate the consumer manifest. This function checks the
+/// per-package preconditions:
+///
+/// - **Freshness gate** (skipped under `--frozen`): every git source is
+///   pinned to a `rev` and not tracking a `branch`. Branch-tracked deps can
+///   have moved upstream, so the fast-path can't safely skip a re-resolve.
+///   `--frozen` opts out of upstream-freshness checking by definition (it
+///   uses the recorded `rev` verbatim), so this gate is bypassed there.
+/// - **Integrity gate**: every package carries an `install_digest` and the
+///   recomputed digest from disk matches it.
+///
+/// Any failure short-circuits with a descriptive `Miss`. The cost of the
+/// disk-walk is bounded by the union of `owned_*` paths the lockfile names,
+/// which is exactly the set the full resolve would re-render anyway.
+fn evaluate_fast_path(
+    lockfile: &Lockfile,
+    project_root: &Path,
+    sync_mode: SyncMode,
+    cache_root: &Path,
+) -> Result<FastPathOutcome> {
+    let bypass_freshness_gate = sync_mode.installs_from_lockfile();
+    let lockfile_mtime = if bypass_freshness_gate {
+        None
+    } else {
+        std::fs::metadata(project_root.join(LOCKFILE_NAME))
+            .and_then(|metadata| metadata.modified())
+            .ok()
+    };
+    for package in &lockfile.packages {
+        if !bypass_freshness_gate {
+            // Source-pin freshness gate. Float-y deps (branch tracking) can
+            // change upstream between syncs; the disk content might match the
+            // lockfile but the lockfile itself could be stale. Always
+            // re-resolve those in non-frozen modes. Path deps are similarly
+            // open-ended (the user can edit local files at any time), so we
+            // check that nothing under the path source root is newer than
+            // the lockfile as a cheap freshness proxy.
+            match package.source.kind.as_str() {
+                "path" => {
+                    if let Some(lockfile_mtime) = lockfile_mtime {
+                        let source_root = package
+                            .source
+                            .path
+                            .as_deref()
+                            .map(|raw| project_root.join(raw))
+                            .unwrap_or_else(|| project_root.to_path_buf());
+                        if path_dep_source_is_newer(&source_root, lockfile_mtime, project_root) {
+                            return Ok(FastPathOutcome::Miss(format!(
+                                "package `{}` has on-disk source newer than the lockfile",
+                                package.alias
+                            )));
+                        }
+                    } else {
+                        return Ok(FastPathOutcome::Miss(format!(
+                            "package `{}` is a path dependency but the lockfile mtime could not be read",
+                            package.alias
+                        )));
+                    }
+                }
+                "git" => {
+                    if package.source.rev.is_none() {
+                        return Ok(FastPathOutcome::Miss(format!(
+                            "package `{}` has no pinned git revision",
+                            package.alias
+                        )));
+                    }
+                    if package.source.branch.is_some() {
+                        return Ok(FastPathOutcome::Miss(format!(
+                            "package `{}` tracks branch `{}`; upstream may have moved",
+                            package.alias,
+                            package.source.branch.as_deref().unwrap_or(""),
+                        )));
+                    }
+                }
+                other => {
+                    return Ok(FastPathOutcome::Miss(format!(
+                        "package `{}` has unrecognized source kind `{}`",
+                        package.alias, other
+                    )));
+                }
+            }
+        }
+
+        // install_digest gate. Slice 3 always stamps a digest on v10
+        // emissions (defaulting to `content_digest(&[])` for empty packages),
+        // so `None` here means the lockfile was hand-edited or upgraded from
+        // a pre-Slice-3 schema by a different tool.
+        let Some(recorded) = package.install_digest.as_deref() else {
+            return Ok(FastPathOutcome::Miss(format!(
+                "package `{}` has no recorded install_digest",
+                package.alias
+            )));
+        };
+
+        // Disk-digest gate. `Ok(None)` means an `owned_files` entry is
+        // missing on disk — drift, fall back to full sync.
+        let Some(disk_digest) = install_digest_from_disk(project_root, package)? else {
+            return Ok(FastPathOutcome::Miss(format!(
+                "package `{}` has an owned file missing on disk",
+                package.alias
+            )));
+        };
+
+        if disk_digest != recorded {
+            return Ok(FastPathOutcome::Miss(format!(
+                "package `{}` install_digest mismatch (disk drift)",
+                package.alias
+            )));
+        }
+
+        // Cache-presence gate. `nodus clean` plus a stale lockfile leaves
+        // disk consistent but the shared cache empty; downstream commands
+        // (`doctor`, `update`) need the cache present. Fall through so the
+        // full resolve repopulates it.
+        let snapshot_path = crate::store::snapshot_path(cache_root, &package.digest)?;
+        if !snapshot_path.exists() {
+            return Ok(FastPathOutcome::Miss(format!(
+                "package `{}` snapshot is missing from the shared cache",
+                package.alias
+            )));
+        }
+    }
+
+    Ok(FastPathOutcome::Hit)
+}
+
+/// Cheap freshness probe for path-dep sources.
+///
+/// Walks the source root and returns `true` if any non-runtime file's mtime
+/// is strictly newer than `lockfile_mtime`. We skip everything under
+/// `project_root/.nodus`, `.claude`, `.codex`, etc. — those are the runtime
+/// outputs Nodus writes during sync, which would always be at least as new
+/// as the lockfile and would trip every fast-path check otherwise.
+///
+/// mtime-based detection is a heuristic, not a proof. False positives (mtime
+/// bumped by an unrelated tool like a git checkout) cause an unneeded full
+/// sync, which is correct-but-slow. False negatives (someone restored a
+/// snapshot to an older mtime) cause a missed sync, which the user can
+/// recover from via `nodus sync --no-fast-path`. The trade is acceptable
+/// because the alternative — recomputing every path dep's source digest —
+/// duplicates the bulk of a full resolve and erases the fast-path benefit.
+fn path_dep_source_is_newer(
+    source_root: &Path,
+    lockfile_mtime: std::time::SystemTime,
+    project_root: &Path,
+) -> bool {
+    use walkdir::WalkDir;
+
+    // Names at the top of `project_root` we know Nodus writes during sync.
+    // When the path-dep source root equals the project root (the common
+    // "consumer = root package" case) we have to filter these out or the
+    // freshness probe always trips on Nodus's own outputs.
+    let nodus_owned_top_level = [
+        ".nodus",
+        ".claude",
+        ".claude-plugin",
+        ".codex",
+        ".cursor",
+        ".github",
+        ".opencode",
+        ".agents",
+        "nodus.lock",
+    ];
+    let canonical_project_root = std::fs::canonicalize(project_root).ok();
+    for entry in WalkDir::new(source_root).follow_links(false) {
+        let Ok(entry) = entry else {
+            // Walk errors don't disqualify the fast-path on their own —
+            // the integrity gate's disk reads will surface real errors.
+            continue;
+        };
+        let path = entry.path();
+        // Skip Nodus-managed top-level dirs at the project root.
+        if let Some(canonical_project_root) = canonical_project_root.as_ref()
+            && let Ok(rel) = path.strip_prefix(canonical_project_root)
+            && let Some(first) = rel.components().next()
+            && let Some(first_str) = first.as_os_str().to_str()
+            && nodus_owned_top_level.contains(&first_str)
+        {
+            continue;
+        }
+        if let Ok(rel) = path.strip_prefix(project_root)
+            && let Some(first) = rel.components().next()
+            && let Some(first_str) = first.as_os_str().to_str()
+            && nodus_owned_top_level.contains(&first_str)
+        {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        let Ok(modified) = metadata.modified() else {
+            continue;
+        };
+        if modified > lockfile_mtime {
+            return true;
+        }
+    }
+    false
+}
+
+/// Approximate the `managed_file_count` summary field on a fast-path hit.
+///
+/// The pre-fast-path code derived this from the rendered `planned_files`
+/// vector. On the fast-path we never render — we use the lockfile's
+/// per-package `owned_*` rules instead. Counting subtrees / prefix rules / exact
+/// files gives the user a sensible number for the "managed files" summary
+/// line without forcing a disk walk just to count.
+fn count_owned_files(lockfile: &Lockfile) -> usize {
+    lockfile
+        .packages
+        .iter()
+        .map(|package| {
+            package.owned_files.len() + package.owned_subtrees.len() + package.owned_prefixes.len()
+        })
+        .sum()
 }
 
 /// Compute per-package `install_digest` (`blake3:<hex>`) from the output plan.

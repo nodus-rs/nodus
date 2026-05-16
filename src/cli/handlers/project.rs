@@ -22,6 +22,7 @@ pub(crate) struct SyncCommand {
     pub(crate) allow_high_sensitivity: bool,
     pub(crate) strict: bool,
     pub(crate) force: bool,
+    pub(crate) no_fast_path: bool,
     pub(crate) adapter: Vec<Adapter>,
     pub(crate) sync_on_launch: bool,
     pub(crate) no_sync_on_launch: bool,
@@ -173,6 +174,7 @@ pub(crate) fn handle_sync(
         allow_high_sensitivity,
         strict,
         force,
+        no_fast_path,
         adapter,
         sync_on_launch,
         no_sync_on_launch,
@@ -183,55 +185,60 @@ pub(crate) fn handle_sync(
     } else {
         sync_on_launch && !no_sync_on_launch
     };
+    let force_rebuild = no_fast_path;
     let summary = if frozen {
         if dry_run {
             if strict {
-                crate::resolver::sync_in_dir_with_adapters_frozen_strict_dry_run(
+                crate::resolver::sync_in_dir_with_adapters_frozen_strict_dry_run_full(
                     context.cwd,
                     context.cache_root,
                     allow_high_sensitivity,
                     force,
                     &adapter,
                     sync_on_launch,
+                    force_rebuild,
                     context.reporter,
                 )?
             } else {
-                crate::resolver::sync_in_dir_with_adapters_frozen_dry_run(
+                crate::resolver::sync_in_dir_with_adapters_frozen_dry_run_full(
                     context.cwd,
                     context.cache_root,
                     allow_high_sensitivity,
                     force,
                     &adapter,
                     sync_on_launch,
+                    force_rebuild,
                     context.reporter,
                 )?
             }
         } else {
             if strict {
-                crate::resolver::sync_in_dir_with_adapters_frozen_strict(
+                crate::resolver::sync_in_dir_with_adapters_frozen_strict_full(
                     context.cwd,
                     context.cache_root,
                     allow_high_sensitivity,
                     force,
                     &adapter,
                     sync_on_launch,
+                    force_rebuild,
                     context.reporter,
                 )?
             } else {
-                crate::resolver::sync_in_dir_with_adapters_frozen(
+                crate::resolver::sync_in_dir_with_adapters_frozen_full(
                     context.cwd,
                     context.cache_root,
                     allow_high_sensitivity,
                     force,
                     &adapter,
                     sync_on_launch,
+                    force_rebuild,
                     context.reporter,
                 )?
             }
         }
     } else if dry_run {
         if strict {
-            crate::resolver::sync_in_dir_with_adapters_strict_dry_run(
+            crate::resolver::sync_in_dir_with_adapters_strict_dry_run_full(
                 context.cwd,
                 context.cache_root,
                 locked,
@@ -239,10 +246,11 @@ pub(crate) fn handle_sync(
                 force,
                 &adapter,
                 sync_on_launch,
+                force_rebuild,
                 context.reporter,
             )?
         } else {
-            crate::resolver::sync_in_dir_with_adapters_dry_run(
+            crate::resolver::sync_in_dir_with_adapters_dry_run_full(
                 context.cwd,
                 context.cache_root,
                 locked,
@@ -250,12 +258,13 @@ pub(crate) fn handle_sync(
                 force,
                 &adapter,
                 sync_on_launch,
+                force_rebuild,
                 context.reporter,
             )?
         }
     } else {
         if strict {
-            crate::resolver::sync_in_dir_with_adapters_strict(
+            crate::resolver::sync_in_dir_with_adapters_strict_full(
                 context.cwd,
                 context.cache_root,
                 locked,
@@ -263,10 +272,11 @@ pub(crate) fn handle_sync(
                 force,
                 &adapter,
                 sync_on_launch,
+                force_rebuild,
                 context.reporter,
             )?
         } else {
-            crate::resolver::sync_in_dir_with_adapters(
+            crate::resolver::sync_in_dir_with_adapters_full(
                 context.cwd,
                 context.cache_root,
                 locked,
@@ -274,6 +284,7 @@ pub(crate) fn handle_sync(
                 force,
                 &adapter,
                 sync_on_launch,
+                force_rebuild,
                 context.reporter,
             )?
         }
