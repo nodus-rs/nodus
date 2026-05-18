@@ -5518,14 +5518,13 @@ shared = { path = "vendor/shared" }
         .unwrap();
     let managed_skill_id = namespaced_skill_id(dependency, "review");
     let managed_command_file = namespaced_file_name(dependency, "build", "md");
-    let codex_gitignore = fs::read_to_string(temp.path().join(".codex/.gitignore")).unwrap();
     let agents_gitignore = fs::read_to_string(temp.path().join(".agents/.gitignore")).unwrap();
     let cursor_gitignore = fs::read_to_string(temp.path().join(".cursor/.gitignore")).unwrap();
 
-    assert!(codex_gitignore.contains("# Managed by nodus"));
-    assert!(codex_gitignore.contains(".gitignore"));
+    assert!(!temp.path().join(".codex/.gitignore").exists());
     assert!(agents_gitignore.contains("# Managed by nodus"));
     assert!(agents_gitignore.contains(".gitignore"));
+    assert!(agents_gitignore.contains("plugins/marketplace.json"));
     assert!(agents_gitignore.contains(&format!("skills/{managed_skill_id}")));
     assert!(agents_gitignore.contains(&format!("commands/{managed_command_file}")));
     assert!(cursor_gitignore.contains("# Managed by nodus"));
@@ -6006,8 +6005,11 @@ args = ["-y", "firebase-tools", "mcp", "--dir", "."]
     )
     .unwrap();
     assert_eq!(plugin["mcpServers"].as_str(), Some("./.mcp.json"));
-    let codex_config = fs::read_to_string(temp.path().join(".codex/config.toml")).unwrap();
-    assert!(codex_config.contains("firebase__firebase"));
+    assert!(
+        temp.path()
+            .join(".nodus/packages/firebase/codex-plugin/.mcp.json")
+            .exists()
+    );
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert_not_owned(&lockfile, temp.path(), ".mcp.json");
 }
@@ -9105,7 +9107,7 @@ shared = { path = "vendor/shared", components = ["agents"] }
     // The package selects only agents, so MCP config is not emitted. Codex
     // agents live under the project-level `.codex/agents/` runtime root, which
     // adds one tracked managed entry on top of the marketplace + plugin pair.
-    assert_eq!(summary.managed_file_count, 4);
+    assert_eq!(summary.managed_file_count, 5);
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     let shared = lockfile
@@ -11534,7 +11536,7 @@ target = "learnings"
 
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
     fs::remove_file(temp.path().join(LOCKFILE_NAME)).unwrap();
-    fs::remove_dir_all(temp.path().join(".codex")).unwrap();
+    let _ = fs::remove_dir_all(temp.path().join(".codex"));
     let _ = fs::remove_dir_all(temp.path().join(".nodus/packages/shared/codex-plugin"));
     let _ = fs::remove_dir_all(temp.path().join(".agents"));
     fs::create_dir_all(temp.path().join(".nodus/packages/shared/learnings/extra")).unwrap();
@@ -11589,7 +11591,7 @@ target = "learnings/review.md"
 
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
     fs::remove_file(temp.path().join(LOCKFILE_NAME)).unwrap();
-    fs::remove_dir_all(temp.path().join(".codex")).unwrap();
+    let _ = fs::remove_dir_all(temp.path().join(".codex"));
     let _ = fs::remove_dir_all(temp.path().join(".nodus/packages/shared/codex-plugin"));
     let _ = fs::remove_dir_all(temp.path().join(".agents"));
 
@@ -11653,7 +11655,7 @@ target = "learnings/review.md"
 
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
     fs::remove_file(temp.path().join(LOCKFILE_NAME)).unwrap();
-    fs::remove_dir_all(temp.path().join(".codex")).unwrap();
+    let _ = fs::remove_dir_all(temp.path().join(".codex"));
 
     let real_dir = temp.path().join("real-learnings");
     write_file(&real_dir.join("review.md"), "Use the learning pack.\n");
@@ -11717,7 +11719,7 @@ target = "learnings"
 
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
     fs::remove_file(temp.path().join(LOCKFILE_NAME)).unwrap();
-    fs::remove_dir_all(temp.path().join(".codex")).unwrap();
+    let _ = fs::remove_dir_all(temp.path().join(".codex"));
     let _ = fs::remove_dir_all(temp.path().join(".nodus/packages/shared/codex-plugin"));
     let _ = fs::remove_dir_all(temp.path().join(".agents"));
 
@@ -11772,7 +11774,7 @@ target = "learnings/review.md"
 
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
     fs::remove_file(temp.path().join(LOCKFILE_NAME)).unwrap();
-    fs::remove_dir_all(temp.path().join(".codex")).unwrap();
+    let _ = fs::remove_dir_all(temp.path().join(".codex"));
     let _ = fs::remove_dir_all(temp.path().join(".nodus/packages/shared/codex-plugin"));
     let _ = fs::remove_dir_all(temp.path().join(".agents"));
 
