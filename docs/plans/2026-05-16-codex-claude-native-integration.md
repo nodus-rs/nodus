@@ -234,7 +234,7 @@ Make it easy to inspect what Nodus generated for Codex and Claude.
       both.
 - [x] Report enabled adapters and selected surfaces.
 - [x] Report marketplace paths:
-      - `.nodus/.agents/plugins/marketplace.json`
+      - `.agents/plugins/marketplace.json`
       - `.nodus/.claude-plugin/marketplace.json`
 - [x] Report generated plugin keys and plugin roots.
 - [x] Report hook locations for root and dependency hooks.
@@ -304,8 +304,7 @@ After all tracks are merged:
       - activation context
       - MCP server
       - command-as-skill
-- [x] Confirm user-level `~/.codex/config.toml` writes are documented and
-      can be disabled.
+- [x] Confirm Codex local marketplace registration is documented.
 - [x] Confirm lockfile-owned paths cover all generated plugin hook files.
 
 ## Suggested agent launch set

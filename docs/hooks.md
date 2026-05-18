@@ -84,24 +84,17 @@ but are not a replacement for command hooks that need to run arbitrary logic.
 Adapters without supported session-start context injection skip activation and
 emit a sync warning.
 
-## Codex user-level config
+## Codex local marketplace
 
-Codex can auto-discover the workspace marketplace through
-`~/.codex/config.toml` (or `$CODEX_HOME/config.toml`). Nodus knows how to
-merge marketplace and selected plugin entries into that file, and does so by
-default when the Codex adapter is enabled.
+Codex discovers repo-local plugin marketplaces from
+`.agents/plugins/marketplace.json`. When the Codex adapter is enabled, Nodus
+writes that marketplace and points entries at generated plugins under
+`.nodus/packages/<alias>/codex-plugin/`.
 
-Disable the external config write per command with:
-
-```bash
-NODUS_DISABLE_CODEX_USER_CONFIG=1 nodus sync
-```
-
-For compatibility with older scripts, setting
-`NODUS_ENABLE_CODEX_USER_CONFIG` to anything other than `1` or `true`
-(case-insensitive) also disables the write. Full provenance and pruning for
-the user-level write is tracked in
-`docs/specs/2026-05-13-pre-0.15-followups.md` and lands in 0.16.0.
+Project sync does not edit `~/.codex/config.toml` or `$CODEX_HOME/config.toml`.
+Existing global entries are left untouched. `.codex/config.toml` remains the
+project config surface for Codex feature flags, hooks, and any direct project
+settings Nodus still needs to manage.
 
 ## Event catalog
 

@@ -109,14 +109,15 @@ That flow:
 - resolves and locks the exact revision in `nodus.lock`
 - writes the managed runtime files for the selected or detected adapter
 
-If the package publishes `mcp_servers`, Nodus now carries that MCP config into the repo's managed
-runtime outputs as well. Today that includes the legacy project `.mcp.json`, Codex
-`.codex/config.toml`, and OpenCode `opencode.json`.
+If the package publishes `mcp_servers`, Nodus carries that MCP config into the
+repo's managed runtime outputs as well. Today that includes the legacy project
+`.mcp.json`, Codex native plugin `.mcp.json` files under
+`.nodus/packages/<alias>/codex-plugin/`, and OpenCode `opencode.json`.
 
 `nodus info .` now includes a `native-integration` section after sync. It shows
 the generated Claude and Codex marketplace files, plugin keys and roots, hook
-locations, Codex `features.hooks` / `features.plugin_hooks`, Codex user-config
-sync state, and Claude `enabledPlugins` state.
+locations, Codex `features.hooks` / `features.plugin_hooks`, Codex local
+marketplace registration, and Claude `enabledPlugins` state.
 
 Adapters without a native marketplace can still expose managed plugins through
 Nodus's virtual plugin marketplace layer. OpenCode v1 uses
@@ -125,21 +126,16 @@ Nodus's virtual plugin marketplace layer. OpenCode v1 uses
 `.opencode/plugins/`. `nodus info .` reports these as `virtual-plugins`, not
 native marketplace plugins.
 
-### Codex user-level config
+### Codex local marketplace
 
-When the Codex adapter is enabled, Nodus writes the user-level Codex config at
-`~/.codex/config.toml` (or `$CODEX_HOME/config.toml`) so Codex auto-discovers
-the workspace marketplace and enables the selected plugins. Disable this
-external config write with:
+When the Codex adapter is enabled, Nodus writes a repo-local Codex marketplace at
+`.agents/plugins/marketplace.json`. The marketplace points at generated package
+plugins under `.nodus/packages/<alias>/codex-plugin/`, so project sync no longer
+edits `~/.codex/config.toml` or `$CODEX_HOME/config.toml`.
 
-```bash
-NODUS_DISABLE_CODEX_USER_CONFIG=1 nodus sync
-```
-
-For compatibility, setting `NODUS_ENABLE_CODEX_USER_CONFIG` to anything other
-than `1` or `true` also disables the write.
-Full provenance and cleanup for user-level Codex config is a 0.16.0
-milestone — see `docs/specs/2026-05-13-pre-0.15-followups.md`.
+Existing global Codex config entries are left untouched. `.codex/config.toml`
+remains the project config surface for Codex features, hooks, and any direct
+project-level settings Nodus still needs to manage.
 
 Packages can also declare activation context that is injected at session start
 for adapters with native support:
