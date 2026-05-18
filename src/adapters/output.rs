@@ -801,7 +801,7 @@ pub(crate) fn build_output_plan_with_options(
             &hooks,
             &workspace_alias,
             selected_adapters,
-        );
+        )?;
 
         let emitted_hook_files = hook_files(
             project_root,
@@ -3154,7 +3154,7 @@ fn attribute_hook_owned_paths(
     hooks: &[ManagedHookSpec],
     workspace_alias: &str,
     selected_adapters: Adapters,
-) {
+) -> Result<()> {
     let codex_plugin_hook_packages: BTreeSet<String> = packages
         .iter()
         .filter(|(package, _)| {
@@ -3227,23 +3227,14 @@ fn attribute_hook_owned_paths(
                 format!("nodus-plugin-hook-{alias}-"),
             );
         }
-        if selected_adapters.contains(Adapter::OpenCode)
-            && !package.manifest.manifest.opencode_plugin_hooks.is_empty()
-        {
-            // The wrappers live at `.opencode/plugins/nodus-<alias>-<name>-<digest>.js`.
-            track_owned_prefix(
-                plan,
-                alias,
-                ".opencode/plugins".to_string(),
-                format!("nodus-{alias}-"),
-            );
-            // The per-package install root holds the imported plugin source.
-            let plugin_install_root = project_root
-                .join(".nodus")
-                .join("packages")
-                .join(alias)
-                .join("opencode-plugin");
-            track_owned_subtree(plan, project_root, alias, &plugin_install_root);
+    }
+
+    for (package, _) in packages {
+        for adapter in selected_adapters.iter() {
+            let Some(backend) = super::virtual_plugin_backend(adapter) else {
+                continue;
+            };
+            attribute_virtual_plugin_owned_paths(plan, project_root, package, backend)?;
         }
     }
 
@@ -3262,6 +3253,34 @@ fn attribute_hook_owned_paths(
             &project_root.join(".opencode/plugins/nodus-hooks.js"),
         );
     }
+
+    Ok(())
+}
+
+fn attribute_virtual_plugin_owned_paths(
+    plan: &mut OutputAccumulator,
+    project_root: &Path,
+    package: &ResolvedPackage,
+    backend: &dyn super::VirtualPluginBackend,
+) -> Result<()> {
+    let entries = super::virtual_plugin_entries_for_package(backend, package)?;
+    let Some(first_entry) = entries.first() else {
+        return Ok(());
+    };
+
+    track_owned_subtree(
+        plan,
+        project_root,
+        &package.alias,
+        &project_root.join(&first_entry.install_root),
+    );
+    track_owned_prefix(
+        plan,
+        &package.alias,
+        backend.surface().loader_dir.to_string(),
+        backend.loader_file_prefix(package),
+    );
+    Ok(())
 }
 
 fn attribute_single_hook(

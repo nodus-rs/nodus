@@ -11,6 +11,7 @@ use crate::resolver::{PackageSource, ResolvedPackage};
 
 mod output;
 mod profile;
+mod virtual_plugin;
 
 pub mod agents;
 pub mod claude;
@@ -25,7 +26,14 @@ pub(crate) use output::{
     OutputPlan, OutputPlanOptions, PackageOwnedPaths, build_output_plan_with_options,
     codex_user_plugin_config_file,
 };
-pub(crate) use profile::{PreferredSurface, artifact_supported, preferred_surface};
+pub(crate) use profile::{
+    PreferredSurface, VirtualPluginSurface, artifact_supported, preferred_surface,
+    virtual_plugin_surface,
+};
+pub(crate) use virtual_plugin::{
+    VirtualPluginBackend, VirtualPluginEntry, emit_virtual_plugin_files,
+    virtual_plugin_entries_for_package, virtual_plugin_install_root_relative,
+};
 
 #[derive(Debug, Clone)]
 pub struct ManagedFile {
@@ -143,6 +151,17 @@ pub(crate) fn hook_tool_matcher_for_adapter(
     tool: HookTool,
 ) -> Option<&'static str> {
     profile::hook_tool_matcher(adapter, tool)
+}
+
+pub(crate) fn virtual_plugin_backend(
+    adapter: Adapter,
+) -> Option<&'static dyn VirtualPluginBackend> {
+    match adapter {
+        Adapter::OpenCode => Some(&opencode::VIRTUAL_PLUGIN_BACKEND),
+        Adapter::Agents | Adapter::Claude | Adapter::Codex | Adapter::Copilot | Adapter::Cursor => {
+            None
+        }
+    }
 }
 
 #[derive(

@@ -5,8 +5,16 @@ pub(crate) struct AdapterProfile {
     adapter: Adapter,
     runtime_root: &'static str,
     preferred_surface: PreferredSurface,
+    virtual_plugin_surface: Option<VirtualPluginSurface>,
     artifacts: &'static [ArtifactKind],
     hooks: HookSupport,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct VirtualPluginSurface {
+    pub install_root_name: &'static str,
+    pub loader_dir: &'static str,
+    pub loader_file_prefix: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,6 +155,7 @@ const AGENTS_PROFILE: AdapterProfile = AdapterProfile {
     adapter: Adapter::Agents,
     runtime_root: ".agents",
     preferred_surface: PreferredSurface::DirectManagedOutput,
+    virtual_plugin_surface: None,
     artifacts: AGENTS_ARTIFACTS,
     hooks: NO_HOOK_SUPPORT,
 };
@@ -155,6 +164,7 @@ const CLAUDE_PROFILE: AdapterProfile = AdapterProfile {
     adapter: Adapter::Claude,
     runtime_root: ".claude",
     preferred_surface: PreferredSurface::PackagePluginWorkspaceMarketplace,
+    virtual_plugin_surface: None,
     artifacts: ALL_SKILL_ARTIFACTS,
     hooks: HookSupport {
         events: ALL_HOOK_EVENTS_EXCEPT_PERMISSION_REQUEST,
@@ -167,6 +177,7 @@ const CODEX_PROFILE: AdapterProfile = AdapterProfile {
     adapter: Adapter::Codex,
     runtime_root: ".codex",
     preferred_surface: PreferredSurface::PackagePluginWorkspaceMarketplace,
+    virtual_plugin_surface: None,
     artifacts: CODEX_ARTIFACTS,
     hooks: HookSupport {
         events: CODEX_HOOK_EVENTS,
@@ -179,6 +190,7 @@ const COPILOT_PROFILE: AdapterProfile = AdapterProfile {
     adapter: Adapter::Copilot,
     runtime_root: ".github",
     preferred_surface: PreferredSurface::DirectManagedOutput,
+    virtual_plugin_surface: None,
     artifacts: COPILOT_ARTIFACTS,
     hooks: HookSupport {
         events: COPILOT_HOOK_EVENTS,
@@ -191,6 +203,7 @@ const CURSOR_PROFILE: AdapterProfile = AdapterProfile {
     adapter: Adapter::Cursor,
     runtime_root: ".cursor",
     preferred_surface: PreferredSurface::DirectManagedOutput,
+    virtual_plugin_surface: None,
     artifacts: CURSOR_ARTIFACTS,
     hooks: NO_HOOK_SUPPORT,
 };
@@ -199,6 +212,11 @@ const OPENCODE_PROFILE: AdapterProfile = AdapterProfile {
     adapter: Adapter::OpenCode,
     runtime_root: ".opencode",
     preferred_surface: PreferredSurface::DirectManagedOutput,
+    virtual_plugin_surface: Some(VirtualPluginSurface {
+        install_root_name: "opencode-plugin",
+        loader_dir: ".opencode/plugins",
+        loader_file_prefix: "nodus-",
+    }),
     artifacts: OPENCODE_ARTIFACTS,
     hooks: HookSupport {
         events: OPENCODE_HOOK_EVENTS,
@@ -258,6 +276,10 @@ pub(crate) fn runtime_root_name(adapter: Adapter) -> &'static str {
 
 pub(crate) fn preferred_surface(adapter: Adapter) -> PreferredSurface {
     adapter_profile(adapter).preferred_surface
+}
+
+pub(crate) fn virtual_plugin_surface(adapter: Adapter) -> Option<VirtualPluginSurface> {
+    adapter_profile(adapter).virtual_plugin_surface
 }
 
 #[cfg(test)]
