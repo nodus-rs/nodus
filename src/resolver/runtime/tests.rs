@@ -773,6 +773,17 @@ fn sync_in_dir_with_adapters(
     )
 }
 
+fn sync_in_dir_with_adapters_no_fast_path(
+    cwd: &Path,
+    cache_root: &Path,
+    adapters: &[Adapter],
+) -> Result<SyncSummary> {
+    let reporter = Reporter::silent();
+    super::sync_in_dir_with_adapters_full(
+        cwd, cache_root, false, false, false, adapters, false, true, &reporter,
+    )
+}
+
 fn sync_in_dir_with_adapters_force(
     cwd: &Path,
     cache_root: &Path,
@@ -8228,23 +8239,65 @@ command = "./scripts/session-memory.sh"
     );
 }
 
+fn opencode_virtual_plugin_wrappers(
+    project_root: &Path,
+    package_alias: &str,
+    name_fragment: &str,
+) -> Vec<PathBuf> {
+    let plugins_dir = project_root.join(".opencode/plugins");
+    let Ok(entries) = fs::read_dir(&plugins_dir) else {
+        return Vec::new();
+    };
+    let mut wrappers = entries
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name.starts_with(&format!("nodus-{package_alias}-"))
+                        && name.contains(name_fragment)
+                })
+        })
+        .collect::<Vec<_>>();
+    wrappers.sort();
+    wrappers
+}
+
+fn single_opencode_virtual_plugin_wrapper(
+    project_root: &Path,
+    package_alias: &str,
+    name_fragment: &str,
+) -> PathBuf {
+    let wrappers = opencode_virtual_plugin_wrappers(project_root, package_alias, name_fragment);
+    assert_eq!(
+        wrappers.len(),
+        1,
+        "expected one OpenCode virtual plugin wrapper for `{package_alias}` containing `{name_fragment}`"
+    );
+    wrappers.into_iter().next().unwrap()
+}
+
 #[test]
-fn sync_emits_opencode_plugin_hook_import_wrappers() {
+fn sync_emits_opencode_virtual_plugin_wrappers_for_default_and_named_exports() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();
     write_file(
         &temp.path().join(MANIFEST_FILE),
         r#"
 name = "root"
-opencode_plugin_hooks = ["hooks/nodus-hooks.ts"]
+opencode_plugin_hooks = ["hooks/default-plugin.ts", "hooks/named-plugin.ts"]
 
 [adapters]
 enabled = ["opencode"]
 "#,
     );
     write_file(
-        &temp.path().join("hooks/nodus-hooks.ts"),
+        &temp.path().join("hooks/default-plugin.ts"),
         "export default function plugin() { return {}; }\n",
+    );
+    write_file(
+        &temp.path().join("hooks/named-plugin.ts"),
+        "export function plugin() { return {}; }\n",
     );
     write_file(
         &temp.path().join("hooks/helper.ts"),
@@ -8255,7 +8308,7 @@ enabled = ["opencode"]
 
     assert!(
         temp.path()
-            .join(".nodus/packages/root/opencode-plugin/hooks/nodus-hooks.ts")
+            .join(".nodus/packages/root/opencode-plugin/hooks/default-plugin.ts")
             .exists()
     );
     assert!(
@@ -8263,21 +8316,172 @@ enabled = ["opencode"]
             .join(".nodus/packages/root/opencode-plugin/hooks/helper.ts")
             .exists()
     );
-    let wrappers = fs::read_dir(temp.path().join(".opencode/plugins"))
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| {
-            path.file_name()
-                .unwrap()
-                .to_string_lossy()
-                .starts_with("nodus-root-nodus-hooks-")
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(wrappers.len(), 1);
-    let wrapper = fs::read_to_string(&wrappers[0]).unwrap();
-    assert!(wrapper.contains("../../.nodus/packages/root/opencode-plugin/hooks/nodus-hooks.ts"));
+    let default_wrapper =
+        single_opencode_virtual_plugin_wrapper(temp.path(), "root", "default-plugin");
+    let default_wrapper = fs::read_to_string(default_wrapper).unwrap();
+    assert!(
+        default_wrapper
+            .contains("../../.nodus/packages/root/opencode-plugin/hooks/default-plugin.ts")
+    );
+    assert!(default_wrapper.contains("pluginModule.default"));
+    assert!(default_wrapper.contains("export * from"));
+    assert!(default_wrapper.contains("export default plugin"));
+
+    let named_wrapper = single_opencode_virtual_plugin_wrapper(temp.path(), "root", "named-plugin");
+    let named_wrapper = fs::read_to_string(named_wrapper).unwrap();
+    assert!(
+        named_wrapper.contains("../../.nodus/packages/root/opencode-plugin/hooks/named-plugin.ts")
+    );
+    assert!(named_wrapper.contains("pluginModule.plugin"));
+    assert!(named_wrapper.contains("Object.values(pluginModule)"));
     assert!(!temp.path().join(".claude/settings.json").exists());
     assert!(!temp.path().join(".codex/hooks.json").exists());
+}
+
+#[test]
+fn sync_updates_and_prunes_opencode_virtual_plugin_outputs() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+    );
+    write_manifest(
+        &temp.path().join("vendor/shared"),
+        r#"
+opencode_plugin_hooks = ["hooks/old-plugin.ts"]
+"#,
+    );
+    write_file(
+        &temp.path().join("vendor/shared/hooks/old-plugin.ts"),
+        "export default function plugin() { return {}; }\n",
+    );
+
+    sync_in_dir_with_adapters_no_fast_path(temp.path(), cache.path(), &[Adapter::OpenCode])
+        .unwrap();
+
+    let old_wrapper = single_opencode_virtual_plugin_wrapper(temp.path(), "shared", "old-plugin");
+    assert!(
+        temp.path()
+            .join(".nodus/packages/shared/opencode-plugin/hooks/old-plugin.ts")
+            .exists()
+    );
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    let shared = lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .unwrap();
+    assert!(
+        shared
+            .owned_subtrees
+            .iter()
+            .any(|path| path == ".nodus/packages/shared/opencode-plugin")
+    );
+    assert!(
+        shared
+            .owned_prefixes
+            .iter()
+            .any(|rule| rule.dir == ".opencode/plugins" && rule.prefix == "nodus-shared-")
+    );
+
+    write_manifest(
+        &temp.path().join("vendor/shared"),
+        r#"
+opencode_plugin_hooks = ["hooks/new-plugin.ts"]
+"#,
+    );
+    fs::remove_file(temp.path().join("vendor/shared/hooks/old-plugin.ts")).unwrap();
+    write_file(
+        &temp.path().join("vendor/shared/hooks/new-plugin.ts"),
+        "export default function plugin() { return {}; }\n",
+    );
+    sync_in_dir_with_adapters_no_fast_path(temp.path(), cache.path(), &[Adapter::OpenCode])
+        .unwrap();
+
+    assert!(!old_wrapper.exists());
+    assert!(
+        !temp
+            .path()
+            .join(".nodus/packages/shared/opencode-plugin/hooks/old-plugin.ts")
+            .exists()
+    );
+    assert!(
+        temp.path()
+            .join(".nodus/packages/shared/opencode-plugin/hooks/new-plugin.ts")
+            .exists()
+    );
+    assert!(single_opencode_virtual_plugin_wrapper(temp.path(), "shared", "new-plugin").exists());
+
+    write_manifest(temp.path(), "");
+    sync_in_dir_with_adapters_no_fast_path(temp.path(), cache.path(), &[Adapter::OpenCode])
+        .unwrap();
+
+    assert!(!temp.path().join(".nodus/packages/shared").exists());
+    assert!(
+        opencode_virtual_plugin_wrappers(temp.path(), "shared", "new-plugin").is_empty(),
+        "OpenCode virtual plugin wrappers should be pruned when the dependency is removed"
+    );
+}
+
+#[test]
+fn sync_filters_opencode_virtual_plugins_by_adapter_and_component_selection() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+    );
+    write_manifest(
+        &temp.path().join("vendor/shared"),
+        r#"
+opencode_plugin_hooks = ["hooks/nodus-plugin.ts"]
+"#,
+    );
+    write_file(
+        &temp.path().join("vendor/shared/hooks/nodus-plugin.ts"),
+        "export default function plugin() { return {}; }\n",
+    );
+
+    sync_in_dir_with_adapters_no_fast_path(temp.path(), cache.path(), &[Adapter::Codex]).unwrap();
+
+    assert!(!temp.path().join(".opencode/plugins").exists());
+    assert!(
+        !temp
+            .path()
+            .join(".nodus/packages/shared/opencode-plugin")
+            .exists()
+    );
+
+    write_manifest(
+        temp.path(),
+        r#"
+[dependencies]
+shared = { path = "vendor/shared", components = ["skills"] }
+"#,
+    );
+    write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+    sync_in_dir_with_adapters_no_fast_path(temp.path(), cache.path(), &[Adapter::OpenCode])
+        .unwrap();
+
+    assert!(
+        temp.path()
+            .join(".opencode/skills/review/SKILL.md")
+            .exists()
+    );
+    assert!(
+        !temp
+            .path()
+            .join(".nodus/packages/shared/opencode-plugin")
+            .exists()
+    );
+    assert!(opencode_virtual_plugin_wrappers(temp.path(), "shared", "nodus-plugin").is_empty());
 }
 
 #[test]

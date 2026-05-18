@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use super::{Adapter, ManagedFile, VirtualPluginSurface, virtual_plugin_surface};
 use crate::manifest::LoadedManifest;
 use crate::paths::{display_path, strip_path_prefix};
-use crate::resolver::ResolvedPackage;
+use crate::resolver::{PackageSource, ResolvedPackage};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct VirtualPluginEntry {
@@ -72,6 +72,10 @@ pub(crate) fn virtual_plugin_entries_for_package(
     backend: &dyn VirtualPluginBackend,
     package: &ResolvedPackage,
 ) -> Result<Vec<VirtualPluginEntry>> {
+    if !package_selects_virtual_plugins(package) {
+        return Ok(Vec::new());
+    }
+
     let install_root = virtual_plugin_install_root_relative(backend.adapter(), package);
     let mut entries = backend
         .entry_paths(package)?
@@ -85,6 +89,11 @@ pub(crate) fn virtual_plugin_entries_for_package(
         .collect::<Vec<_>>();
     sort_entries(&mut entries);
     Ok(entries)
+}
+
+fn package_selects_virtual_plugins(package: &ResolvedPackage) -> bool {
+    matches!(package.source, PackageSource::Root)
+        || (package.emits_runtime_outputs() && package.selected_components.is_none())
 }
 
 fn sort_entries(entries: &mut [VirtualPluginEntry]) {

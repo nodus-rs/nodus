@@ -465,7 +465,11 @@ fn package_info_from_loaded(
     let native_integration = (role == PackageRole::Root)
         .then(|| build_native_integration_info(&manifest.root, &adapters, &mut warnings))
         .flatten();
-    let virtual_plugins = build_virtual_plugin_info(&alias, &manifest, role, &mut warnings);
+    let virtual_plugins = if role == PackageRole::Root || selected_components.is_none() {
+        build_virtual_plugin_info(&alias, &manifest, role, &mut warnings)
+    } else {
+        Vec::new()
+    };
 
     PackageInfo {
         alias,
@@ -2126,6 +2130,82 @@ always_context = ["prompts/context.md"]
                 .iter()
                 .any(|plugin| plugin.starts_with("shared@"))
         );
+    }
+
+    #[test]
+    fn info_reports_virtual_plugin_state() {
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        write_file(
+            &project.path().join("nodus.toml"),
+            r#"
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+        );
+        write_file(
+            &project.path().join("vendor/shared/nodus.toml"),
+            r#"
+opencode_plugin_hooks = ["hooks/nodus-plugin.ts"]
+"#,
+        );
+        write_file(
+            &project.path().join("vendor/shared/hooks/nodus-plugin.ts"),
+            "export function plugin() { return {}; }\n",
+        );
+
+        let source_info = describe_package_json_in_dir(
+            &project.path().join("vendor/shared"),
+            cache.path(),
+            ".",
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(source_info.virtual_plugins.len(), 1);
+        assert_eq!(
+            source_info.virtual_plugins[0].status,
+            VirtualPluginStatus::Missing
+        );
+
+        crate::resolver::sync_in_dir_with_adapters(
+            project.path(),
+            cache.path(),
+            false,
+            false,
+            false,
+            &[Adapter::OpenCode],
+            false,
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        let output = capture_info_output(project.path(), cache.path(), ".", None, None);
+
+        assert!(output.contains("virtual-plugins:"));
+        assert!(output.contains(
+            "opencode shared hooks/nodus-plugin.ts -> .opencode/plugins/nodus-shared-nodus-plugin-"
+        ));
+        assert!(output.contains("(install .nodus/packages/shared/opencode-plugin, present)"));
+        assert!(!output.contains("native-integration:"));
+
+        let info =
+            describe_package_json_in_dir(project.path(), cache.path(), ".", None, None).unwrap();
+        assert_eq!(info.virtual_plugins.len(), 1);
+        let plugin = &info.virtual_plugins[0];
+        assert_eq!(plugin.adapter, Adapter::OpenCode);
+        assert_eq!(plugin.package_alias, "shared");
+        assert_eq!(plugin.source_entry_path, "hooks/nodus-plugin.ts");
+        assert_eq!(
+            plugin.install_root,
+            ".nodus/packages/shared/opencode-plugin"
+        );
+        assert!(
+            plugin
+                .loader_path
+                .starts_with(".opencode/plugins/nodus-shared-nodus-plugin-")
+        );
+        assert_eq!(plugin.status, VirtualPluginStatus::Present);
     }
 
     #[test]
