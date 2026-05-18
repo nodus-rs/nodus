@@ -34,6 +34,13 @@ native plugin roots. OpenCode still reads skills, agents, commands, rules, MCP
 configuration, and portable hooks from the direct `.opencode/` project files
 because OpenCode does not expose a package marketplace protocol.
 
+The lockfile records those deterministic direct OpenCode runtime artifacts with
+a compact `owned_runtime_adapters = ["opencode"]` package claim. Nodus expands
+that claim in memory from the package's locked skills, agents, commands, and
+rules when checking collisions, pruning stale outputs, and recomputing
+`install_digest`, so the lock does not repeat every `.opencode/skills/...`
+path.
+
 Package authors can additionally declare explicit JavaScript plugin entrypoints
 in `nodus.toml`:
 

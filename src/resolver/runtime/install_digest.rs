@@ -33,8 +33,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use walkdir::WalkDir;
 
+use crate::adapters::ManagedArtifactNames;
 use crate::hashing::content_digest;
-use crate::lockfile::{LockedPackage, Lockfile};
+use crate::lockfile::{LockedPackage, Lockfile, locked_runtime_adapter_owned_paths};
 use crate::paths::display_path;
 
 /// Compute the `install_digest` (`"blake3:<hex>"`) for `package` by reading the
@@ -50,11 +51,13 @@ use crate::paths::display_path;
 /// handles those.
 pub(crate) fn install_digest_from_disk(
     project_root: &Path,
+    lockfile: &Lockfile,
     package: &LockedPackage,
 ) -> Result<Option<String>> {
     // BTreeMap gives us deterministic path ordering (matches
     // `install_digests_by_package` which seeds a `BTreeMap<PathBuf, _>`).
     let mut entries: BTreeMap<PathBuf, Vec<u8>> = BTreeMap::new();
+    let names = ManagedArtifactNames::from_locked_packages(lockfile.packages.iter());
 
     for owned in &package.owned_files {
         // Reject lockfile entries that escape the project root before we
@@ -103,6 +106,49 @@ pub(crate) fn install_digest_from_disk(
             .to_path_buf();
         let subtree_abs = project_root.join(&subtree_relative);
         collect_subtree_files(project_root, &subtree_abs, &mut entries)?;
+    }
+
+    for adapter in &package.owned_runtime_adapters {
+        let derived = locked_runtime_adapter_owned_paths(&names, package, *adapter);
+        for file in derived.files {
+            let relative = Lockfile::validate_managed_relative(&file, project_root)
+                .with_context(|| {
+                    format!(
+                        "package `{}` declares derived runtime file `{}` outside the project root",
+                        package.alias, file
+                    )
+                })?
+                .to_path_buf();
+            let absolute = project_root.join(&relative);
+            let contents = match std::fs::read(&absolute) {
+                Ok(bytes) => bytes,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(None);
+                }
+                Err(err) => {
+                    return Err(err).with_context(|| {
+                        format!(
+                            "failed to read derived runtime file {} for package `{}`",
+                            absolute.display(),
+                            package.alias
+                        )
+                    });
+                }
+            };
+            entries.insert(relative, contents);
+        }
+        for subtree in derived.subtrees {
+            let subtree_relative = Lockfile::validate_managed_relative(&subtree, project_root)
+                .with_context(|| {
+                    format!(
+                        "package `{}` declares derived runtime subtree `{}` outside the project root",
+                        package.alias, subtree
+                    )
+                })?
+                .to_path_buf();
+            let subtree_abs = project_root.join(&subtree_relative);
+            collect_subtree_files(project_root, &subtree_abs, &mut entries)?;
+        }
     }
 
     for rule in &package.owned_prefixes {
@@ -249,9 +295,18 @@ mod tests {
             capabilities: vec![],
             owned_subtrees: vec![],
             owned_prefixes: vec![],
+            owned_runtime_adapters: vec![],
             owned_files: vec![],
             install_digest: None,
         }
+    }
+
+    fn install_digest_for_package(
+        project_root: &Path,
+        package: &LockedPackage,
+    ) -> Result<Option<String>> {
+        let lockfile = Lockfile::new(vec![package.clone()]);
+        install_digest_from_disk(project_root, &lockfile, &lockfile.packages[0])
     }
 
     #[test]
@@ -259,7 +314,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let pkg = minimal_package("empty");
 
-        let digest = install_digest_from_disk(temp.path(), &pkg)
+        let digest = install_digest_for_package(temp.path(), &pkg)
             .unwrap()
             .expect("empty package contributes empty entries, not None");
 
@@ -272,7 +327,7 @@ mod tests {
         let mut pkg = minimal_package("foo");
         pkg.owned_files = vec!["missing.txt".into()];
 
-        let digest = install_digest_from_disk(temp.path(), &pkg).unwrap();
+        let digest = install_digest_for_package(temp.path(), &pkg).unwrap();
 
         assert!(
             digest.is_none(),
@@ -287,7 +342,7 @@ mod tests {
         let mut pkg = minimal_package("foo");
         pkg.owned_files = vec!["hello.txt".into()];
 
-        let digest = install_digest_from_disk(temp.path(), &pkg)
+        let digest = install_digest_for_package(temp.path(), &pkg)
             .unwrap()
             .unwrap();
 
@@ -307,7 +362,7 @@ mod tests {
         let mut pkg = minimal_package("foo");
         pkg.owned_subtrees = vec![".nodus/packages/foo".into()];
 
-        let digest = install_digest_from_disk(temp.path(), &pkg)
+        let digest = install_digest_for_package(temp.path(), &pkg)
             .unwrap()
             .unwrap();
 
@@ -325,7 +380,7 @@ mod tests {
         let mut pkg = minimal_package("foo");
         pkg.owned_subtrees = vec![".nodus/packages/foo".into()];
 
-        let digest = install_digest_from_disk(temp.path(), &pkg)
+        let digest = install_digest_for_package(temp.path(), &pkg)
             .unwrap()
             .unwrap();
 
@@ -348,7 +403,7 @@ mod tests {
             prefix: "nodus-hook-".into(),
         }];
 
-        let digest = install_digest_from_disk(temp.path(), &pkg)
+        let digest = install_digest_for_package(temp.path(), &pkg)
             .unwrap()
             .unwrap();
 
@@ -362,18 +417,54 @@ mod tests {
     }
 
     #[test]
+    fn owned_runtime_adapter_paths_contribute_to_digest() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join(".opencode/skills/review")).unwrap();
+        fs::create_dir_all(temp.path().join(".opencode/agents")).unwrap();
+        fs::create_dir_all(temp.path().join(".opencode/rules")).unwrap();
+        fs::create_dir_all(temp.path().join(".opencode/commands")).unwrap();
+        fs::write(
+            temp.path().join(".opencode/skills/review/SKILL.md"),
+            b"skill",
+        )
+        .unwrap();
+        fs::write(temp.path().join(".opencode/agents/security.md"), b"agent").unwrap();
+        fs::write(temp.path().join(".opencode/rules/default.md"), b"rule").unwrap();
+        fs::write(temp.path().join(".opencode/commands/build.md"), b"command").unwrap();
+
+        let mut pkg = minimal_package("shared");
+        pkg.skills = vec!["review".into()];
+        pkg.agents = vec!["security".into()];
+        pkg.rules = vec!["default".into()];
+        pkg.commands = vec!["build".into()];
+        pkg.owned_runtime_adapters = vec![crate::adapters::Adapter::OpenCode];
+
+        let digest = install_digest_for_package(temp.path(), &pkg)
+            .unwrap()
+            .unwrap();
+
+        let expected = content_digest(&[
+            (".opencode/agents/security.md", b"agent" as &[u8]),
+            (".opencode/commands/build.md", b"command"),
+            (".opencode/rules/default.md", b"rule"),
+            (".opencode/skills/review/SKILL.md", b"skill"),
+        ]);
+        assert_eq!(digest, expected);
+    }
+
+    #[test]
     fn mutated_owned_file_changes_digest() {
         let temp = TempDir::new().unwrap();
         fs::write(temp.path().join("hello.txt"), b"hi").unwrap();
         let mut pkg = minimal_package("foo");
         pkg.owned_files = vec!["hello.txt".into()];
 
-        let original = install_digest_from_disk(temp.path(), &pkg)
+        let original = install_digest_for_package(temp.path(), &pkg)
             .unwrap()
             .unwrap();
 
         fs::write(temp.path().join("hello.txt"), b"changed").unwrap();
-        let mutated = install_digest_from_disk(temp.path(), &pkg)
+        let mutated = install_digest_for_package(temp.path(), &pkg)
             .unwrap()
             .unwrap();
 
@@ -388,7 +479,7 @@ mod tests {
         let mut pkg = minimal_package("foo");
         pkg.owned_subtrees = vec!["../../etc".into()];
 
-        let err = install_digest_from_disk(temp.path(), &pkg).unwrap_err();
+        let err = install_digest_for_package(temp.path(), &pkg).unwrap_err();
         let message = format!("{err:#}");
         assert!(
             message.contains("escapes project root")
@@ -411,7 +502,7 @@ mod tests {
         // validation this would let the probe try to read /etc/passwd.
         pkg.owned_files = vec!["/etc/passwd".into()];
 
-        let err = install_digest_from_disk(temp.path(), &pkg).unwrap_err();
+        let err = install_digest_for_package(temp.path(), &pkg).unwrap_err();
         let message = format!("{err:#}");
         assert!(
             message.contains("escapes project root")
@@ -430,7 +521,7 @@ mod tests {
             prefix: "passwd".into(),
         }];
 
-        let err = install_digest_from_disk(temp.path(), &pkg).unwrap_err();
+        let err = install_digest_for_package(temp.path(), &pkg).unwrap_err();
         let message = format!("{err:#}");
         assert!(
             message.contains("escapes project root")
@@ -449,7 +540,7 @@ mod tests {
         // C:\Windows\System32\drivers\etc\hosts.
         pkg.owned_files = vec![r"C:\Windows\System32\drivers\etc\hosts".into()];
 
-        let err = install_digest_from_disk(temp.path(), &pkg).unwrap_err();
+        let err = install_digest_for_package(temp.path(), &pkg).unwrap_err();
         let message = format!("{err:#}");
         assert!(
             message.contains("escapes project root")
@@ -468,7 +559,7 @@ mod tests {
             prefix: "drivers".into(),
         }];
 
-        let err = install_digest_from_disk(temp.path(), &pkg).unwrap_err();
+        let err = install_digest_for_package(temp.path(), &pkg).unwrap_err();
         let message = format!("{err:#}");
         assert!(
             message.contains("escapes project root")
@@ -487,12 +578,12 @@ mod tests {
         let mut pkg = minimal_package("foo");
         pkg.owned_subtrees = vec![".nodus/packages/foo".into()];
 
-        let baseline = install_digest_from_disk(temp.path(), &pkg)
+        let baseline = install_digest_for_package(temp.path(), &pkg)
             .unwrap()
             .unwrap();
 
         fs::write(subtree.join("b.txt"), b"BB").unwrap();
-        let after_extra = install_digest_from_disk(temp.path(), &pkg)
+        let after_extra = install_digest_for_package(temp.path(), &pkg)
             .unwrap()
             .unwrap();
 

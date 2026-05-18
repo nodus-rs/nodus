@@ -28,7 +28,7 @@ pub(crate) use output::{
 };
 pub(crate) use profile::{
     PreferredSurface, VirtualPluginSurface, artifact_supported, preferred_surface,
-    virtual_plugin_surface,
+    runtime_root_name, virtual_plugin_surface,
 };
 pub(crate) use virtual_plugin::{
     VirtualPluginBackend, VirtualPluginEntry, emit_virtual_plugin_files,

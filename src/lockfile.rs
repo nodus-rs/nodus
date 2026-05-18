@@ -5,7 +5,9 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::adapters::{ArtifactKind, ManagedArtifactNames, short_source_id};
+use crate::adapters::{
+    Adapter, ArtifactKind, ManagedArtifactNames, runtime_root_name, short_source_id,
+};
 use crate::manifest::{Capability, DependencyComponent};
 #[cfg(test)]
 use crate::store::write_atomic;
@@ -72,6 +74,12 @@ pub struct LockedPackage {
     /// the emission slice (Slice 3).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub owned_prefixes: Vec<OwnedPrefix>,
+    /// Compact ownership marker for deterministic direct runtime adapter
+    /// outputs. The concrete paths are derived from this package's locked
+    /// artifact IDs plus package identity, so the lockfile does not need to
+    /// repeat every `.opencode/skills/...` or similar path.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub owned_runtime_adapters: Vec<Adapter>,
     /// Exact owned file paths (relative to workspace root). For files that
     /// don't fit a subtree root or prefix rule. Populated by the emission slice
     /// (Slice 3).
@@ -181,6 +189,8 @@ impl Lockfile {
                     .then(left.prefix.cmp(&right.prefix))
             });
             package.owned_prefixes.dedup();
+            package.owned_runtime_adapters.sort();
+            package.owned_runtime_adapters.dedup();
             package.owned_files.sort();
             package.owned_files.dedup();
         }
@@ -250,10 +260,36 @@ impl Lockfile {
         let mut prefix_owners: std::collections::HashMap<(PathBuf, String), String> =
             std::collections::HashMap::new();
 
+        let names = ManagedArtifactNames::from_locked_packages(self.packages.iter());
+
         for package in &self.packages {
             for relative in &package.owned_files {
                 let validated = Self::validate_managed_relative(relative, project_root)?;
                 set.exact.insert(project_root.join(validated));
+            }
+            for adapter in &package.owned_runtime_adapters {
+                let derived = locked_runtime_adapter_owned_paths(&names, package, *adapter);
+                for relative in derived.files {
+                    let validated = Self::validate_managed_relative(&relative, project_root)?;
+                    set.exact.insert(project_root.join(validated));
+                }
+                for relative in derived.subtrees {
+                    let validated = Self::validate_managed_relative(&relative, project_root)?;
+                    let subtree = project_root.join(validated);
+                    if let Some(existing) = subtree_owners.get(&subtree) {
+                        if existing != &package.alias {
+                            bail!(
+                                "packages `{}` and `{}` both declare ownership of subtree `{}`",
+                                existing,
+                                package.alias,
+                                relative
+                            );
+                        }
+                    } else {
+                        subtree_owners.insert(subtree.clone(), package.alias.clone());
+                        set.subtrees.push(subtree);
+                    }
+                }
             }
             for relative in &package.owned_subtrees {
                 let validated = Self::validate_managed_relative(relative, project_root)?;
@@ -630,6 +666,163 @@ pub fn managed_mcp_server_name(package_alias: &str, server_id: &str) -> String {
     format!("{package_alias}__{server_id}")
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct RuntimeAdapterOwnedPaths {
+    pub subtrees: Vec<String>,
+    pub files: Vec<String>,
+}
+
+pub(crate) fn compact_owned_runtime_adapter_ownership(packages: &mut [LockedPackage]) {
+    let names = ManagedArtifactNames::from_locked_packages(packages.iter());
+    for package in packages {
+        for adapter in compactable_runtime_adapters() {
+            let derived = locked_runtime_adapter_owned_paths(&names, package, adapter);
+            if derived.subtrees.is_empty() && derived.files.is_empty() {
+                continue;
+            }
+
+            let subtree_count = package.owned_subtrees.len();
+            package
+                .owned_subtrees
+                .retain(|path| !derived.subtrees.iter().any(|derived| derived == path));
+            let file_count = package.owned_files.len();
+            package
+                .owned_files
+                .retain(|path| !derived.files.iter().any(|derived| derived == path));
+
+            if (package.owned_subtrees.len() != subtree_count
+                || package.owned_files.len() != file_count)
+                && !package.owned_runtime_adapters.contains(&adapter)
+            {
+                package.owned_runtime_adapters.push(adapter);
+            }
+        }
+    }
+}
+
+fn compactable_runtime_adapters() -> impl Iterator<Item = Adapter> {
+    [Adapter::OpenCode].into_iter()
+}
+
+pub(crate) fn locked_runtime_adapter_owned_paths(
+    names: &ManagedArtifactNames,
+    package: &LockedPackage,
+    adapter: Adapter,
+) -> RuntimeAdapterOwnedPaths {
+    let runtime = runtime_root_name(adapter);
+    let mut paths = RuntimeAdapterOwnedPaths::default();
+
+    match adapter {
+        Adapter::Agents => {
+            paths.subtrees.extend(package.skills.iter().map(|skill_id| {
+                format!(
+                    "{runtime}/skills/{}",
+                    names.locked_managed_skill_id(package, skill_id)
+                )
+            }));
+            paths
+                .files
+                .extend(package.commands.iter().map(|command_id| {
+                    format!(
+                        "{runtime}/commands/{}",
+                        names.locked_managed_file_name(
+                            package,
+                            ArtifactKind::Command,
+                            command_id,
+                            "md",
+                        )
+                    )
+                }));
+        }
+        Adapter::Copilot => {
+            paths.subtrees.extend(package.skills.iter().map(|skill_id| {
+                format!(
+                    "{runtime}/skills/{}",
+                    names.locked_managed_skill_id(package, skill_id)
+                )
+            }));
+            paths.files.extend(package.agents.iter().map(|agent_id| {
+                format!(
+                    "{runtime}/agents/{}",
+                    names.locked_managed_file_name(
+                        package,
+                        ArtifactKind::Agent,
+                        agent_id,
+                        "agent.md",
+                    )
+                )
+            }));
+        }
+        Adapter::Cursor => {
+            paths.subtrees.extend(package.skills.iter().map(|skill_id| {
+                format!(
+                    "{runtime}/skills/{}",
+                    names.locked_managed_skill_id(package, skill_id)
+                )
+            }));
+            paths.files.extend(package.rules.iter().map(|rule_id| {
+                format!(
+                    "{runtime}/rules/{}",
+                    names.locked_managed_file_name(package, ArtifactKind::Rule, rule_id, "mdc")
+                )
+            }));
+            paths
+                .files
+                .extend(package.commands.iter().map(|command_id| {
+                    format!(
+                        "{runtime}/commands/{}",
+                        names.locked_managed_file_name(
+                            package,
+                            ArtifactKind::Command,
+                            command_id,
+                            "md",
+                        )
+                    )
+                }));
+        }
+        Adapter::OpenCode => {
+            paths.subtrees.extend(package.skills.iter().map(|skill_id| {
+                format!(
+                    "{runtime}/skills/{}",
+                    names.locked_managed_skill_id(package, skill_id)
+                )
+            }));
+            paths.files.extend(package.agents.iter().map(|agent_id| {
+                format!(
+                    "{runtime}/agents/{}",
+                    names.locked_managed_file_name(package, ArtifactKind::Agent, agent_id, "md")
+                )
+            }));
+            paths.files.extend(package.rules.iter().map(|rule_id| {
+                format!(
+                    "{runtime}/rules/{}",
+                    names.locked_managed_file_name(package, ArtifactKind::Rule, rule_id, "md")
+                )
+            }));
+            paths
+                .files
+                .extend(package.commands.iter().map(|command_id| {
+                    format!(
+                        "{runtime}/commands/{}",
+                        names.locked_managed_file_name(
+                            package,
+                            ArtifactKind::Command,
+                            command_id,
+                            "md",
+                        )
+                    )
+                }));
+        }
+        Adapter::Claude | Adapter::Codex => {}
+    }
+
+    paths.subtrees.sort();
+    paths.subtrees.dedup();
+    paths.files.sort();
+    paths.files.dedup();
+    paths
+}
+
 fn locked_package_short_id(package: &LockedPackage) -> String {
     match package.source.kind.as_str() {
         "git" => short_source_id(
@@ -909,6 +1102,7 @@ mod tests {
                 dir: ".claude/hooks".into(),
                 prefix: "nodus-hook-".into(),
             }],
+            owned_runtime_adapters: vec![],
             owned_files: vec![".claude/agents/security-reviewer.md".into()],
             install_digest: Some("blake3:deadbeef".into()),
         }]);
@@ -984,6 +1178,7 @@ managed_files = []
                 capabilities: vec![],
                 owned_subtrees: vec![],
                 owned_prefixes: vec![],
+                owned_runtime_adapters: vec![],
                 owned_files: vec![],
                 install_digest: None,
             }],
@@ -1032,6 +1227,7 @@ managed_files = []
                 capabilities: vec![],
                 owned_subtrees: vec![],
                 owned_prefixes: vec![],
+                owned_runtime_adapters: vec![],
                 owned_files: vec![],
                 install_digest: None,
             }],
@@ -1081,6 +1277,7 @@ managed_files = []
                 capabilities: vec![],
                 owned_subtrees: vec![],
                 owned_prefixes: vec![],
+                owned_runtime_adapters: vec![],
                 owned_files: vec![],
                 install_digest: None,
             }],
@@ -1118,6 +1315,7 @@ managed_files = []
                 capabilities: vec![],
                 owned_subtrees: vec![],
                 owned_prefixes: vec![],
+                owned_runtime_adapters: vec![],
                 owned_files: vec![],
                 install_digest: None,
             }],
@@ -1163,6 +1361,7 @@ managed_files = []
                 capabilities: vec![],
                 owned_subtrees: vec![],
                 owned_prefixes: vec![],
+                owned_runtime_adapters: vec![],
                 owned_files: vec![],
                 install_digest: None,
             }],
@@ -1224,6 +1423,7 @@ managed_files = []
                 capabilities: vec![],
                 owned_subtrees: vec![],
                 owned_prefixes: vec![],
+                owned_runtime_adapters: vec![],
                 owned_files: vec![],
                 install_digest: None,
             }],
@@ -1267,6 +1467,7 @@ managed_files = []
                 capabilities: vec![],
                 owned_subtrees: vec![],
                 owned_prefixes: vec![],
+                owned_runtime_adapters: vec![],
                 owned_files: vec![],
                 install_digest: None,
             }],
@@ -1312,6 +1513,7 @@ managed_files = []
                 capabilities: vec![],
                 owned_subtrees: vec![],
                 owned_prefixes: vec![],
+                owned_runtime_adapters: vec![],
                 owned_files: vec![],
                 install_digest: None,
             }],
@@ -1351,6 +1553,7 @@ managed_files = []
             capabilities: vec![],
             owned_subtrees: vec![],
             owned_prefixes: vec![],
+            owned_runtime_adapters: vec![],
             owned_files: vec![],
             install_digest: Some("deadbeef".into()),
         }]);
@@ -1392,6 +1595,7 @@ managed_files = []
                 dir: ".claude/hooks".into(),
                 prefix: "nodus-hook-".into(),
             }],
+            owned_runtime_adapters: vec![],
             owned_files: vec![],
             install_digest: None,
         }]);
@@ -1429,6 +1633,7 @@ managed_files = []
             capabilities: vec![],
             owned_subtrees: vec![],
             owned_prefixes: vec![],
+            owned_runtime_adapters: vec![],
             owned_files: vec![],
             install_digest: None,
         }

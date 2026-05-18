@@ -258,8 +258,8 @@ rev = "01f556abcdef"
 
 // Acceptance: Slice 1 — v10 readers tolerate v10 lockfiles with the new
 // per-package owned_* fields populated. This is a "happy path" smoke test for
-// the new optional fields all together; it confirms the lockfile parses and
-// `nodus list` surfaces the package, exercising both the schema-level
+// the optional ownership fields all together; it confirms the lockfile parses
+// and `nodus list` surfaces the package, exercising both the schema-level
 // deserialization and the package-listing read path.
 #[test]
 fn accepts_v10_lockfile_with_all_new_owned_fields_populated() {
@@ -271,6 +271,7 @@ name = "foo"
 version_tag = "v0.1.0"
 digest = "blake3:abc"
 owned_subtrees = [".nodus/packages/foo/claude-plugin"]
+owned_runtime_adapters = ["opencode"]
 owned_files = [".claude/settings.json"]
 install_digest = "blake3:0123456789abcdef"
 

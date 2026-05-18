@@ -8379,6 +8379,16 @@ shared = { path = "vendor/shared" }
             .iter()
             .any(|path| path == ".nodus/packages/shared/opencode-plugin")
     );
+    assert_eq!(shared.owned_runtime_adapters, vec![Adapter::OpenCode]);
+    assert!(
+        shared
+            .owned_subtrees
+            .iter()
+            .all(|path| !path.starts_with(".opencode/skills/")),
+        "OpenCode direct skill roots should be represented by owned_runtime_adapters, got {:?}",
+        shared.owned_subtrees
+    );
+    assert_owned(&lockfile, temp.path(), ".opencode/skills/review/SKILL.md");
     assert!(
         shared
             .owned_prefixes
@@ -12323,7 +12333,7 @@ fn slice4_install_digest_from_disk_matches_recorded_digest_for_unchanged_install
             .install_digest
             .clone()
             .expect("v10 emission always stamps install_digest");
-        let disk = super::install_digest::install_digest_from_disk(temp.path(), package)
+        let disk = super::install_digest::install_digest_from_disk(temp.path(), &lockfile, package)
             .unwrap()
             .expect("clean install means no owned files are missing");
         assert_eq!(
@@ -12350,7 +12360,8 @@ fn slice4_install_digest_from_disk_returns_none_when_owned_file_is_missing() {
     fs::remove_file(temp.path().join(target_file)).unwrap();
 
     let result =
-        super::install_digest::install_digest_from_disk(temp.path(), target_package).unwrap();
+        super::install_digest::install_digest_from_disk(temp.path(), &lockfile, target_package)
+            .unwrap();
     assert!(
         result.is_none(),
         "removing an owned file should yield Ok(None) drift signal; got {result:?}"
@@ -12371,9 +12382,10 @@ fn slice4_install_digest_from_disk_differs_when_owned_file_content_changes() {
     let absolute = temp.path().join(target_file);
     fs::write(&absolute, b"--- user override ---").unwrap();
 
-    let mutated = super::install_digest::install_digest_from_disk(temp.path(), target_package)
-        .unwrap()
-        .expect("file still exists, just changed");
+    let mutated =
+        super::install_digest::install_digest_from_disk(temp.path(), &lockfile, target_package)
+            .unwrap()
+            .expect("file still exists, just changed");
     let recorded = target_package.install_digest.as_deref().unwrap();
     assert_ne!(
         mutated, recorded,
@@ -12451,6 +12463,7 @@ fn slice4_fast_path_skipped_when_install_digest_is_none() {
         capabilities: vec![],
         owned_subtrees: vec![],
         owned_prefixes: vec![],
+        owned_runtime_adapters: vec![],
         owned_files: vec![],
         install_digest: None,
     };
@@ -12499,6 +12512,7 @@ fn slice4_fast_path_skipped_for_branch_pinned_deps_in_normal_mode() {
         capabilities: vec![],
         owned_subtrees: vec![],
         owned_prefixes: vec![],
+        owned_runtime_adapters: vec![],
         owned_files: vec![],
         install_digest: Some(crate::hashing::content_digest(&[])),
     };
@@ -12548,6 +12562,7 @@ fn slice4_fast_path_allows_branch_pinned_deps_under_frozen() {
         capabilities: vec![],
         owned_subtrees: vec![],
         owned_prefixes: vec![],
+        owned_runtime_adapters: vec![],
         owned_files: vec![],
         install_digest: Some(crate::hashing::content_digest(&[])),
     };
@@ -12605,6 +12620,7 @@ fn slice4_fast_path_miss_on_drift_under_frozen_reports_lockfile_out_of_date() {
         capabilities: vec![],
         owned_subtrees: vec![],
         owned_prefixes: vec![],
+        owned_runtime_adapters: vec![],
         owned_files: vec!["ghost.md".into()],
         // Pretend we recorded a digest for a file that doesn't exist on
         // disk.
@@ -12655,6 +12671,7 @@ fn slice4_count_owned_files_sums_per_package_views() {
         capabilities: vec![],
         owned_subtrees: vec![".nodus/packages/alpha".into()],
         owned_prefixes: vec![],
+        owned_runtime_adapters: vec![],
         owned_files: vec![".claude/settings.json".into()],
         install_digest: Some(crate::hashing::content_digest(&[])),
     };
@@ -12838,9 +12855,10 @@ authentication = "ON_INSTALL"
         .install_digest
         .as_deref()
         .expect("v10 lockfile must stamp install_digest on every package");
-    let from_disk = super::install_digest::install_digest_from_disk(repo.path(), root_package)
-        .unwrap()
-        .expect("root package owns existing files on disk");
+    let from_disk =
+        super::install_digest::install_digest_from_disk(repo.path(), &lockfile, root_package)
+            .unwrap()
+            .expect("root package owns existing files on disk");
 
     assert_eq!(
         from_disk, recorded,

@@ -27,7 +27,10 @@ use crate::adapters::{
 use crate::execution::ExecutionMode;
 use crate::hashing::content_digest;
 use crate::install_paths::{InstallPaths, InstallScope};
-use crate::lockfile::{LOCKFILE_NAME, LockedPackage, LockedSource, Lockfile};
+use crate::lockfile::{
+    LOCKFILE_NAME, LockedPackage, LockedSource, Lockfile, compact_owned_runtime_adapter_ownership,
+    locked_runtime_adapter_owned_paths,
+};
 use crate::manifest::{
     DependencyComponent, LoadedManifest, ManagedPlacement, PackageRole, load_dependency_from_dir,
     load_root_from_dir_allow_missing,
@@ -1532,10 +1535,13 @@ impl Resolution {
                 capabilities: package.manifest.manifest.capabilities.clone(),
                 owned_subtrees: owned.subtrees,
                 owned_prefixes: owned.prefixes,
+                owned_runtime_adapters: Vec::new(),
                 owned_files: owned.files,
                 install_digest,
             });
         }
+
+        compact_owned_runtime_adapter_ownership(&mut packages);
 
         Ok(Lockfile::new(packages))
     }
@@ -1729,7 +1735,7 @@ fn evaluate_fast_path(
 
         // Disk-digest gate. `Ok(None)` means an `owned_files` entry is
         // missing on disk — drift, fall back to full sync.
-        let Some(disk_digest) = install_digest_from_disk(project_root, package)? else {
+        let Some(disk_digest) = install_digest_from_disk(project_root, lockfile, package)? else {
             return Ok(FastPathOutcome::Miss(format!(
                 "package `{}` has an owned file missing on disk",
                 package.alias
@@ -1844,11 +1850,24 @@ fn path_dep_source_is_newer(
 /// files gives the user a sensible number for the "managed files" summary
 /// line without forcing a disk walk just to count.
 fn count_owned_files(lockfile: &Lockfile) -> usize {
+    let names =
+        crate::adapters::ManagedArtifactNames::from_locked_packages(lockfile.packages.iter());
     lockfile
         .packages
         .iter()
         .map(|package| {
-            package.owned_files.len() + package.owned_subtrees.len() + package.owned_prefixes.len()
+            let runtime_owned_count = package
+                .owned_runtime_adapters
+                .iter()
+                .map(|adapter| {
+                    let paths = locked_runtime_adapter_owned_paths(&names, package, *adapter);
+                    paths.files.len() + paths.subtrees.len()
+                })
+                .sum::<usize>();
+            package.owned_files.len()
+                + package.owned_subtrees.len()
+                + package.owned_prefixes.len()
+                + runtime_owned_count
         })
         .sum()
 }
