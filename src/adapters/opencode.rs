@@ -5,9 +5,8 @@ use anyhow::{Context, Result, bail};
 
 use crate::adapters::{
     Adapter, ArtifactKind, ManagedArtifactNames, ManagedFile, ManagedHookSpec,
-    VirtualPluginBackend, emit_virtual_plugin_files, hook_tool_matchers_for_adapter,
-    managed_artifact_path, managed_skill_id, managed_skill_root,
-    virtual_plugin_install_root_relative,
+    VirtualPluginBackend, hook_tool_matchers_for_adapter, managed_artifact_path, managed_skill_id,
+    managed_skill_root, virtual_plugin_install_root_relative,
 };
 use crate::agent_format::markdown_from_codex_agent_toml;
 use crate::hashing::blake3_hex;
@@ -180,13 +179,6 @@ pub fn hook_files(project_root: &Path, hooks: &[ManagedHookSpec]) -> Vec<Managed
     files
 }
 
-pub fn plugin_hook_files(
-    project_root: &Path,
-    plugin_packages: &[(&ResolvedPackage, &Path)],
-) -> Result<Vec<ManagedFile>> {
-    emit_virtual_plugin_files(project_root, &VIRTUAL_PLUGIN_BACKEND, plugin_packages)
-}
-
 fn copy_file(target_path: impl AsRef<Path>, source_path: impl AsRef<Path>) -> Result<ManagedFile> {
     let target_path = target_path.as_ref();
     let source_path = source_path.as_ref();
@@ -220,7 +212,31 @@ pub(crate) fn plugin_wrapper_relative_path(package: &ResolvedPackage, path: &Pat
 pub(crate) fn plugin_wrapper_contents(package: &ResolvedPackage, path: &Path) -> Vec<u8> {
     let install_root = virtual_plugin_install_root_relative(Adapter::OpenCode, package);
     let import_path = format!("../../{}", display_path_js(&install_root.join(path)));
-    format!("export {{ default }} from {};\n", js_string(&import_path)).into_bytes()
+    format!(
+        r#"import * as pluginModule from {import_path};
+
+export * from {import_path};
+
+const namedPlugin =
+  pluginModule.plugin ??
+  pluginModule.Plugin ??
+  pluginModule.nodusPlugin ??
+  pluginModule.NodusPlugin;
+const plugin =
+  pluginModule.default ??
+  namedPlugin ??
+  Object.values(pluginModule).find((value) => typeof value === "function") ??
+  Object.values(pluginModule).find((value) => value && typeof value === "object");
+
+if (plugin === undefined) {{
+  throw new Error("Nodus OpenCode plugin wrapper could not find a default export or named plugin export");
+}}
+
+export default plugin;
+"#,
+        import_path = js_string(&import_path),
+    )
+    .into_bytes()
 }
 
 pub(crate) fn display_path_js(path: &Path) -> String {

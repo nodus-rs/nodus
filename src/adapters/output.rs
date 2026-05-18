@@ -772,10 +772,7 @@ pub(crate) fn build_output_plan_with_options(
                 .claude_plugin_hook_compat_sources()
                 .is_empty()
         });
-    let has_opencode_plugin_hooks = selected_adapters.contains(Adapter::OpenCode)
-        && packages
-            .iter()
-            .any(|(package, _)| !package.manifest.manifest.opencode_plugin_hooks.is_empty());
+    let has_virtual_plugins = has_virtual_plugin_entries(packages, selected_adapters)?;
     let has_claude_native_plugin_enablement = selected_adapters.contains(Adapter::Claude)
         && preferred_surface(Adapter::Claude)
             == PreferredSurface::PackagePluginWorkspaceMarketplace
@@ -784,7 +781,7 @@ pub(crate) fn build_output_plan_with_options(
     if !hooks.is_empty()
         || has_activation
         || has_claude_plugin_hooks
-        || has_opencode_plugin_hooks
+        || has_virtual_plugins
         || has_claude_native_plugin_enablement
     {
         // Pre-compute per-package ownership for every hook file we're about
@@ -2861,24 +2858,14 @@ fn hook_files(
         warnings.extend(claude_warnings);
     }
     let opencode_hooks = hooks_for_adapter(hooks, selected_adapters, Adapter::OpenCode);
-    let opencode_plugin_packages = if selected_adapters.contains(Adapter::OpenCode) {
-        packages
-            .iter()
-            .filter(|(package, _)| !package.manifest.manifest.opencode_plugin_hooks.is_empty())
-            .map(|(package, snapshot_root)| (package, snapshot_root.as_path()))
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
     if !opencode_hooks.is_empty() {
         files.extend(super::opencode::hook_files(project_root, &opencode_hooks));
     }
-    if !opencode_plugin_packages.is_empty() {
-        files.extend(super::opencode::plugin_hook_files(
-            project_root,
-            &opencode_plugin_packages,
-        )?);
-    }
+    files.extend(virtual_plugin_files(
+        project_root,
+        packages,
+        selected_adapters,
+    )?);
     if hooks
         .iter()
         .any(|hook| hook_targets_adapter(&hook.hook, selected_adapters, Adapter::Agents))
@@ -2927,6 +2914,48 @@ fn hook_files(
         warnings.push(
             "hooks are not emitted for `cursor`; project hooks exist, but no documented auto-start hook is available for repo-local config".into(),
         );
+    }
+
+    Ok(files)
+}
+
+fn has_virtual_plugin_entries(
+    packages: &[(ResolvedPackage, PathBuf)],
+    selected_adapters: Adapters,
+) -> Result<bool> {
+    for adapter in selected_adapters.iter() {
+        let Some(backend) = super::virtual_plugin_backend(adapter) else {
+            continue;
+        };
+        for (package, _) in packages {
+            if !super::virtual_plugin_entries_for_package(backend, package)?.is_empty() {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn virtual_plugin_files(
+    project_root: &Path,
+    packages: &[(ResolvedPackage, PathBuf)],
+    selected_adapters: Adapters,
+) -> Result<Vec<ManagedFile>> {
+    let mut files = Vec::new();
+    let plugin_packages = packages
+        .iter()
+        .map(|(package, snapshot_root)| (package, snapshot_root.as_path()))
+        .collect::<Vec<_>>();
+
+    for adapter in selected_adapters.iter() {
+        let Some(backend) = super::virtual_plugin_backend(adapter) else {
+            continue;
+        };
+        files.extend(super::emit_virtual_plugin_files(
+            project_root,
+            backend,
+            &plugin_packages,
+        )?);
     }
 
     Ok(files)
