@@ -24,7 +24,6 @@ pub mod opencode;
 pub(crate) use output::build_output_plan;
 pub(crate) use output::{
     OutputPlan, OutputPlanOptions, PackageOwnedPaths, build_output_plan_with_options,
-    codex_user_plugin_config_file,
 };
 pub(crate) use profile::{
     PreferredSurface, VirtualPluginSurface, artifact_supported, preferred_surface,
@@ -550,14 +549,25 @@ pub(crate) fn native_marketplace_source_path() -> &'static str {
 
 pub(crate) fn native_marketplace_plugin_source_path(
     project_root: &Path,
+    adapter: Adapter,
     plugin_root: &Path,
 ) -> String {
-    let marketplace_root = native_marketplace_root(project_root);
-    if let Some(relative) = strip_path_prefix(plugin_root, &marketplace_root) {
-        return local_marketplace_path(relative);
-    }
-    if let Some(relative) = strip_path_prefix(plugin_root, project_root) {
-        return format!("../{}", display_path(relative));
+    match adapter {
+        Adapter::Claude => {
+            let marketplace_root = native_marketplace_root(project_root);
+            if let Some(relative) = strip_path_prefix(plugin_root, &marketplace_root) {
+                return local_marketplace_path(relative);
+            }
+            if let Some(relative) = strip_path_prefix(plugin_root, project_root) {
+                return format!("../{}", display_path(relative));
+            }
+        }
+        Adapter::Codex => {
+            if let Some(relative) = strip_path_prefix(plugin_root, project_root) {
+                return local_marketplace_path(relative);
+            }
+        }
+        Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => {}
     }
     display_path(plugin_root)
 }
@@ -575,11 +585,7 @@ pub(crate) fn native_marketplace_path(project_root: &Path, adapter: Adapter) -> 
     let root = native_marketplace_root(project_root);
     match adapter {
         Adapter::Claude => Some(root.join(".claude-plugin").join("marketplace.json")),
-        Adapter::Codex => Some(
-            root.join(".agents")
-                .join("plugins")
-                .join("marketplace.json"),
-        ),
+        Adapter::Codex => Some(project_root.join(".agents/plugins/marketplace.json")),
         Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => None,
     }
 }

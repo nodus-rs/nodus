@@ -114,7 +114,7 @@ fn generated_claude_marketplace_path(path: &Path) -> PathBuf {
 }
 
 fn generated_codex_marketplace_path(path: &Path) -> PathBuf {
-    path.join(".nodus/.agents/plugins/marketplace.json")
+    path.join(".agents/plugins/marketplace.json")
 }
 
 fn write_codex_plugin_json(path: &Path, version: &str, mcp_servers_path: Option<&str>) {
@@ -1697,7 +1697,7 @@ fn sync_generates_workspace_marketplace_files() {
     assert_eq!(codex["plugins"].as_array().unwrap().len(), 2);
     assert_eq!(
         codex["plugins"][0]["source"]["path"].as_str(),
-        Some("../plugins/axiom")
+        Some("./plugins/axiom")
     );
     assert_eq!(
         codex["plugins"][0]["policy"]["installation"].as_str(),
@@ -1720,25 +1720,19 @@ fn sync_generates_workspace_marketplace_files() {
         repo.path(),
         ".nodus/.claude-plugin/marketplace.json",
     );
-    assert_owned(
-        &lockfile,
-        repo.path(),
-        ".nodus/.agents/plugins/marketplace.json",
-    );
+    assert_owned(&lockfile, repo.path(), ".agents/plugins/marketplace.json");
 }
 
 #[test]
-fn sync_registers_workspace_codex_marketplace_in_user_config() {
+fn sync_leaves_workspace_codex_user_config_untouched() {
     let repo = create_workspace_dependency();
     let cache = cache_dir();
     let codex_home = TempDir::new().unwrap();
     let codex_config = codex_home.path().join("config.toml");
-    write_file(
-        &codex_config,
-        r#"# codex user config
+    let original = r#"# codex user config
 model = "gpt-5"
-"#,
-    );
+"#;
+    write_file(&codex_config, original);
 
     let reporter = Reporter::silent();
     let install_paths =
@@ -1759,48 +1753,12 @@ model = "gpt-5"
     )
     .unwrap();
 
-    let contents = fs::read_to_string(&codex_config).unwrap();
-    let config: toml::Value = toml::from_str(&contents).unwrap();
-    let expected_marketplace_name = normalize_workspace_marketplace_name(
-        repo.path()
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap(),
-    );
-    let marketplace = config
-        .get("marketplaces")
-        .and_then(toml::Value::as_table)
-        .and_then(|marketplaces| marketplaces.get(&expected_marketplace_name))
-        .and_then(toml::Value::as_table)
-        .expect("workspace marketplace table");
-    let expected_marketplace_source = display_path(&repo.path().join(".nodus"));
-    assert_eq!(
-        marketplace.get("source_type").and_then(toml::Value::as_str),
-        Some("local")
-    );
-    assert_eq!(
-        marketplace.get("source").and_then(toml::Value::as_str),
-        Some(expected_marketplace_source.as_str())
-    );
-    let plugins = config
-        .get("plugins")
-        .and_then(toml::Value::as_table)
-        .expect("workspace member plugins should be enabled");
-    for plugin in ["Axiom", "Firebase"] {
-        let key = format!("{plugin}@{expected_marketplace_name}");
-        assert_eq!(
-            plugins
-                .get(&key)
-                .and_then(|plugin| plugin.get("enabled"))
-                .and_then(toml::Value::as_bool),
-            Some(true),
-            "expected Codex user config to enable {key}"
-        );
-    }
+    assert_eq!(fs::read_to_string(&codex_config).unwrap(), original);
+    assert!(generated_codex_marketplace_path(repo.path()).exists());
 }
 
 #[test]
-fn sync_recreates_codex_user_config_when_runtime_outputs_are_in_sync() {
+fn sync_does_not_recreate_codex_user_config() {
     let repo = create_workspace_dependency();
     let cache = cache_dir();
     let codex_home = TempDir::new().unwrap();
@@ -1824,7 +1782,6 @@ fn sync_recreates_codex_user_config_when_runtime_outputs_are_in_sync() {
         &reporter,
     )
     .unwrap();
-    fs::remove_file(&codex_config).unwrap();
 
     let buffer = SharedBuffer::default();
     let reporter = Reporter::sink(ColorMode::Never, buffer.clone());
@@ -1844,22 +1801,8 @@ fn sync_recreates_codex_user_config_when_runtime_outputs_are_in_sync() {
     )
     .unwrap();
 
-    let output = buffer.contents();
-    assert!(
-        output.contains("Resolving"),
-        "Codex user-config writes must bypass the runtime-only fast path; got: {output}"
-    );
-    let config: toml::Value = toml::from_str(&fs::read_to_string(&codex_config).unwrap()).unwrap();
-    let expected_marketplace_name = normalize_workspace_marketplace_name(
-        repo.path()
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap(),
-    );
-    assert_eq!(
-        config["plugins"][format!("Axiom@{expected_marketplace_name}")]["enabled"].as_bool(),
-        Some(true)
-    );
+    let _output = buffer.contents();
+    assert!(!codex_config.exists());
 }
 
 #[test]
@@ -2070,7 +2013,7 @@ args = ["figma-developer-mcp"]
     assert_eq!(marketplace["plugins"][0]["name"].as_str(), Some("shared"));
     assert_eq!(
         marketplace["plugins"][0]["source"]["path"].as_str(),
-        Some("./packages/shared/codex-plugin")
+        Some("./.nodus/packages/shared/codex-plugin")
     );
     assert_eq!(
         marketplace["plugins"][0]["policy"]["installation"].as_str(),
@@ -2122,7 +2065,7 @@ bundle = { path = "vendor/bundle", members = ["core"] }
     assert_eq!(marketplace["plugins"][0]["name"].as_str(), Some("ena-core"));
     assert_eq!(
         marketplace["plugins"][0]["source"]["path"].as_str(),
-        Some("./packages/ena_core/codex-plugin")
+        Some("./.nodus/packages/ena_core/codex-plugin")
     );
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
@@ -2235,7 +2178,7 @@ command = "./scripts/format.sh"
 }
 
 #[test]
-fn sync_enables_codex_native_plugins_in_user_config() {
+fn sync_leaves_codex_user_config_untouched_and_writes_local_marketplace() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();
     let codex_home = TempDir::new().unwrap();
@@ -2273,9 +2216,7 @@ name = "Playbook iOS"
         &temp.path().join("vendor/playbook-ios/skills/ios-testing"),
         "iOS Testing",
     );
-    write_file(
-        &codex_config,
-        r#"# codex user config
+    let original = r#"# codex user config
 model = "gpt-5"
 
 [plugins."manual@other"]
@@ -2290,8 +2231,8 @@ source = "https://github.com/example/old.git"
 ref = "main"
 sparse_paths = ["plugins"]
 custom = "kept"
-"#,
-    );
+"#;
+    write_file(&codex_config, original);
 
     let reporter = Reporter::silent();
     let install_paths =
@@ -2312,60 +2253,23 @@ custom = "kept"
     )
     .unwrap();
 
-    let contents = fs::read_to_string(&codex_config).unwrap();
-    assert!(contents.contains("# codex user config"));
-    assert!(contents.contains(r#"model = "gpt-5""#));
-    let config: toml::Value = toml::from_str(&contents).unwrap();
-    let plugins = config
-        .get("plugins")
-        .and_then(toml::Value::as_table)
-        .expect("plugins table");
+    assert_eq!(fs::read_to_string(&codex_config).unwrap(), original);
+    let marketplace: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(generated_codex_marketplace_path(temp.path())).unwrap(),
+    )
+    .unwrap();
+    let plugins = marketplace["plugins"].as_array().expect("plugins array");
     assert_eq!(
         plugins
-            .get("grapha@yoki-ios")
-            .and_then(|plugin| plugin.get("enabled"))
-            .and_then(toml::Value::as_bool),
-        Some(true)
+            .iter()
+            .map(|plugin| plugin["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["grapha", "playbook-ios"]
     );
     assert_eq!(
-        plugins
-            .get("playbook-ios@yoki-ios")
-            .and_then(|plugin| plugin.get("enabled"))
-            .and_then(toml::Value::as_bool),
-        Some(true)
+        plugins[0]["source"]["path"].as_str(),
+        Some("./.nodus/packages/grapha/codex-plugin")
     );
-    assert_eq!(
-        plugins
-            .get("manual@other")
-            .and_then(|plugin| plugin.get("enabled"))
-            .and_then(toml::Value::as_bool),
-        Some(false)
-    );
-    let marketplace = config
-        .get("marketplaces")
-        .and_then(toml::Value::as_table)
-        .and_then(|marketplaces| marketplaces.get("yoki-ios"))
-        .and_then(toml::Value::as_table)
-        .expect("yoki-ios marketplace table");
-    assert_eq!(
-        marketplace.get("source_type").and_then(toml::Value::as_str),
-        Some("local")
-    );
-    let expected_marketplace_source = display_path(&temp.path().join(".nodus"));
-    assert_eq!(
-        marketplace.get("source").and_then(toml::Value::as_str),
-        Some(expected_marketplace_source.as_str())
-    );
-    assert!(marketplace.get("ref").is_none());
-    assert!(marketplace.get("sparse_paths").is_none());
-    assert_eq!(
-        marketplace.get("custom").and_then(toml::Value::as_str),
-        Some("kept")
-    );
-    // v10 lockfiles no longer surface the user-config edit path through
-    // `legacy_managed_files`; the codex user-config write happens outside the
-    // per-package owned set. We assert that no package claims the codex_config
-    // path as part of its ownership view.
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     let codex_config_relative = codex_config
         .strip_prefix(temp.path())
@@ -2384,6 +2288,7 @@ custom = "kept"
         }),
         "codex user config {codex_config_relative} should not appear in any package's ownership view",
     );
+    assert_owned(&lockfile, temp.path(), ".agents/plugins/marketplace.json");
 }
 
 #[test]
@@ -2577,7 +2482,7 @@ fn sync_skips_invalid_workspace_members_in_marketplace_files() {
     assert_eq!(codex["plugins"][0]["name"].as_str(), Some("Axiom"));
     assert_eq!(
         codex["plugins"][0]["source"]["path"].as_str(),
-        Some("../plugins/axiom")
+        Some("./plugins/axiom")
     );
 }
 
@@ -2618,7 +2523,7 @@ fn sync_emits_codex_marketplace_for_only_workspace_members_with_codex_metadata()
     assert_eq!(codex["plugins"][0]["name"].as_str(), Some("Axiom"));
     assert_eq!(
         codex["plugins"][0]["source"]["path"].as_str(),
-        Some("../plugins/axiom")
+        Some("./plugins/axiom")
     );
 }
 
@@ -2706,7 +2611,7 @@ authentication = "ON_INSTALL"
     assert_eq!(codex["plugins"][0]["name"].as_str(), Some("ena-core"));
     assert_eq!(
         codex["plugins"][0]["source"]["path"].as_str(),
-        Some("../plugins/core")
+        Some("./plugins/core")
     );
 }
 
@@ -4240,12 +4145,9 @@ fn add_dependency_accepts_codex_marketplace_wrapper_and_syncs_plugin_contents() 
         codex_mcp["mcpServers"]["figma"]["url"].as_str(),
         Some("http://127.0.0.1:3845/mcp")
     );
-    let codex_config: toml::Value =
-        toml::from_str(&fs::read_to_string(temp.path().join(".codex/config.toml")).unwrap())
-            .unwrap();
-    assert_eq!(
-        codex_config["mcp_servers"]["axiom__figma"]["url"].as_str(),
-        Some("http://127.0.0.1:3845/mcp")
+    assert!(
+        !temp.path().join(".codex/config.toml").exists(),
+        "Codex MCP servers from local marketplace plugins should not be duplicated in project config"
     );
 }
 
@@ -5667,7 +5569,7 @@ shared = { path = "vendor/shared", components = ["commands"] }
         Adapter::Codex,
         &managed_codex_command_skill
     ));
-    assert_eq!(summary.managed_file_count, 3);
+    assert_eq!(summary.managed_file_count, 4);
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     let shared = lockfile
@@ -6157,7 +6059,7 @@ args = ["-y", "firebase-tools", "mcp", "--dir", "."]
 }
 
 #[test]
-fn sync_emits_codex_config_toml_from_dependency_manifests() {
+fn sync_emits_codex_native_plugin_mcp_from_dependency_manifests() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();
     write_manifest(
@@ -6189,9 +6091,14 @@ X-Figma-Region = "us-east-1"
 
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
 
-    let config: toml::Value =
-        toml::from_str(&fs::read_to_string(temp.path().join(".codex/config.toml")).unwrap())
-            .unwrap();
+    let config: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(
+            temp.path()
+                .join(".nodus/packages/firebase/codex-plugin/.mcp.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     let firebase_package = lockfile
         .packages
@@ -6200,49 +6107,49 @@ X-Figma-Region = "us-east-1"
         .unwrap();
 
     assert_eq!(firebase_package.mcp_servers, vec!["figma", "firebase"]);
-    assert_owned(&lockfile, temp.path(), ".codex/config.toml");
+    assert_not_owned(&lockfile, temp.path(), ".codex/config.toml");
+    assert_owned(
+        &lockfile,
+        temp.path(),
+        ".nodus/packages/firebase/codex-plugin",
+    );
     assert_eq!(
-        config["mcp_servers"]["firebase__firebase"]["command"].as_str(),
+        config["mcpServers"]["firebase"]["command"].as_str(),
         Some("npx")
     );
     assert_eq!(
-        config["mcp_servers"]["firebase__firebase"]["args"].as_array(),
+        config["mcpServers"]["firebase"]["args"].as_array(),
         Some(&vec![
-            toml::Value::String("-y".into()),
-            toml::Value::String("firebase-tools".into()),
-            toml::Value::String("mcp".into()),
-            toml::Value::String("--dir".into()),
-            toml::Value::String(".".into()),
+            serde_json::Value::String("-y".into()),
+            serde_json::Value::String("firebase-tools".into()),
+            serde_json::Value::String("mcp".into()),
+            serde_json::Value::String("--dir".into()),
+            serde_json::Value::String(".".into()),
         ])
     );
+    assert_eq!(config["mcpServers"]["firebase"]["cwd"].as_str(), Some("."));
     assert_eq!(
-        config["mcp_servers"]["firebase__firebase"]["cwd"].as_str(),
-        Some(".")
-    );
-    assert_eq!(
-        config["mcp_servers"]["firebase__firebase"]["env"]["IS_FIREBASE_MCP"].as_str(),
+        config["mcpServers"]["firebase"]["env"]["IS_FIREBASE_MCP"].as_str(),
         Some("true")
     );
     assert_eq!(
-        config["mcp_servers"]["firebase__figma"]["url"].as_str(),
+        config["mcpServers"]["figma"]["url"].as_str(),
         Some("https://mcp.figma.com/mcp")
     );
     assert_eq!(
-        config["mcp_servers"]["firebase__figma"]["bearer_token_env_var"].as_str(),
-        Some("FIGMA_TOKEN")
+        config["mcpServers"]["figma"]["headers"]["Authorization"].as_str(),
+        Some("Bearer ${FIGMA_TOKEN}")
     );
     assert_eq!(
-        config["mcp_servers"]["firebase__figma"]["http_headers"]["X-Figma-Region"].as_str(),
+        config["mcpServers"]["figma"]["headers"]["X-Figma-Region"].as_str(),
         Some("us-east-1")
     );
 }
 
 #[test]
-fn sync_prunes_codex_project_mcp_when_native_plugin_auto_enabled() {
+fn sync_emits_codex_mcp_through_native_plugin_marketplace() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();
-    let codex_home = TempDir::new().unwrap();
-    let codex_config = codex_home.path().join("config.toml");
     write_manifest(
         temp.path(),
         r#"
@@ -6262,39 +6169,17 @@ args = ["-y", "firebase-tools", "mcp", "--dir", "."]
     );
 
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
-    assert!(temp.path().join(".codex/config.toml").exists());
-
-    let reporter = Reporter::silent();
-    let install_paths =
-        InstallPaths::project(temp.path()).with_codex_user_config(Some(codex_config.clone()));
-    super::sync_in_dir_with_adapters_mode(
-        &install_paths,
-        cache.path(),
-        SyncMode::Normal,
-        false,
-        false,
-        &[Adapter::Codex],
-        false,
-        ExecutionMode::Apply,
-        None,
-        DependencyFailureMode::Graceful,
-        false,
-        &reporter,
-    )
-    .unwrap();
 
     assert!(
         !temp.path().join(".codex/config.toml").exists(),
-        "Codex native plugin MCP should replace the stale project-level MCP config"
+        "Codex native plugin MCP should not duplicate project-level MCP config"
     );
     assert!(
         temp.path()
             .join(".nodus/packages/firebase/codex-plugin/.mcp.json")
             .exists()
     );
-    let user_config = fs::read_to_string(codex_config).unwrap();
-    assert!(user_config.contains(r#"[plugins."firebase@yoki-ios"]"#));
-    assert!(user_config.contains("enabled = true"));
+    assert!(generated_codex_marketplace_path(temp.path()).exists());
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert_not_owned(&lockfile, temp.path(), ".codex/config.toml");
 }
@@ -11390,13 +11275,15 @@ fn doctor_repairs_invalid_managed_codex_config_when_it_owns_the_file() {
     let cache = cache_dir();
     write_manifest(
         temp.path(),
-        "[dependencies.firebase]\npath = \"vendor/firebase\"\n",
+        r#"
+[adapters]
+enabled = ["codex"]
+
+[launch_hooks]
+sync_on_startup = true
+"#,
     );
-    write_file(
-        &temp.path().join("vendor/firebase/nodus.toml"),
-        "[mcp_servers.firebase]\ncommand = \"npx\"\n",
-    );
-    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
+    sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
 
     write_file(&temp.path().join(".codex/config.toml"), "[mcp_servers");
 
@@ -11945,7 +11832,7 @@ fn doctor_check_mode_reports_risky_cleanup_without_deleting_anything() {
     let cache = cache_dir();
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
     fs::remove_file(temp.path().join(LOCKFILE_NAME)).unwrap();
-    let codex_marketplace_parent = temp.path().join(".nodus/.agents");
+    let codex_marketplace_parent = temp.path().join(".agents/plugins");
     fs::remove_dir_all(&codex_marketplace_parent).unwrap();
     write_file(&codex_marketplace_parent, "user-owned file\n");
 
@@ -11973,7 +11860,7 @@ fn doctor_force_mode_applies_risky_cleanup_without_prompt() {
     let cache = cache_dir();
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
     fs::remove_file(temp.path().join(LOCKFILE_NAME)).unwrap();
-    let codex_marketplace_parent = temp.path().join(".nodus/.agents");
+    let codex_marketplace_parent = temp.path().join(".agents/plugins");
     fs::remove_dir_all(&codex_marketplace_parent).unwrap();
     write_file(&codex_marketplace_parent, "user-owned file\n");
 
@@ -12897,12 +12784,12 @@ fn slice5_attribute_file_to_package_is_alphabetically_deterministic() {
 
 /// Regression guard for Copilot PR #14 review finding #2: in workspace mode
 /// (`[workspace]` in the root manifest) the marketplace JSON files
-/// (`.nodus/.claude-plugin/marketplace.json`, `.nodus/.agents/plugins/...`)
-/// are written by the sync loop, not by `build_output_plan_with_options`.
-/// Before the fix they landed in the root package's `owned_files` but their
-/// bytes were missing from `install_digest`. On a second sync,
-/// `install_digest_from_disk` would walk them and produce a digest that
-/// always disagreed with the recorded value, missing the fast-path forever.
+/// (`.nodus/.claude-plugin/marketplace.json`, `.agents/plugins/...`)
+/// must be covered by the root package install digest. Before the fix they
+/// landed in the root package's `owned_files` but their bytes were missing
+/// from `install_digest`. On a second sync, `install_digest_from_disk` would
+/// walk them and produce a digest that always disagreed with the recorded
+/// value, missing the fast-path forever.
 ///
 /// This test asserts the recorded install_digest equals what we re-compute
 /// from disk for a workspace-mode consumer.

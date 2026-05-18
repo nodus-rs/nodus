@@ -15,7 +15,6 @@ use crate::domain::dependency_query::{
     ResolvedInspectionSource, load_manifest_for_inspection, resolve_inspection_target,
 };
 use crate::git::{ensure_git_dependency, normalize_alias_from_url, normalize_git_url};
-use crate::install_paths::codex_user_config_writes_enabled;
 use crate::manifest::{
     DependencyComponent, DependencySpec, LoadedManifest, ManagedPlacement, PackageRole,
     RequestedGitRef as ManifestRequestedGitRef, normalize_dependency_alias,
@@ -142,7 +141,7 @@ struct CodexNativeState {
     hooks: Option<bool>,
     plugin_hooks: Option<bool>,
     plugin_hooks_required: bool,
-    user_config: String,
+    registration: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -951,6 +950,8 @@ fn native_plugin_source_root(
     let path = Path::new(source);
     if path.is_absolute() {
         Some(path.to_path_buf())
+    } else if adapter == Adapter::Codex {
+        Some(project_root.join(path))
     } else {
         Some(project_root.join(".nodus").join(path))
     }
@@ -1035,11 +1036,7 @@ fn inspect_codex_native_state(
         hooks,
         plugin_hooks,
         plugin_hooks_required,
-        user_config: if codex_user_config_writes_enabled() {
-            "auto".into()
-        } else {
-            "disabled".into()
-        },
+        registration: "local-marketplace".into(),
     }
 }
 
@@ -1574,12 +1571,12 @@ fn render_native_integration_lines(
     }
 
     lines.push(format!(
-        "  codex = project-config:{} hooks={} plugin_hooks={} plugin_hooks_required={} user-config={}",
+        "  codex = project-config:{} hooks={} plugin_hooks={} plugin_hooks_required={} registration={}",
         native.codex.project_config,
         render_optional_bool(native.codex.hooks),
         render_optional_bool(native.codex.plugin_hooks),
         native.codex.plugin_hooks_required,
-        native.codex.user_config
+        native.codex.registration
     ));
     lines.push(format!(
         "  claude = settings:{} marketplaces=[{}] enabled=[{}]",
@@ -2181,13 +2178,13 @@ always_context = ["prompts/context.md"]
         assert!(output.contains("native-integration:"));
         assert!(output.contains("adapters = [claude, codex]"));
         assert!(output.contains(".nodus/.claude-plugin/marketplace.json (present"));
-        assert!(output.contains(".nodus/.agents/plugins/marketplace.json (present"));
+        assert!(output.contains(".agents/plugins/marketplace.json (present"));
         assert!(output.contains("claude shared@"));
         assert!(output.contains(".nodus/packages/shared/claude-plugin"));
         assert!(output.contains("codex shared@"));
         assert!(output.contains(".nodus/packages/shared/codex-plugin"));
         assert!(output.contains("plugin_hooks=true plugin_hooks_required=true"));
-        assert!(output.contains("user-config=auto"));
+        assert!(output.contains("registration=local-marketplace"));
 
         let info =
             describe_package_json_in_dir(project.path(), cache.path(), ".", None, None).unwrap();
@@ -2196,6 +2193,7 @@ always_context = ["prompts/context.md"]
         assert_eq!(native.codex.hooks, Some(true));
         assert_eq!(native.codex.plugin_hooks, Some(true));
         assert!(native.codex.plugin_hooks_required);
+        assert_eq!(native.codex.registration, "local-marketplace");
         assert!(
             native
                 .plugins

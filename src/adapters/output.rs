@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -7,7 +6,6 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use toml::Value as TomlValue;
-use toml_edit::{DocumentMut, Item as EditableTomlItem, Table as EditableTomlTable};
 
 use super::profile::runtime_root_name;
 use super::{
@@ -16,7 +14,9 @@ use super::{
     managed_runtime_skill_id, preferred_surface,
 };
 use crate::lockfile::{Lockfile, OwnedPrefix, managed_mcp_server_name};
-use crate::manifest::{DependencyComponent, HookSpec, LoadedManifest, McpServerConfig};
+use crate::manifest::{
+    DependencyComponent, HookSpec, LoadedManifest, McpServerConfig, load_dependency_from_dir,
+};
 use crate::paths::{display_path, strip_path_prefix};
 use crate::resolver::{PackageSource, ResolvedPackage};
 
@@ -888,11 +888,15 @@ fn native_package_marketplace_files(
     packages: &[(ResolvedPackage, PathBuf)],
     selected_adapters: Adapters,
 ) -> Result<Vec<ManagedFile>> {
-    if packages.iter().any(|(package, _)| {
-        matches!(package.source, PackageSource::Root)
-            && package.manifest.manifest.workspace.is_some()
-    }) {
-        return Ok(Vec::new());
+    if let Some(root) = packages
+        .iter()
+        .find(|(package, _)| {
+            matches!(package.source, PackageSource::Root)
+                && package.manifest.manifest.workspace.is_some()
+        })
+        .map(|(package, _)| &package.manifest)
+    {
+        return workspace_native_marketplace_files(project_root, root, selected_adapters);
     }
 
     let mut files = Vec::new();
@@ -950,6 +954,150 @@ fn native_package_marketplace_files(
     Ok(files)
 }
 
+fn workspace_native_marketplace_files(
+    project_root: &Path,
+    root: &LoadedManifest,
+    selected_adapters: Adapters,
+) -> Result<Vec<ManagedFile>> {
+    let members = root
+        .workspace_member_statuses()?
+        .into_iter()
+        .filter(|member| member.enabled)
+        .collect::<Vec<_>>();
+    if members.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut files = Vec::new();
+    let marketplace_name = workspace_marketplace_name(root);
+
+    if selected_adapters.contains(Adapter::Claude)
+        && preferred_surface(Adapter::Claude) == PreferredSurface::PackagePluginWorkspaceMarketplace
+    {
+        let owner_name = workspace_marketplace_owner_name(root);
+        let plugins = members
+            .iter()
+            .map(|member| {
+                let member_root = root.resolve_path(&member.path)?;
+                let manifest = load_dependency_from_dir(&member_root)?;
+                let mut value = JsonMap::from_iter([
+                    (
+                        "name".to_string(),
+                        JsonValue::String(workspace_member_marketplace_plugin_name(
+                            root,
+                            member,
+                            || manifest.effective_name(),
+                        )),
+                    ),
+                    (
+                        "source".to_string(),
+                        JsonValue::String(super::native_marketplace_plugin_source_path(
+                            &root.root,
+                            Adapter::Claude,
+                            &member_root,
+                        )),
+                    ),
+                ]);
+                if let Some(version) = manifest
+                    .effective_version()
+                    .map(|version| version.to_string())
+                {
+                    value.insert("version".to_string(), JsonValue::String(version));
+                }
+                Ok(JsonValue::Object(value))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        files.push(ManagedFile {
+            path: super::native_marketplace_path(project_root, Adapter::Claude)
+                .expect("claude marketplace path"),
+            contents: json_bytes(JsonMap::from_iter([
+                (
+                    "name".to_string(),
+                    JsonValue::String(marketplace_name.clone()),
+                ),
+                (
+                    "owner".to_string(),
+                    JsonValue::Object(JsonMap::from_iter([(
+                        "name".to_string(),
+                        JsonValue::String(owner_name),
+                    )])),
+                ),
+                ("plugins".to_string(), JsonValue::Array(plugins)),
+            ]))?,
+        });
+    }
+
+    if selected_adapters.contains(Adapter::Codex)
+        && preferred_surface(Adapter::Codex) == PreferredSurface::PackagePluginWorkspaceMarketplace
+    {
+        let plugins = members
+            .iter()
+            .map(|member| {
+                let Some(codex) = member.codex.as_ref() else {
+                    return Ok(None);
+                };
+                let member_root = root.resolve_path(&member.path)?;
+                Ok(Some(JsonValue::Object(JsonMap::from_iter([
+                    (
+                        "name".to_string(),
+                        JsonValue::String(workspace_member_marketplace_plugin_name(
+                            root,
+                            member,
+                            || member.id.clone(),
+                        )),
+                    ),
+                    (
+                        "source".to_string(),
+                        JsonValue::Object(JsonMap::from_iter([
+                            ("source".to_string(), JsonValue::String("local".to_string())),
+                            (
+                                "path".to_string(),
+                                JsonValue::String(super::native_marketplace_plugin_source_path(
+                                    &root.root,
+                                    Adapter::Codex,
+                                    &member_root,
+                                )),
+                            ),
+                        ])),
+                    ),
+                    (
+                        "policy".to_string(),
+                        JsonValue::Object(JsonMap::from_iter([
+                            (
+                                "installation".to_string(),
+                                JsonValue::String(codex.installation.clone()),
+                            ),
+                            (
+                                "authentication".to_string(),
+                                JsonValue::String(codex.authentication.clone()),
+                            ),
+                        ])),
+                    ),
+                    (
+                        "category".to_string(),
+                        JsonValue::String(codex.category.clone()),
+                    ),
+                ]))))
+            })
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        if !plugins.is_empty() {
+            files.push(ManagedFile {
+                path: super::native_marketplace_path(project_root, Adapter::Codex)
+                    .expect("codex marketplace path"),
+                contents: json_bytes(JsonMap::from_iter([
+                    ("name".to_string(), JsonValue::String(marketplace_name)),
+                    ("plugins".to_string(), JsonValue::Array(plugins)),
+                ]))?,
+            });
+        }
+    }
+
+    Ok(files)
+}
+
 fn native_marketplace_plugin_entry(
     project_root: &Path,
     package: &ResolvedPackage,
@@ -963,7 +1111,8 @@ fn native_marketplace_plugin_entry(
     }
 
     let plugin_root = super::native_package_plugin_root(project_root, adapter, package);
-    let source_path = super::native_marketplace_plugin_source_path(project_root, &plugin_root);
+    let source_path =
+        super::native_marketplace_plugin_source_path(project_root, adapter, &plugin_root);
     let mut entry = JsonMap::from_iter([(
         "name".to_string(),
         JsonValue::String(native_package_plugin_name(package)),
@@ -1138,6 +1287,14 @@ fn workspace_member_codex_plugin_name(
     root: &LoadedManifest,
     member: &crate::manifest::WorkspaceMemberStatus,
 ) -> String {
+    workspace_member_marketplace_plugin_name(root, member, || member.id.clone())
+}
+
+fn workspace_member_marketplace_plugin_name(
+    root: &LoadedManifest,
+    member: &crate::manifest::WorkspaceMemberStatus,
+    default_name: impl FnOnce() -> String,
+) -> String {
     if root
         .manifest
         .workspace
@@ -1147,152 +1304,30 @@ fn workspace_member_codex_plugin_name(
     {
         normalize_marketplace_name(&member.alias)
     } else {
-        member.name.clone().unwrap_or_else(|| member.id.clone())
+        member.name.clone().unwrap_or_else(default_name)
     }
 }
 
-pub(crate) fn codex_user_plugin_config_file(
-    path: &Path,
-    project_root: &Path,
-    packages: &[(ResolvedPackage, PathBuf)],
-) -> Result<Option<ManagedFile>> {
-    let enablement = match native_package_plugin_keys(project_root, packages, Adapter::Codex)? {
-        Some(enablement) => Some(enablement),
-        None => workspace_codex_marketplace(project_root, packages)?,
-    };
-    let Some((marketplace_name, plugin_keys)) = enablement else {
-        return Ok(None);
-    };
-    let marketplace_source = absolute_path(&super::native_marketplace_root(project_root))?;
-    let existing = if path.exists() {
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?
-    } else {
-        String::new()
-    };
-    let contents = codex_user_plugin_config_contents(
-        &existing,
-        &marketplace_name,
-        &display_path(&marketplace_source),
-        &plugin_keys,
-        path,
-    )?;
-    if contents == existing.as_bytes() {
-        return Ok(None);
-    }
-
-    Ok(Some(ManagedFile {
-        path: path.to_path_buf(),
-        contents,
-    }))
+fn workspace_marketplace_name(root: &LoadedManifest) -> String {
+    normalize_marketplace_name(&workspace_marketplace_owner_name(root))
 }
 
-fn workspace_codex_marketplace(
-    project_root: &Path,
-    packages: &[(ResolvedPackage, PathBuf)],
-) -> Result<Option<(String, Vec<String>)>> {
-    let Some(root) = packages
-        .iter()
-        .find(|(package, _)| matches!(package.source, PackageSource::Root))
-        .map(|(package, _)| package)
-    else {
-        return Ok(None);
-    };
-    if root.manifest.manifest.workspace.is_none() {
-        return Ok(None);
-    }
-
-    let has_codex_members = root
-        .manifest
-        .workspace_member_statuses()?
-        .iter()
-        .any(|member| member.enabled && member.codex.is_some());
-    Ok(has_codex_members.then(|| {
-        (
-            native_marketplace_names(project_root, packages).0,
-            Vec::new(),
-        )
-    }))
+fn workspace_marketplace_owner_name(root: &LoadedManifest) -> String {
+    root.manifest
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| workspace_marketplace_root_basename(&root.root))
 }
 
-fn absolute_path(path: &Path) -> Result<PathBuf> {
-    if path.is_absolute() {
-        Ok(path.to_path_buf())
-    } else {
-        Ok(env::current_dir()
-            .context("failed to resolve current directory")?
-            .join(path))
-    }
-}
-
-fn codex_user_plugin_config_contents(
-    existing: &str,
-    marketplace_name: &str,
-    marketplace_source: &str,
-    plugin_keys: &[String],
-    path: &Path,
-) -> Result<Vec<u8>> {
-    let mut document = if existing.trim().is_empty() {
-        DocumentMut::new()
-    } else {
-        existing
-            .parse::<DocumentMut>()
-            .with_context(|| format!("failed to parse Codex user config {}", path.display()))?
-    };
-    let marketplaces = document
-        .entry("marketplaces")
-        .or_insert_with(|| EditableTomlItem::Table(EditableTomlTable::new()));
-    let Some(marketplaces) = marketplaces.as_table_mut() else {
-        bail!(
-            "failed to merge Codex user config {}; `marketplaces` must be a TOML table",
-            path.display()
-        );
-    };
-    let marketplace = marketplaces
-        .entry(marketplace_name)
-        .or_insert_with(|| EditableTomlItem::Table(EditableTomlTable::new()));
-    let Some(marketplace) = marketplace.as_table_mut() else {
-        bail!(
-            "failed to merge Codex user config {}; `marketplaces.{}` must be a TOML table",
-            path.display(),
-            marketplace_name
-        );
-    };
-    marketplace["source_type"] = toml_edit::value("local");
-    marketplace["source"] = toml_edit::value(marketplace_source);
-    marketplace.remove("ref");
-    marketplace.remove("sparse_paths");
-
-    if !plugin_keys.is_empty() {
-        let plugins = document
-            .entry("plugins")
-            .or_insert_with(|| EditableTomlItem::Table(EditableTomlTable::new()));
-        let Some(plugins) = plugins.as_table_mut() else {
-            bail!(
-                "failed to merge Codex user config {}; `plugins` must be a TOML table",
-                path.display()
-            );
-        };
-
-        for plugin_key in plugin_keys {
-            let plugin = plugins
-                .entry(plugin_key)
-                .or_insert_with(|| EditableTomlItem::Table(EditableTomlTable::new()));
-            let Some(plugin) = plugin.as_table_mut() else {
-                bail!(
-                    "failed to merge Codex user config {}; `plugins.{}` must be a TOML table",
-                    path.display(),
-                    plugin_key
-                );
-            };
-            plugin["enabled"] = toml_edit::value(true);
-        }
-    }
-
-    let mut contents = document.to_string().into_bytes();
-    if !contents.ends_with(b"\n") {
-        contents.push(b'\n');
-    }
-    Ok(contents)
+fn workspace_marketplace_root_basename(root: &Path) -> String {
+    root.file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| String::from("agentpack"))
 }
 
 fn emit_native_package_plugins(
@@ -3459,8 +3494,8 @@ fn debug_assert_owned_paths_cover_planned_files(
     managed_files_by_package: &[PackageOwnedPaths],
 ) {
     for path in planned_paths {
-        // Files that live outside `project_root` (e.g. Codex user-config
-        // edits) aren't part of any package's runtime-rooted ownership view.
+        // Files that live outside `project_root` aren't part of any package's
+        // runtime-rooted ownership view.
         let Some(relative) = strip_path_prefix(path, project_root) else {
             continue;
         };

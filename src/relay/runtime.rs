@@ -498,7 +498,9 @@ fn adapters_from_lockfile(lockfile: &Lockfile) -> Adapters {
 }
 
 fn adapter_for_managed_path(path: &str) -> Option<Adapter> {
-    if path.starts_with(".agents/") {
+    if path == ".agents/plugins/marketplace.json" {
+        Some(Adapter::Codex)
+    } else if path.starts_with(".agents/") {
         Some(Adapter::Agents)
     } else if path.starts_with(".claude/")
         || path.starts_with(".claude-plugin/")

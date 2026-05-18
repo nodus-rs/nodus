@@ -10,15 +10,16 @@ use super::resolve::{ResolveProjectOptions, resolve_project, validate_git_packag
 use super::support::{
     build_sync_execution_plan, execute_sync_plan, find_managed_collision, find_unmanaged_collision,
     load_owned_paths, managed_merge_paths, managed_path_is_owned,
-    planned_workspace_marketplace_files, recover_runtime_owned_paths_from_disk,
-    remove_path_and_empty_parents, unmanaged_collision_guidance, validate_state_consistency,
+    recover_runtime_owned_paths_from_disk, remove_path_and_empty_parents,
+    unmanaged_collision_guidance, validate_state_consistency,
 };
 use super::{
     DependencyFailureMode, Resolution, ResolveMode, SyncMode, lockfile_out_of_date_message,
 };
-use crate::adapters::{Adapters, ManagedFile, OutputPlanOptions, build_output_plan_with_options};
+use crate::adapters::{
+    Adapter, Adapters, ManagedFile, OutputPlanOptions, build_output_plan_with_options,
+};
 use crate::execution::ExecutionMode;
-use crate::install_paths::InstallPaths;
 use crate::lockfile::{LOCKFILE_NAME, Lockfile, OwnedSet};
 use crate::manifest::{LoadedManifest, load_root_from_dir};
 use crate::paths::display_path;
@@ -211,9 +212,8 @@ fn inspect_doctor_state(
         None
     };
     let mut owned_paths = load_owned_paths(cwd, existing_lockfile.as_ref())?;
-    let workspace_marketplace_files = planned_workspace_marketplace_files(&root, cwd)?;
     let mut invalid_owned_outputs = Vec::new();
-    let codex_native_plugins_auto_enabled = InstallPaths::project(cwd).codex_user_config.is_some();
+    let codex_native_plugins_auto_enabled = selected_adapters.contains(Adapter::Codex);
     let desired_paths = resolution.managed_paths_with_options(
         cwd,
         selected_adapters,
@@ -247,14 +247,7 @@ fn inspect_doctor_state(
             )?
         }
     };
-    let mut planned_files = output_plan.files;
-    let mut desired_paths = desired_paths;
-    desired_paths.extend(
-        workspace_marketplace_files
-            .iter()
-            .map(|file| file.path.clone()),
-    );
-    planned_files.extend(workspace_marketplace_files);
+    let planned_files = output_plan.files;
     let managed_file_count = planned_files.len();
     if existing_lockfile.is_none() {
         owned_paths

@@ -22,7 +22,7 @@ use self::support::{
 use self::support::{prune_empty_parent_dirs, write_managed_files};
 use crate::adapters::{
     Adapter, Adapters, ManagedFile, OutputPlan, OutputPlanOptions, PackageOwnedPaths,
-    build_output_plan_with_options, codex_user_plugin_config_file,
+    build_output_plan_with_options,
 };
 use crate::execution::ExecutionMode;
 use crate::hashing::content_digest;
@@ -32,7 +32,7 @@ use crate::lockfile::{
     locked_runtime_adapter_owned_paths,
 };
 use crate::manifest::{
-    DependencyComponent, LoadedManifest, ManagedPlacement, PackageRole, load_dependency_from_dir,
+    DependencyComponent, LoadedManifest, ManagedPlacement, PackageRole,
     load_root_from_dir_allow_missing,
 };
 use crate::paths::display_path;
@@ -892,11 +892,8 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
         || selection.should_persist
         || sync_on_launch
         || legacy_launch_hook_config;
-    let codex_user_config_write_possible =
-        selection.adapters.contains(&Adapter::Codex) && install_paths.codex_user_config.is_some();
     let attempt_fast_path = !force_rebuild
         && !manifest_mutation_pending
-        && !codex_user_config_write_possible
         && existing_lockfile
             .as_ref()
             .is_some_and(Lockfile::uses_current_schema);
@@ -1014,7 +1011,7 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
             })
             .collect::<Result<Vec<_>>>()?;
         let selected_adapters = Adapters::from_slice(&selection.adapters);
-        let codex_native_plugins_auto_enabled = install_paths.codex_user_config.is_some();
+        let codex_native_plugins_auto_enabled = selected_adapters.contains(Adapter::Codex);
         let output_plan = build_output_plan_with_options(
             &install_paths.runtime_root,
             &package_snapshots,
@@ -1025,31 +1022,12 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
                 codex_native_plugins_auto_enabled,
             },
         )?;
-        let mut external_files = Vec::new();
-        if selected_adapters.contains(Adapter::Codex)
-            && let Some(path) = &install_paths.codex_user_config
-            && let Some(file) = codex_user_plugin_config_file(
-                path,
-                &install_paths.runtime_root,
-                &package_snapshots,
-            )?
-        {
-            external_files.push(file);
-        }
-        let mut planned_files = output_plan.files.clone();
-        let mut desired_paths = resolution.managed_paths_with_options(
+        let planned_files = output_plan.files.clone();
+        let desired_paths = resolution.managed_paths_with_options(
             &install_paths.runtime_root,
             selected_adapters,
             codex_native_plugins_auto_enabled,
         )?;
-        let workspace_marketplace_files =
-            planned_workspace_marketplace_files(&root, &install_paths.runtime_root)?;
-        desired_paths.extend(
-            workspace_marketplace_files
-                .iter()
-                .map(|file| file.path.clone()),
-        );
-        planned_files.extend(workspace_marketplace_files);
         let lockfile = resolution.to_lockfile_with_options(
             selected_adapters,
             &install_paths.runtime_root,
@@ -1197,7 +1175,7 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
             &owned_paths,
             &desired_paths,
             &planned_files,
-            external_files,
+            Vec::new(),
             resolution
                 .warnings
                 .iter()
@@ -1373,51 +1351,8 @@ impl Resolution {
             .map(|owned| (owned.alias.clone(), owned))
             .collect();
 
-        // The workspace marketplace files (`.nodus/.claude-plugin/marketplace.json`
-        // and `.nodus/.agents/plugins/marketplace.json`) are emitted by the
-        // sync loop, not by `build_output_plan_with_options`. Attribute them
-        // to the workspace owner (root package) so the lockfile records them
-        // as Nodus-owned — sync's collision detector and cleanup pass both
-        // consult the per-package ownership view to decide whether a runtime
-        // file is allowed to exist. We also feed the bytes into the digest
-        // input below so the recorded `install_digest` covers them; without
-        // that, `install_digest_from_disk` (which walks every owned path on
-        // disk, marketplace files included) would always disagree with the
-        // recorded digest and the fast-path would miss on every sync in
-        // workspace mode.
-        let workspace_marketplace_managed_files =
-            planned_workspace_marketplace_managed_files(self, runtime_root)?;
-        if !workspace_marketplace_managed_files.is_empty() {
-            let workspace_alias = self
-                .packages
-                .iter()
-                .find(|package| matches!(package.source, PackageSource::Root))
-                .map(|package| package.alias.clone())
-                .unwrap_or_else(|| "root".to_string());
-            let bucket = per_package_owned
-                .entry(workspace_alias.clone())
-                .or_insert_with(|| PackageOwnedPaths {
-                    alias: workspace_alias,
-                    subtrees: Vec::new(),
-                    prefixes: Vec::new(),
-                    files: Vec::new(),
-                });
-            for file in &workspace_marketplace_managed_files {
-                let relative =
-                    display_path(file.path.strip_prefix(runtime_root).unwrap_or(&file.path));
-                if !bucket.files.contains(&relative) {
-                    bucket.files.push(relative);
-                }
-            }
-            bucket.files.sort();
-        }
-
-        let per_package_install_digests = install_digests_by_package(
-            runtime_root,
-            &output_plan,
-            &per_package_owned,
-            &workspace_marketplace_managed_files,
-        )?;
+        let per_package_install_digests =
+            install_digests_by_package(runtime_root, &output_plan, &per_package_owned, &[])?;
 
         let mut packages = Vec::new();
 
@@ -1884,13 +1819,10 @@ fn count_owned_files(lockfile: &Lockfile) -> usize {
 /// caller stamps `content_digest(&[])` on them so v10 lockfiles always carry a
 /// digest (Slice 4's drift fast-path needs a stable empty-install baseline).
 ///
-/// `extra_files` is the second-class input for files the output plan does not
-/// emit but the lockfile records as owned (today: workspace marketplace JSONs
-/// under `.nodus/.claude-plugin/` and `.nodus/.agents/plugins/`, which the
-/// sync loop writes outside `build_output_plan_with_options`). They must be
-/// hashed too, otherwise `install_digest_from_disk` — which walks every owned
-/// path on disk — will compute a digest that always disagrees with the
-/// recorded one and the fast-path will miss on every subsequent sync.
+/// `extra_files` is a compatibility input for files outside the ordinary
+/// output plan that still appear in a package ownership view. Most managed
+/// outputs, including native marketplace JSONs, should already be in
+/// `output_plan.files`.
 fn install_digests_by_package(
     runtime_root: &Path,
     output_plan: &OutputPlan,
@@ -1908,8 +1840,7 @@ fn install_digests_by_package(
             .to_path_buf();
         let Some(alias) = attribute_file_to_package(&target_relative, per_package_owned) else {
             // Unattributed files exist in the on-disk plan but aren't part of
-            // any package's ownership view (e.g. Codex user-config edits that
-            // live outside runtime_root). They don't contribute to a
+            // any package's ownership view. They don't contribute to a
             // per-package install_digest.
             continue;
         };
@@ -2027,205 +1958,6 @@ fn package_dependency_aliases(
     dependencies.sort();
     dependencies.dedup();
     Ok(dependencies)
-}
-
-/// Resolver-side view of [`planned_workspace_marketplace_files`] for the
-/// lockfile-emission path. Returns just the on-disk paths the workspace
-/// marketplace planner would emit; we use them in `to_lockfile_with_options`
-/// to seed per-package ownership for the workspace owner (without forcing
-/// every call site that just wants ownership to construct the JSON bodies).
-/// Resolve the workspace marketplace files (path + bytes) for the lockfile
-/// emitter. These are the `.nodus/.claude-plugin/marketplace.json` and
-/// `.nodus/.agents/plugins/marketplace.json` files the sync loop writes
-/// outside `build_output_plan_with_options`. Both consumers (per-package
-/// ownership and `install_digest`) need the same set, so we return the full
-/// `ManagedFile` and let callers pick `.path` or `.contents` as needed.
-fn planned_workspace_marketplace_managed_files(
-    resolution: &Resolution,
-    runtime_root: &Path,
-) -> Result<Vec<ManagedFile>> {
-    let Some(root) = resolution
-        .packages
-        .iter()
-        .find(|package| matches!(package.source, PackageSource::Root))
-        .map(|package| &package.manifest)
-    else {
-        return Ok(Vec::new());
-    };
-    planned_workspace_marketplace_files(root, runtime_root)
-}
-
-fn planned_workspace_marketplace_files(
-    root: &LoadedManifest,
-    runtime_root: &Path,
-) -> Result<Vec<ManagedFile>> {
-    if root.manifest.workspace.is_none() {
-        return Ok(Vec::new());
-    }
-
-    let members = root
-        .workspace_member_statuses()?
-        .into_iter()
-        .filter(|member| member.enabled)
-        .collect::<Vec<_>>();
-    if members.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let mut files = Vec::new();
-    let claude_marketplace_name = workspace_marketplace_name(root);
-    let claude_marketplace_owner_name = workspace_marketplace_owner_name(root);
-    let claude_plugins = members
-        .iter()
-        .map(|member| {
-            let member_root = root.resolve_path(&member.path)?;
-            let manifest = load_dependency_from_dir(&member_root)?;
-            let mut value = serde_json::Map::from_iter([
-                (
-                    "name".to_string(),
-                    serde_json::Value::String(workspace_member_marketplace_plugin_name(
-                        root,
-                        member,
-                        || manifest.effective_name(),
-                    )),
-                ),
-                (
-                    "source".to_string(),
-                    serde_json::Value::String(
-                        crate::adapters::native_marketplace_plugin_source_path(
-                            &root.root,
-                            &member_root,
-                        ),
-                    ),
-                ),
-            ]);
-            if let Some(version) = manifest
-                .effective_version()
-                .map(|version| version.to_string())
-            {
-                value.insert("version".to_string(), serde_json::Value::String(version));
-            }
-            Ok(serde_json::Value::Object(value))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    files.push(ManagedFile {
-        path: crate::adapters::native_marketplace_path(runtime_root, Adapter::Claude)
-            .expect("claude marketplace path"),
-        contents: serde_json::to_vec_pretty(&serde_json::json!({
-            "name": claude_marketplace_name,
-            "owner": {
-                "name": claude_marketplace_owner_name,
-            },
-            "plugins": claude_plugins,
-        }))?,
-    });
-
-    let codex_plugins = members
-        .iter()
-        .map(|member| {
-            let Some(codex) = member.codex.as_ref() else {
-                return Ok(None);
-            };
-            let member_root = root.resolve_path(&member.path)?;
-            Ok(Some(serde_json::json!({
-                "name": workspace_member_marketplace_plugin_name(root, member, || member.id.clone()),
-                "source": {
-                    "source": "local",
-                    "path": crate::adapters::native_marketplace_plugin_source_path(
-                        &root.root,
-                        &member_root,
-                    ),
-                },
-                "policy": {
-                    "installation": codex.installation,
-                    "authentication": codex.authentication,
-                },
-                "category": codex.category,
-            })))
-        })
-        .collect::<Result<Vec<_>>>()?
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
-    if !codex_plugins.is_empty() {
-        files.push(ManagedFile {
-            path: crate::adapters::native_marketplace_path(runtime_root, Adapter::Codex)
-                .expect("codex marketplace path"),
-            contents: serde_json::to_vec_pretty(&serde_json::json!({
-                "name": claude_marketplace_name,
-                "plugins": codex_plugins,
-            }))?,
-        });
-    }
-
-    Ok(files)
-}
-
-fn workspace_member_marketplace_plugin_name(
-    root: &LoadedManifest,
-    member: &crate::manifest::WorkspaceMemberStatus,
-    default_name: impl FnOnce() -> String,
-) -> String {
-    if root
-        .manifest
-        .workspace
-        .as_ref()
-        .and_then(|workspace| workspace.namespace.as_ref())
-        .is_some()
-    {
-        normalize_workspace_marketplace_name(&member.alias)
-    } else {
-        member.name.clone().unwrap_or_else(default_name)
-    }
-}
-
-fn workspace_marketplace_name(root: &LoadedManifest) -> String {
-    let source_name = root
-        .manifest
-        .name
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| workspace_marketplace_root_basename(&root.root));
-    normalize_workspace_marketplace_name(&source_name)
-}
-
-fn workspace_marketplace_owner_name(root: &LoadedManifest) -> String {
-    root.manifest
-        .name
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| workspace_marketplace_root_basename(&root.root))
-}
-
-fn workspace_marketplace_root_basename(root: &Path) -> String {
-    root.file_name()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| String::from("agentpack"))
-}
-
-fn normalize_workspace_marketplace_name(value: &str) -> String {
-    let mut normalized = String::new();
-
-    for character in value.chars() {
-        if character.is_ascii_alphanumeric() {
-            normalized.push(character.to_ascii_lowercase());
-        } else if !normalized.ends_with('-') {
-            normalized.push('-');
-        }
-    }
-
-    let normalized = normalized.trim_matches('-').to_string();
-    if normalized.is_empty() {
-        String::from("agentpack")
-    } else {
-        normalized
-    }
 }
 
 fn sorted_ids<'a>(ids: impl Iterator<Item = &'a String>) -> Vec<String> {
