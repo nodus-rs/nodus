@@ -280,6 +280,16 @@ When the OpenCode adapter is selected, Nodus copies the package files under
 `.nodus/packages/<alias>/opencode-plugin/` and generates JavaScript import
 wrappers in `.opencode/plugins/nodus-<alias>-<name>-<hash>.js`. These files are
 not emitted for other adapters, and they do not affect portable `[[hooks]]`.
+The wrappers support both default-export and named-export plugin modules.
+
+OpenCode does not have a native marketplace protocol like Claude or Codex.
+Nodus treats these entrypoints as a virtual plugin marketplace: dependency
+state still comes from `nodus.toml` and `nodus.lock`, while sync compiles the
+managed package copy into OpenCode loader files. `nodus info .` reports these
+entries under `virtual-plugins`, with adapter, package alias, source entry,
+install root, loader path, and present/missing status. See
+`docs/specs/2026-05-18-virtual-plugin-marketplaces.md` for the adapter
+contract and future-extension rules.
 
 ## Minimal example
 

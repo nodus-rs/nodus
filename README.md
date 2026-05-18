@@ -118,6 +118,13 @@ the generated Claude and Codex marketplace files, plugin keys and roots, hook
 locations, Codex `features.hooks` / `features.plugin_hooks`, Codex user-config
 sync state, and Claude `enabledPlugins` state.
 
+Adapters without a native marketplace can still expose managed plugins through
+Nodus's virtual plugin marketplace layer. OpenCode v1 uses
+`opencode_plugin_hooks` entries, copied package files under
+`.nodus/packages/<alias>/opencode-plugin/`, and generated loaders under
+`.opencode/plugins/`. `nodus info .` reports these as `virtual-plugins`, not
+native marketplace plugins.
+
 ### Codex user-level config
 
 When the Codex adapter is enabled, Nodus writes the user-level Codex config at
@@ -180,9 +187,10 @@ See [docs/hooks.md](docs/hooks.md) for the full hook reference: matcher
 rules per event, handler configuration, runtime environment, `nodus info`
 inspection, and the `claude_plugin_hooks` escape hatch for Claude plugin
 packages that ship a pre-built `hooks/hooks.json`, plus `opencode_plugin_hooks`
-for raw OpenCode plugin files. Dependency Codex hooks and activation context
-are emitted inside generated Codex plugins and enable
-`features.plugin_hooks` in `.codex/config.toml` when needed.
+for raw OpenCode plugin files managed through Nodus's virtual marketplace
+layer. Dependency Codex hooks and activation context are emitted inside
+generated Codex plugins and enable `features.plugin_hooks` in
+`.codex/config.toml` when needed.
 
 ## CLI Help
 
