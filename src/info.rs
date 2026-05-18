@@ -658,18 +658,12 @@ fn collect_virtual_plugin_manifest_entries(
                     adapter,
                     package_alias,
                 );
-                let status = virtual_plugin_install_status(project_root, &install_root);
-                plugins.insert(
-                    (adapter, package_alias.to_string(), String::new()),
-                    PackageVirtualPluginInfo {
-                        kind: VirtualPluginKind::ManagedPlugin,
-                        adapter,
-                        package_alias: package_alias.to_string(),
-                        source_entry_path: None,
-                        install_root: display_path(&install_root),
-                        loader_path: None,
-                        status,
-                    },
+                insert_managed_virtual_plugin(
+                    plugins,
+                    project_root,
+                    adapter,
+                    package_alias,
+                    &install_root,
                 );
             }
             continue;
@@ -701,7 +695,7 @@ fn collect_virtual_plugin_manifest_entries(
 fn collect_installed_virtual_plugins(
     plugins: &mut BTreeMap<(Adapter, String, String), PackageVirtualPluginInfo>,
     project_root: &Path,
-    warnings: &mut Vec<String>,
+    _warnings: &mut Vec<String>,
 ) {
     let packages_root = project_root.join(".nodus").join("packages");
     let Ok(package_dirs) = fs::read_dir(&packages_root) else {
@@ -722,10 +716,15 @@ fn collect_installed_virtual_plugins(
             continue;
         };
         for adapter in Adapter::ALL {
-            let Some(surface) = virtual_plugin_surface(adapter) else {
+            if virtual_plugin_surface(adapter).is_none() {
                 continue;
-            };
-            let install_root = package_dir.path().join(surface.install_root_name);
+            }
+            let install_root_relative =
+                crate::adapters::virtual_plugin_install_root_relative_for_alias(
+                    adapter,
+                    &package_alias,
+                );
+            let install_root = project_root.join(&install_root_relative);
             if !install_root.join(crate::manifest::MANIFEST_FILE).is_file() {
                 continue;
             }
@@ -737,14 +736,36 @@ fn collect_installed_virtual_plugins(
                     &manifest,
                     true,
                 ),
-                Err(error) => warnings.push(format!(
-                    "failed to inspect virtual plugin package `{}` for `{}`: {error}",
-                    package_alias,
-                    adapter.as_str()
-                )),
+                Err(_) => insert_managed_virtual_plugin(
+                    plugins,
+                    project_root,
+                    adapter,
+                    &package_alias,
+                    &install_root_relative,
+                ),
             }
         }
     }
+}
+
+fn insert_managed_virtual_plugin(
+    plugins: &mut BTreeMap<(Adapter, String, String), PackageVirtualPluginInfo>,
+    project_root: &Path,
+    adapter: Adapter,
+    package_alias: &str,
+    install_root: &Path,
+) {
+    plugins
+        .entry((adapter, package_alias.to_string(), String::new()))
+        .or_insert_with(|| PackageVirtualPluginInfo {
+            kind: VirtualPluginKind::ManagedPlugin,
+            adapter,
+            package_alias: package_alias.to_string(),
+            source_entry_path: None,
+            install_root: display_path(install_root),
+            loader_path: None,
+            status: virtual_plugin_install_status(project_root, install_root),
+        });
 }
 
 fn virtual_plugin_status(
@@ -2302,6 +2323,63 @@ name = "skills"
         assert_eq!(managed.source_entry_path, None);
         assert_eq!(managed.loader_path, None);
         assert_eq!(managed.status, VirtualPluginStatus::Present);
+    }
+
+    #[test]
+    fn info_reports_installed_virtual_plugin_with_source_local_dependencies() {
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        write_file(
+            &project.path().join("nodus.toml"),
+            r#"
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+        );
+        write_file(
+            &project.path().join("vendor/shared/nodus.toml"),
+            r#"
+name = "shared"
+
+[dependencies]
+helper = { path = "packages/helper" }
+"#,
+        );
+        write_skill(&project.path().join("vendor/shared"), "Review");
+        write_file(
+            &project
+                .path()
+                .join("vendor/shared/packages/helper/nodus.toml"),
+            r#"
+name = "helper"
+"#,
+        );
+        write_skill(
+            &project.path().join("vendor/shared/packages/helper"),
+            "Helper",
+        );
+
+        crate::resolver::sync_in_dir_with_adapters(
+            project.path(),
+            cache.path(),
+            false,
+            false,
+            false,
+            &[Adapter::OpenCode],
+            false,
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        let output = capture_info_output(project.path(), cache.path(), ".", None, None);
+
+        assert!(
+            output.contains(
+                "opencode shared managed plugin -> .nodus/packages/shared/opencode-plugin (present)"
+            ),
+            "{output}"
+        );
+        assert!(!output.contains("failed to inspect virtual plugin package"));
     }
 
     #[test]
