@@ -8339,6 +8339,61 @@ enabled = ["opencode"]
 }
 
 #[test]
+fn sync_installs_opencode_runtime_packages_as_managed_plugins() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+    );
+    write_manifest(&temp.path().join("vendor/shared"), r#"name = "shared""#);
+    write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+
+    sync_in_dir_with_adapters_no_fast_path(temp.path(), cache.path(), &[Adapter::OpenCode])
+        .unwrap();
+
+    assert!(
+        temp.path()
+            .join(".opencode/skills/review/SKILL.md")
+            .exists()
+    );
+    assert!(
+        temp.path()
+            .join(".nodus/packages/shared/opencode-plugin/skills/review/SKILL.md")
+            .exists()
+    );
+    assert!(opencode_virtual_plugin_wrappers(temp.path(), "shared", "plugin").is_empty());
+
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    let shared = lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .unwrap();
+    assert!(
+        shared
+            .owned_subtrees
+            .iter()
+            .any(|path| path == ".nodus/packages/shared/opencode-plugin")
+    );
+    assert!(
+        shared
+            .owned_prefixes
+            .iter()
+            .all(|rule| !(rule.dir == ".opencode/plugins" && rule.prefix == "nodus-shared-"))
+    );
+
+    write_manifest(temp.path(), "");
+    sync_in_dir_with_adapters_no_fast_path(temp.path(), cache.path(), &[Adapter::OpenCode])
+        .unwrap();
+
+    assert!(!temp.path().join(".nodus/packages/shared").exists());
+}
+
+#[test]
 fn sync_updates_and_prunes_opencode_virtual_plugin_outputs() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();

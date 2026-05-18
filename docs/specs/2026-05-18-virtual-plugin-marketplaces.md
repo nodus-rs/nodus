@@ -21,18 +21,24 @@ dependency graph.
 
 ## OpenCode v1
 
-OpenCode is the first virtual marketplace backend.
-
-Package authors declare explicit entrypoints in `nodus.toml`:
-
-```toml
-opencode_plugin_hooks = ["hooks/nodus-plugin.ts"]
-```
-
-When the OpenCode adapter is selected, Nodus copies package files to:
+OpenCode is the first virtual marketplace backend. When the OpenCode adapter is
+selected, every full package with OpenCode-supported runtime content is copied
+to:
 
 ```text
 .nodus/packages/<alias>/opencode-plugin/
+```
+
+That install root mirrors the package lifecycle Claude and Codex get from their
+native plugin roots. OpenCode still reads skills, agents, commands, rules, MCP
+configuration, and portable hooks from the direct `.opencode/` project files
+because OpenCode does not expose a package marketplace protocol.
+
+Package authors can additionally declare explicit JavaScript plugin entrypoints
+in `nodus.toml`:
+
+```toml
+opencode_plugin_hooks = ["hooks/nodus-plugin.ts"]
 ```
 
 For each entrypoint, Nodus emits a loader wrapper:

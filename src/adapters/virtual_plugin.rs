@@ -21,6 +21,14 @@ pub(crate) trait VirtualPluginBackend: Sync {
 
     fn entry_paths_from_manifest(&self, manifest: &LoadedManifest) -> Result<Vec<PathBuf>>;
 
+    fn manifest_has_installable_content(&self, _manifest: &LoadedManifest) -> Result<bool> {
+        Ok(false)
+    }
+
+    fn package_has_installable_content(&self, package: &ResolvedPackage) -> Result<bool> {
+        self.manifest_has_installable_content(&package.manifest)
+    }
+
     fn loader_path_for_alias(&self, package_alias: &str, entry_path: &Path) -> PathBuf;
 
     fn loader_contents(&self, package: &ResolvedPackage, entry: &VirtualPluginEntry) -> Vec<u8>;
@@ -91,6 +99,32 @@ pub(crate) fn virtual_plugin_entries_for_package(
     Ok(entries)
 }
 
+pub(crate) fn virtual_plugin_install_root_for_package(
+    backend: &dyn VirtualPluginBackend,
+    package: &ResolvedPackage,
+) -> Result<Option<PathBuf>> {
+    if !package_selects_virtual_plugins(package) {
+        return Ok(None);
+    }
+
+    let has_entries = !backend.entry_paths(package)?.is_empty();
+    if matches!(package.source, PackageSource::Root)
+        && !package.emits_runtime_outputs()
+        && !has_entries
+    {
+        return Ok(None);
+    }
+
+    if !has_entries && !backend.package_has_installable_content(package)? {
+        return Ok(None);
+    }
+
+    Ok(Some(virtual_plugin_install_root_relative(
+        backend.adapter(),
+        package,
+    )))
+}
+
 fn package_selects_virtual_plugins(package: &ResolvedPackage) -> bool {
     matches!(package.source, PackageSource::Root)
         || (package.emits_runtime_outputs() && package.selected_components.is_none())
@@ -131,17 +165,17 @@ pub(crate) fn emit_virtual_plugin_files(
     let mut files = Vec::new();
 
     for (package, snapshot_root) in plugin_packages {
-        let entries = virtual_plugin_entries_for_package(backend, package)?;
-        let Some(first_entry) = entries.first() else {
+        let Some(install_root) = virtual_plugin_install_root_for_package(backend, package)? else {
             continue;
         };
 
         files.extend(copy_package_files(
-            project_root.join(&first_entry.install_root),
+            project_root.join(install_root),
             package,
             snapshot_root,
         )?);
 
+        let entries = virtual_plugin_entries_for_package(backend, package)?;
         for entry in entries {
             files.push(ManagedFile {
                 path: project_root.join(&entry.loader_path),

@@ -5,11 +5,13 @@ use anyhow::{Context, Result, bail};
 
 use crate::adapters::{
     Adapter, ArtifactKind, ManagedArtifactNames, ManagedFile, ManagedHookSpec,
-    VirtualPluginBackend, hook_tool_matchers_for_adapter, managed_artifact_path, managed_skill_id,
-    managed_skill_root, virtual_plugin_install_root_relative,
+    VirtualPluginBackend, hook_supported_by_adapter, hook_tool_matchers_for_adapter,
+    managed_artifact_path, managed_skill_id, managed_skill_root,
+    virtual_plugin_install_root_relative,
 };
 use crate::agent_format::markdown_from_codex_agent_toml;
 use crate::hashing::blake3_hex;
+use crate::manifest::DependencyComponent;
 use crate::manifest::{AgentEntry, FileEntry, LoadedManifest, SkillEntry};
 use crate::manifest::{HookEvent, HookHandlerType, HookSessionSource};
 use crate::paths::strip_path_prefix;
@@ -34,6 +36,14 @@ impl VirtualPluginBackend for OpenCodeVirtualPluginBackend {
         }
 
         manifest.manifest.normalized_opencode_plugin_hooks()
+    }
+
+    fn manifest_has_installable_content(&self, manifest: &LoadedManifest) -> Result<bool> {
+        Ok(manifest_has_opencode_plugin_content(manifest))
+    }
+
+    fn package_has_installable_content(&self, package: &ResolvedPackage) -> Result<bool> {
+        Ok(package_has_opencode_plugin_content(package))
     }
 
     fn loader_path_for_alias(&self, package_alias: &str, entry_path: &Path) -> std::path::PathBuf {
@@ -190,6 +200,47 @@ fn copy_file(target_path: impl AsRef<Path>, source_path: impl AsRef<Path>) -> Re
         contents: fs::read(source_path)
             .with_context(|| format!("failed to read snapshot file {}", source_path.display()))?,
     })
+}
+
+fn manifest_has_opencode_plugin_content(manifest: &LoadedManifest) -> bool {
+    !manifest.discovered.skills.is_empty()
+        || !manifest
+            .discovered
+            .selected_agents(crate::adapters::Adapter::OpenCode)
+            .is_empty()
+        || !manifest.discovered.rules.is_empty()
+        || !manifest.discovered.commands.is_empty()
+        || !manifest.manifest.mcp_servers.is_empty()
+        || !manifest.manifest.managed_exports.is_empty()
+        || manifest.manifest.activation_enabled()
+        || manifest.manifest.hooks.iter().any(|hook| {
+            hook_targets_opencode(hook) && hook_supported_by_adapter(hook, Adapter::OpenCode)
+        })
+}
+
+fn package_has_opencode_plugin_content(package: &ResolvedPackage) -> bool {
+    let manifest = &package.manifest;
+    (package.selects_component(DependencyComponent::Skills)
+        && !manifest.discovered.skills.is_empty())
+        || (package.selects_component(DependencyComponent::Agents)
+            && !manifest
+                .discovered
+                .selected_agents(crate::adapters::Adapter::OpenCode)
+                .is_empty())
+        || (package.selects_component(DependencyComponent::Rules)
+            && !manifest.discovered.rules.is_empty())
+        || (package.selects_component(DependencyComponent::Commands)
+            && !manifest.discovered.commands.is_empty())
+        || !manifest.manifest.mcp_servers.is_empty()
+        || !manifest.manifest.managed_exports.is_empty()
+        || manifest.manifest.activation_enabled()
+        || manifest.manifest.hooks.iter().any(|hook| {
+            hook_targets_opencode(hook) && hook_supported_by_adapter(hook, Adapter::OpenCode)
+        })
+}
+
+fn hook_targets_opencode(hook: &crate::manifest::HookSpec) -> bool {
+    hook.adapters.is_empty() || hook.adapters.contains(&Adapter::OpenCode)
 }
 
 fn plugin_wrapper_relative_path_for_alias(package_alias: &str, path: &Path) -> String {

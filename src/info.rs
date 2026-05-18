@@ -106,12 +106,20 @@ struct NativePluginInfo {
 
 #[derive(Debug, Clone, Serialize)]
 struct PackageVirtualPluginInfo {
+    kind: VirtualPluginKind,
     adapter: Adapter,
     package_alias: String,
-    source_entry_path: String,
+    source_entry_path: Option<String>,
     install_root: String,
-    loader_path: String,
+    loader_path: Option<String>,
     status: VirtualPluginStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum VirtualPluginKind {
+    ManagedPlugin,
+    Loader,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -610,7 +618,13 @@ fn build_virtual_plugin_info(
     warnings: &mut Vec<String>,
 ) -> Vec<PackageVirtualPluginInfo> {
     let mut plugins = BTreeMap::new();
-    collect_virtual_plugin_manifest_entries(&mut plugins, &manifest.root, package_alias, manifest);
+    collect_virtual_plugin_manifest_entries(
+        &mut plugins,
+        &manifest.root,
+        package_alias,
+        manifest,
+        role != PackageRole::Root || manifest.manifest.publish_root,
+    );
 
     if role == PackageRole::Root {
         collect_installed_virtual_plugins(&mut plugins, &manifest.root, warnings);
@@ -624,6 +638,7 @@ fn collect_virtual_plugin_manifest_entries(
     project_root: &Path,
     package_alias: &str,
     manifest: &LoadedManifest,
+    include_install_only: bool,
 ) {
     for adapter in Adapter::ALL {
         let Some(backend) = virtual_plugin_backend(adapter) else {
@@ -633,6 +648,33 @@ fn collect_virtual_plugin_manifest_entries(
         else {
             continue;
         };
+        if entries.is_empty() {
+            if include_install_only
+                && backend
+                    .manifest_has_installable_content(manifest)
+                    .unwrap_or(false)
+            {
+                let install_root = crate::adapters::virtual_plugin_install_root_relative_for_alias(
+                    adapter,
+                    package_alias,
+                );
+                let status = virtual_plugin_install_status(project_root, &install_root);
+                plugins.insert(
+                    (adapter, package_alias.to_string(), String::new()),
+                    PackageVirtualPluginInfo {
+                        kind: VirtualPluginKind::ManagedPlugin,
+                        adapter,
+                        package_alias: package_alias.to_string(),
+                        source_entry_path: None,
+                        install_root: display_path(&install_root),
+                        loader_path: None,
+                        status,
+                    },
+                );
+            }
+            continue;
+        }
+
         for entry in entries {
             let source_entry_path = display_path(&entry.entry_path);
             let status = virtual_plugin_status(project_root, &entry);
@@ -643,11 +685,12 @@ fn collect_virtual_plugin_manifest_entries(
                     source_entry_path.clone(),
                 ),
                 PackageVirtualPluginInfo {
+                    kind: VirtualPluginKind::Loader,
                     adapter,
                     package_alias: package_alias.to_string(),
-                    source_entry_path,
+                    source_entry_path: Some(source_entry_path),
                     install_root: display_path(&entry.install_root),
-                    loader_path: display_path(&entry.loader_path),
+                    loader_path: Some(display_path(&entry.loader_path)),
                     status,
                 },
             );
@@ -692,6 +735,7 @@ fn collect_installed_virtual_plugins(
                     project_root,
                     &package_alias,
                     &manifest,
+                    true,
                 ),
                 Err(error) => warnings.push(format!(
                     "failed to inspect virtual plugin package `{}` for `{}`: {error}",
@@ -712,6 +756,14 @@ fn virtual_plugin_status(
         .join(&entry.entry_path);
     let loader = project_root.join(&entry.loader_path);
     if installed_entry.is_file() && loader.is_file() {
+        VirtualPluginStatus::Present
+    } else {
+        VirtualPluginStatus::Missing
+    }
+}
+
+fn virtual_plugin_install_status(project_root: &Path, install_root: &Path) -> VirtualPluginStatus {
+    if project_root.join(install_root).is_dir() {
         VirtualPluginStatus::Present
     } else {
         VirtualPluginStatus::Missing
@@ -1418,13 +1470,19 @@ fn render_virtual_plugin_lines(
                 VirtualPluginStatus::Present => "present",
                 VirtualPluginStatus::Missing => "missing",
             };
-            format!(
-                "  {adapter} {} {} -> {} (install {}, {status})",
-                plugin.package_alias,
-                plugin.source_entry_path,
-                plugin.loader_path,
-                plugin.install_root,
-            )
+            match plugin.kind {
+                VirtualPluginKind::ManagedPlugin => format!(
+                    "  {adapter} {} managed plugin -> {} ({status})",
+                    plugin.package_alias, plugin.install_root
+                ),
+                VirtualPluginKind::Loader => format!(
+                    "  {adapter} {} {} -> {} (install {}, {status})",
+                    plugin.package_alias,
+                    plugin.source_entry_path.as_deref().unwrap_or("<unknown>"),
+                    plugin.loader_path.as_deref().unwrap_or("<unknown>"),
+                    plugin.install_root,
+                ),
+            }
         })
         .collect()
 }
@@ -2141,6 +2199,7 @@ always_context = ["prompts/context.md"]
             r#"
 [dependencies]
 shared = { path = "vendor/shared" }
+skills = { path = "vendor/skills" }
 "#,
         );
         write_file(
@@ -2153,6 +2212,13 @@ opencode_plugin_hooks = ["hooks/nodus-plugin.ts"]
             &project.path().join("vendor/shared/hooks/nodus-plugin.ts"),
             "export function plugin() { return {}; }\n",
         );
+        write_file(
+            &project.path().join("vendor/skills/nodus.toml"),
+            r#"
+name = "skills"
+"#,
+        );
+        write_skill(&project.path().join("vendor/skills"), "Review");
 
         let source_info = describe_package_json_in_dir(
             &project.path().join("vendor/shared"),
@@ -2187,15 +2253,28 @@ opencode_plugin_hooks = ["hooks/nodus-plugin.ts"]
             "opencode shared hooks/nodus-plugin.ts -> .opencode/plugins/nodus-shared-nodus-plugin-"
         ));
         assert!(output.contains("(install .nodus/packages/shared/opencode-plugin, present)"));
+        assert!(
+            output.contains(
+                "opencode skills managed plugin -> .nodus/packages/skills/opencode-plugin (present)"
+            ),
+            "{output}"
+        );
         assert!(!output.contains("native-integration:"));
 
         let info =
             describe_package_json_in_dir(project.path(), cache.path(), ".", None, None).unwrap();
-        assert_eq!(info.virtual_plugins.len(), 1);
-        let plugin = &info.virtual_plugins[0];
+        assert_eq!(info.virtual_plugins.len(), 2);
+        let plugin = info
+            .virtual_plugins
+            .iter()
+            .find(|plugin| plugin.package_alias == "shared")
+            .unwrap();
+        assert_eq!(plugin.kind, VirtualPluginKind::Loader);
         assert_eq!(plugin.adapter, Adapter::OpenCode);
-        assert_eq!(plugin.package_alias, "shared");
-        assert_eq!(plugin.source_entry_path, "hooks/nodus-plugin.ts");
+        assert_eq!(
+            plugin.source_entry_path.as_deref(),
+            Some("hooks/nodus-plugin.ts")
+        );
         assert_eq!(
             plugin.install_root,
             ".nodus/packages/shared/opencode-plugin"
@@ -2203,9 +2282,26 @@ opencode_plugin_hooks = ["hooks/nodus-plugin.ts"]
         assert!(
             plugin
                 .loader_path
+                .as_deref()
+                .unwrap()
                 .starts_with(".opencode/plugins/nodus-shared-nodus-plugin-")
         );
         assert_eq!(plugin.status, VirtualPluginStatus::Present);
+
+        let managed = info
+            .virtual_plugins
+            .iter()
+            .find(|plugin| plugin.package_alias == "skills")
+            .unwrap();
+        assert_eq!(managed.kind, VirtualPluginKind::ManagedPlugin);
+        assert_eq!(managed.adapter, Adapter::OpenCode);
+        assert_eq!(
+            managed.install_root,
+            ".nodus/packages/skills/opencode-plugin"
+        );
+        assert_eq!(managed.source_entry_path, None);
+        assert_eq!(managed.loader_path, None);
+        assert_eq!(managed.status, VirtualPluginStatus::Present);
     }
 
     #[test]

@@ -772,7 +772,7 @@ pub(crate) fn build_output_plan_with_options(
                 .claude_plugin_hook_compat_sources()
                 .is_empty()
         });
-    let has_virtual_plugins = has_virtual_plugin_entries(packages, selected_adapters)?;
+    let has_virtual_plugins = has_virtual_plugin_outputs(packages, selected_adapters)?;
     let has_claude_native_plugin_enablement = selected_adapters.contains(Adapter::Claude)
         && preferred_surface(Adapter::Claude)
             == PreferredSurface::PackagePluginWorkspaceMarketplace
@@ -2919,7 +2919,7 @@ fn hook_files(
     Ok(files)
 }
 
-fn has_virtual_plugin_entries(
+fn has_virtual_plugin_outputs(
     packages: &[(ResolvedPackage, PathBuf)],
     selected_adapters: Adapters,
 ) -> Result<bool> {
@@ -2928,7 +2928,7 @@ fn has_virtual_plugin_entries(
             continue;
         };
         for (package, _) in packages {
-            if !super::virtual_plugin_entries_for_package(backend, package)?.is_empty() {
+            if super::virtual_plugin_install_root_for_package(backend, package)?.is_some() {
                 return Ok(true);
             }
         }
@@ -3292,23 +3292,26 @@ fn attribute_virtual_plugin_owned_paths(
     package: &ResolvedPackage,
     backend: &dyn super::VirtualPluginBackend,
 ) -> Result<()> {
-    let entries = super::virtual_plugin_entries_for_package(backend, package)?;
-    let Some(first_entry) = entries.first() else {
+    let Some(install_root) = super::virtual_plugin_install_root_for_package(backend, package)?
+    else {
         return Ok(());
     };
+    let entries = super::virtual_plugin_entries_for_package(backend, package)?;
 
     track_owned_subtree(
         plan,
         project_root,
         &package.alias,
-        &project_root.join(&first_entry.install_root),
+        &project_root.join(install_root),
     );
-    track_owned_prefix(
-        plan,
-        &package.alias,
-        backend.surface().loader_dir.to_string(),
-        backend.loader_file_prefix(package),
-    );
+    if !entries.is_empty() {
+        track_owned_prefix(
+            plan,
+            &package.alias,
+            backend.surface().loader_dir.to_string(),
+            backend.loader_file_prefix(package),
+        );
+    }
     Ok(())
 }
 
