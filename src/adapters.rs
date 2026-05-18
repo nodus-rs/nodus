@@ -32,7 +32,8 @@ pub(crate) use profile::{
 };
 pub(crate) use virtual_plugin::{
     VirtualPluginBackend, VirtualPluginEntry, emit_virtual_plugin_files,
-    virtual_plugin_entries_for_package, virtual_plugin_install_root_relative,
+    virtual_plugin_entries_for_manifest, virtual_plugin_entries_for_package,
+    virtual_plugin_install_root_relative,
 };
 
 #[derive(Debug, Clone)]

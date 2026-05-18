@@ -7,7 +7,10 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
-use crate::adapters::{Adapter, effective_session_start_sources, hook_supported_by_adapter};
+use crate::adapters::{
+    Adapter, effective_session_start_sources, hook_supported_by_adapter, virtual_plugin_backend,
+    virtual_plugin_entries_for_manifest, virtual_plugin_surface,
+};
 use crate::domain::dependency_query::{
     ResolvedInspectionSource, load_manifest_for_inspection, resolve_inspection_target,
 };
@@ -51,6 +54,7 @@ pub struct PackageInfo {
     dev_dependencies: Vec<String>,
     capabilities: Vec<PackageCapability>,
     hook_adapter_support: Vec<PackageHookAdapterSupport>,
+    virtual_plugins: Vec<PackageVirtualPluginInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     native_integration: Option<PackageNativeIntegration>,
     warnings: Vec<String>,
@@ -98,6 +102,23 @@ struct NativePluginInfo {
     key: String,
     root: String,
     hooks: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PackageVirtualPluginInfo {
+    adapter: Adapter,
+    package_alias: String,
+    source_entry_path: String,
+    install_root: String,
+    loader_path: String,
+    status: VirtualPluginStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum VirtualPluginStatus {
+    Present,
+    Missing,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -444,6 +465,7 @@ fn package_info_from_loaded(
     let native_integration = (role == PackageRole::Root)
         .then(|| build_native_integration_info(&manifest.root, &adapters, &mut warnings))
         .flatten();
+    let virtual_plugins = build_virtual_plugin_info(&alias, &manifest, role, &mut warnings);
 
     PackageInfo {
         alias,
@@ -538,6 +560,7 @@ fn package_info_from_loaded(
             })
             .collect(),
         hook_adapter_support: build_hook_adapter_support(&hooks),
+        virtual_plugins,
         native_integration,
         warnings,
         show_dev_dependencies: role == PackageRole::Root,
@@ -573,6 +596,121 @@ fn load_cargo_metadata(root: &Path, warnings: &mut Vec<String>) -> CargoMetadata
             ));
             CargoMetadata::default()
         }
+    }
+}
+
+fn build_virtual_plugin_info(
+    package_alias: &str,
+    manifest: &LoadedManifest,
+    role: PackageRole,
+    warnings: &mut Vec<String>,
+) -> Vec<PackageVirtualPluginInfo> {
+    let mut plugins = BTreeMap::new();
+    collect_virtual_plugin_manifest_entries(&mut plugins, &manifest.root, package_alias, manifest);
+
+    if role == PackageRole::Root {
+        collect_installed_virtual_plugins(&mut plugins, &manifest.root, warnings);
+    }
+
+    plugins.into_values().collect()
+}
+
+fn collect_virtual_plugin_manifest_entries(
+    plugins: &mut BTreeMap<(Adapter, String, String), PackageVirtualPluginInfo>,
+    project_root: &Path,
+    package_alias: &str,
+    manifest: &LoadedManifest,
+) {
+    for adapter in Adapter::ALL {
+        let Some(backend) = virtual_plugin_backend(adapter) else {
+            continue;
+        };
+        let Ok(entries) = virtual_plugin_entries_for_manifest(backend, package_alias, manifest)
+        else {
+            continue;
+        };
+        for entry in entries {
+            let source_entry_path = display_path(&entry.entry_path);
+            let status = virtual_plugin_status(project_root, &entry);
+            plugins.insert(
+                (
+                    adapter,
+                    package_alias.to_string(),
+                    source_entry_path.clone(),
+                ),
+                PackageVirtualPluginInfo {
+                    adapter,
+                    package_alias: package_alias.to_string(),
+                    source_entry_path,
+                    install_root: display_path(&entry.install_root),
+                    loader_path: display_path(&entry.loader_path),
+                    status,
+                },
+            );
+        }
+    }
+}
+
+fn collect_installed_virtual_plugins(
+    plugins: &mut BTreeMap<(Adapter, String, String), PackageVirtualPluginInfo>,
+    project_root: &Path,
+    warnings: &mut Vec<String>,
+) {
+    let packages_root = project_root.join(".nodus").join("packages");
+    let Ok(package_dirs) = fs::read_dir(&packages_root) else {
+        return;
+    };
+
+    for package_dir in package_dirs {
+        let Ok(package_dir) = package_dir else {
+            continue;
+        };
+        let Ok(file_type) = package_dir.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let Some(package_alias) = package_dir.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        for adapter in Adapter::ALL {
+            let Some(surface) = virtual_plugin_surface(adapter) else {
+                continue;
+            };
+            let install_root = package_dir.path().join(surface.install_root_name);
+            if !install_root.join(crate::manifest::MANIFEST_FILE).is_file() {
+                continue;
+            }
+            match load_package_manifest_for_inspection(&install_root) {
+                Ok((manifest, _)) => collect_virtual_plugin_manifest_entries(
+                    plugins,
+                    project_root,
+                    &package_alias,
+                    &manifest,
+                ),
+                Err(error) => warnings.push(format!(
+                    "failed to inspect virtual plugin package `{}` for `{}`: {error}",
+                    package_alias,
+                    adapter.as_str()
+                )),
+            }
+        }
+    }
+}
+
+fn virtual_plugin_status(
+    project_root: &Path,
+    entry: &crate::adapters::VirtualPluginEntry,
+) -> VirtualPluginStatus {
+    let installed_entry = project_root
+        .join(&entry.install_root)
+        .join(&entry.entry_path);
+    let loader = project_root.join(&entry.loader_path);
+    if installed_entry.is_file() && loader.is_file() {
+        VirtualPluginStatus::Present
+    } else {
+        VirtualPluginStatus::Missing
     }
 }
 
@@ -1004,6 +1142,11 @@ impl PackageInfo {
             ));
         }
 
+        if !self.virtual_plugins.is_empty() {
+            lines.push(paint_label(reporter, "virtual-plugins:"));
+            lines.extend(render_virtual_plugin_lines(reporter, &self.virtual_plugins));
+        }
+
         if let Some(native_integration) = &self.native_integration {
             lines.push(paint_label(reporter, "native-integration:"));
             lines.extend(render_native_integration_lines(
@@ -1244,6 +1387,40 @@ fn render_hook_adapter_support_lines(
                     .join(", ")
             };
             format!("  {label} = {summary}")
+        })
+        .collect()
+}
+
+fn render_virtual_plugin_lines(
+    reporter: &Reporter,
+    plugins: &[PackageVirtualPluginInfo],
+) -> Vec<String> {
+    let width = plugins
+        .iter()
+        .map(|plugin| plugin.adapter.as_str().len())
+        .max()
+        .unwrap_or(0);
+
+    plugins
+        .iter()
+        .map(|plugin| {
+            let padded = format!("{:width$}", plugin.adapter.as_str(), width = width);
+            let adapter = if reporter.color_enabled() {
+                reporter.paint(&padded, dim_style())
+            } else {
+                padded
+            };
+            let status = match plugin.status {
+                VirtualPluginStatus::Present => "present",
+                VirtualPluginStatus::Missing => "missing",
+            };
+            format!(
+                "  {adapter} {} {} -> {} (install {}, {status})",
+                plugin.package_alias,
+                plugin.source_entry_path,
+                plugin.loader_path,
+                plugin.install_root,
+            )
         })
         .collect()
 }

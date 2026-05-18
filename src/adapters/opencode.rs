@@ -10,7 +10,7 @@ use crate::adapters::{
 };
 use crate::agent_format::markdown_from_codex_agent_toml;
 use crate::hashing::blake3_hex;
-use crate::manifest::{AgentEntry, FileEntry, SkillEntry};
+use crate::manifest::{AgentEntry, FileEntry, LoadedManifest, SkillEntry};
 use crate::manifest::{HookEvent, HookHandlerType, HookSessionSource};
 use crate::paths::strip_path_prefix;
 use crate::resolver::ResolvedPackage;
@@ -25,16 +25,19 @@ impl VirtualPluginBackend for OpenCodeVirtualPluginBackend {
         Adapter::OpenCode
     }
 
-    fn entry_paths(&self, package: &ResolvedPackage) -> Result<Vec<std::path::PathBuf>> {
-        if package.manifest.manifest.opencode_plugin_hooks.is_empty() {
+    fn entry_paths_from_manifest(
+        &self,
+        manifest: &LoadedManifest,
+    ) -> Result<Vec<std::path::PathBuf>> {
+        if manifest.manifest.opencode_plugin_hooks.is_empty() {
             return Ok(Vec::new());
         }
 
-        package.manifest.manifest.normalized_opencode_plugin_hooks()
+        manifest.manifest.normalized_opencode_plugin_hooks()
     }
 
-    fn loader_path(&self, package: &ResolvedPackage, entry_path: &Path) -> std::path::PathBuf {
-        plugin_wrapper_relative_path(package, entry_path).into()
+    fn loader_path_for_alias(&self, package_alias: &str, entry_path: &Path) -> std::path::PathBuf {
+        plugin_wrapper_relative_path_for_alias(package_alias, entry_path).into()
     }
 
     fn loader_contents(
@@ -189,7 +192,7 @@ fn copy_file(target_path: impl AsRef<Path>, source_path: impl AsRef<Path>) -> Re
     })
 }
 
-pub(crate) fn plugin_wrapper_relative_path(package: &ResolvedPackage, path: &Path) -> String {
+fn plugin_wrapper_relative_path_for_alias(package_alias: &str, path: &Path) -> String {
     let name = path
         .file_stem()
         .and_then(|stem| stem.to_str())
@@ -201,10 +204,10 @@ pub(crate) fn plugin_wrapper_relative_path(package: &ResolvedPackage, path: &Pat
             _ => '-',
         })
         .collect::<String>();
-    let digest = blake3_hex(format!("{}:{}", package.alias, display_path_js(path)).as_bytes());
+    let digest = blake3_hex(format!("{}:{}", package_alias, display_path_js(path)).as_bytes());
     format!(
         ".opencode/plugins/nodus-{}-{name}-{}.js",
-        package.alias,
+        package_alias,
         &digest[..8]
     )
 }

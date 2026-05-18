@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use super::{Adapter, ManagedFile, VirtualPluginSurface, virtual_plugin_surface};
+use crate::manifest::LoadedManifest;
 use crate::paths::{display_path, strip_path_prefix};
 use crate::resolver::ResolvedPackage;
 
@@ -18,20 +19,53 @@ pub(crate) struct VirtualPluginEntry {
 pub(crate) trait VirtualPluginBackend: Sync {
     fn adapter(&self) -> Adapter;
 
-    fn entry_paths(&self, package: &ResolvedPackage) -> Result<Vec<PathBuf>>;
+    fn entry_paths_from_manifest(&self, manifest: &LoadedManifest) -> Result<Vec<PathBuf>>;
 
-    fn loader_path(&self, package: &ResolvedPackage, entry_path: &Path) -> PathBuf;
+    fn loader_path_for_alias(&self, package_alias: &str, entry_path: &Path) -> PathBuf;
 
     fn loader_contents(&self, package: &ResolvedPackage, entry: &VirtualPluginEntry) -> Vec<u8>;
+
+    fn entry_paths(&self, package: &ResolvedPackage) -> Result<Vec<PathBuf>> {
+        self.entry_paths_from_manifest(&package.manifest)
+    }
+
+    fn loader_path(&self, package: &ResolvedPackage, entry_path: &Path) -> PathBuf {
+        self.loader_path_for_alias(&package.alias, entry_path)
+    }
 
     fn surface(&self) -> VirtualPluginSurface {
         virtual_plugin_surface(self.adapter())
             .expect("virtual plugin backends require a profile surface")
     }
 
-    fn loader_file_prefix(&self, package: &ResolvedPackage) -> String {
-        format!("{}{}-", self.surface().loader_file_prefix, package.alias)
+    fn loader_file_prefix_for_alias(&self, package_alias: &str) -> String {
+        format!("{}{}-", self.surface().loader_file_prefix, package_alias)
     }
+
+    fn loader_file_prefix(&self, package: &ResolvedPackage) -> String {
+        self.loader_file_prefix_for_alias(&package.alias)
+    }
+}
+
+pub(crate) fn virtual_plugin_entries_for_manifest(
+    backend: &dyn VirtualPluginBackend,
+    package_alias: &str,
+    manifest: &LoadedManifest,
+) -> Result<Vec<VirtualPluginEntry>> {
+    let install_root =
+        virtual_plugin_install_root_relative_for_alias(backend.adapter(), package_alias);
+    let mut entries = backend
+        .entry_paths_from_manifest(manifest)?
+        .into_iter()
+        .map(|entry_path| VirtualPluginEntry {
+            package_alias: package_alias.to_string(),
+            loader_path: backend.loader_path_for_alias(package_alias, &entry_path),
+            install_root: install_root.clone(),
+            entry_path,
+        })
+        .collect::<Vec<_>>();
+    sort_entries(&mut entries);
+    Ok(entries)
 }
 
 pub(crate) fn virtual_plugin_entries_for_package(
@@ -49,23 +83,34 @@ pub(crate) fn virtual_plugin_entries_for_package(
             entry_path,
         })
         .collect::<Vec<_>>();
+    sort_entries(&mut entries);
+    Ok(entries)
+}
+
+fn sort_entries(entries: &mut [VirtualPluginEntry]) {
     entries.sort_by(|left, right| {
         left.loader_path
             .cmp(&right.loader_path)
             .then(left.entry_path.cmp(&right.entry_path))
     });
-    Ok(entries)
 }
 
 pub(crate) fn virtual_plugin_install_root_relative(
     adapter: Adapter,
     package: &ResolvedPackage,
 ) -> PathBuf {
+    virtual_plugin_install_root_relative_for_alias(adapter, &package.alias)
+}
+
+pub(crate) fn virtual_plugin_install_root_relative_for_alias(
+    adapter: Adapter,
+    package_alias: &str,
+) -> PathBuf {
     let surface =
         virtual_plugin_surface(adapter).expect("virtual plugin install roots require a surface");
     PathBuf::from(".nodus")
         .join("packages")
-        .join(&package.alias)
+        .join(package_alias)
         .join(surface.install_root_name)
 }
 
