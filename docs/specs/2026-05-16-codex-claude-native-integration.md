@@ -65,8 +65,9 @@ changes.
   surfaces such as `Setup`, `PermissionRequest`, `PermissionDenied`,
   `PostToolUseFailure`, `PreCompact`, `PostCompact`, `WorktreeCreate`, and
   `WorktreeRemove`.
-- Nodus writes Codex plugin registration to the repo-local marketplace at
-  `.agents/plugins/marketplace.json`. Project sync does not edit
+- Nodus writes the generated Codex marketplace under
+  `.nodus/.agents/plugins/marketplace.json` and registers the local `.nodus`
+  source from project `.codex/config.toml`. Project sync does not edit
   `~/.codex/config.toml`; existing global Codex config entries are left
   untouched.
 
@@ -95,14 +96,16 @@ changes.
   manifest describes the workspace itself.
 - Do not redesign dependency resolution, lockfile versioning, or package
   discovery outside the integration points listed here.
-- Do not use `.codex/config.toml` as the Codex plugin registry.
+- Do not use global Codex config as the plugin registry for project packages.
 
 ## Current state
 
 ### Codex
 
-Nodus emits a local Codex marketplace at `.agents/plugins/marketplace.json`,
-and dependency plugins under `.nodus/packages/<alias>/codex-plugin/`.
+Nodus emits a local Codex marketplace at
+`.nodus/.agents/plugins/marketplace.json`, dependency plugins under
+`.nodus/packages/<alias>/codex-plugin/`, and project-local marketplace/plugin
+registration in `.codex/config.toml`.
 
 Plugin metadata includes:
 
@@ -123,9 +126,9 @@ Dependency hooks and activation context land in:
 - `.nodus/packages/<alias>/codex-plugin/hooks/hooks.json`
 - `.nodus/packages/<alias>/codex-plugin/hooks/scripts/nodus-hook-*.sh`
 
-Project `.codex/config.toml` is used for MCP config and for enabling
-`[features].hooks` and `[features].plugin_hooks` when hook output requires
-those Codex features.
+Project `.codex/config.toml` is used for local marketplace registration, MCP
+config, and enabling `[features].hooks` and `[features].plugin_hooks` when hook
+output requires those Codex features.
 
 ### Claude
 
@@ -231,12 +234,12 @@ Nodus should make Codex auto-discovery smoother without silent global writes.
 
 Chosen direction:
 
-- Register project plugins through `.agents/plugins/marketplace.json`.
+- Register project plugins through `.codex/config.toml` entries pointing at the
+  generated `.nodus` marketplace.
 - Leave existing global Codex config entries untouched.
 - Keep an explicit opt-out while provenance is incomplete.
-- Consider a repo-root `.agents/plugins/marketplace.json` wrapper as a lower
-  risk alternative for project-local discovery if Codex reliably loads it from
-  trusted repo roots.
+- Keep generated marketplace payloads under `.nodus` so Nodus-owned local
+  marketplace files share the same root as generated package plugins.
 
 Acceptance for this slice is explicit about the remaining cleanup tradeoff:
 
@@ -303,7 +306,8 @@ Likely additions:
 - Optional raw hook matcher support for dynamic MCP tool matcher names.
 - Claude plugin extra-file tracking for native passthrough components.
 - Local Codex marketplace ownership and digest coverage for
-  `.agents/plugins/marketplace.json`.
+  `.nodus/.agents/plugins/marketplace.json` and project `.codex/config.toml`
+  registration.
 
 Any new public manifest fields must be documented in `examples/nodus.toml` and
 `docs/hooks.md`.
@@ -327,7 +331,8 @@ Any new public manifest fields must be documented in `examples/nodus.toml` and
 3. `.codex/hooks.json` no longer receives dependency hook entries when the
    dependency can be represented as a Codex plugin. Root hooks still land
    there.
-4. `.codex/config.toml` enables `features.hooks` and
+4. `.codex/config.toml` registers the local `.nodus` marketplace, enables
+   generated plugin keys, and enables `features.hooks` and
    `features.plugin_hooks` when plugin hooks are emitted.
 5. Codex `clear`, `apply_patch`, `Edit`, and `Write` matcher support is
    represented in adapter filtering and docs.
@@ -349,8 +354,8 @@ Any new public manifest fields must be documented in `examples/nodus.toml` and
   compatibility with older Codex builds?
 - Should dynamic MCP tool hook matchers be portable manifest data, or a
   Codex-only native hook passthrough?
-- Repo-root `.agents/plugins/marketplace.json` is the chosen Codex registration
-  path for project syncs; user-level config writes are no longer part of this
-  integration.
+- Project `.codex/config.toml` points at the generated local `.nodus`
+  marketplace for project syncs; user-level config writes are no longer part of
+  this integration.
 - How much of Claude's expanded event list should be exposed as portable
   `HookEvent` variants versus adapter-native passthrough?

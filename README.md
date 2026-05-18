@@ -129,13 +129,14 @@ native marketplace plugins.
 ### Codex local marketplace
 
 When the Codex adapter is enabled, Nodus writes a repo-local Codex marketplace at
-`.agents/plugins/marketplace.json`. The marketplace points at generated package
-plugins under `.nodus/packages/<alias>/codex-plugin/`, so project sync no longer
-edits `~/.codex/config.toml` or `$CODEX_HOME/config.toml`.
+`.nodus/.agents/plugins/marketplace.json`. Project sync also registers that
+marketplace in `.codex/config.toml` with a local source pointing at the absolute
+`.nodus` path, and enables the generated `<plugin>@<marketplace>` keys there.
 
-Existing global Codex config entries are left untouched. `.codex/config.toml`
-remains the project config surface for Codex features, hooks, and any direct
-project-level settings Nodus still needs to manage.
+Generated marketplace entries point at package plugins under
+`.nodus/packages/<alias>/codex-plugin/`. Project sync does not edit
+`~/.codex/config.toml` or `$CODEX_HOME/config.toml`; existing global Codex config
+entries are left untouched.
 
 Packages can also declare activation context that is injected at session start
 for adapters with native support:

@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::fs;
 use std::path::{Path, PathBuf};
+use std::{env, fs};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -71,6 +71,12 @@ struct CodexFeatureRequirements {
     plugin_hooks: bool,
 }
 
+#[derive(Debug)]
+struct CodexMarketplaceRegistration {
+    marketplace: String,
+    enabled_plugins: Vec<String>,
+}
+
 #[derive(Debug, Default)]
 struct OutputAccumulator {
     files: BTreeMap<PathBuf, Vec<u8>>,
@@ -131,6 +137,10 @@ struct ProjectCodexConfig {
     mcp_servers: BTreeMap<String, TomlValue>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     features: BTreeMap<String, TomlValue>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    marketplaces: BTreeMap<String, TomlValue>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    plugins: BTreeMap<String, TomlValue>,
     #[serde(flatten)]
     extra: BTreeMap<String, TomlValue>,
 }
@@ -2232,10 +2242,16 @@ fn codex_mcp_config_file(
         desired_servers.insert("nodus".to_string(), TomlValue::Table(table));
     }
 
+    let managed_marketplace =
+        codex_managed_marketplace_name(project_root, packages, selected_adapters);
+    let plugin_registration =
+        codex_plugin_marketplace_registration(project_root, packages, selected_adapters)?;
+
     if desired_servers.is_empty()
         && previously_managed.is_empty()
         && !feature_requirements.hooks
         && !feature_requirements.plugin_hooks
+        && plugin_registration.is_none()
     {
         return Ok(None);
     }
@@ -2245,6 +2261,22 @@ fn codex_mcp_config_file(
     } else {
         ProjectCodexConfig::default()
     };
+
+    if let Some(marketplace) = managed_marketplace.as_deref() {
+        let suffix = format!("@{marketplace}");
+        config.plugins.retain(|key, _| !key.ends_with(&suffix));
+        config.marketplaces.remove(marketplace);
+    }
+    if let Some(registration) = plugin_registration {
+        let source = absolute_codex_marketplace_source(project_root)?;
+        config.marketplaces.insert(
+            registration.marketplace.clone(),
+            codex_local_marketplace_config(source),
+        );
+        for plugin in registration.enabled_plugins {
+            config.plugins.insert(plugin, codex_enabled_plugin_config());
+        }
+    }
 
     config.mcp_servers.retain(|server_name, _| {
         !previously_managed.contains(server_name) && !desired_servers.contains_key(server_name)
@@ -2266,7 +2298,12 @@ fn codex_mcp_config_file(
         config.features.remove("plugin_hooks");
     }
 
-    if config.mcp_servers.is_empty() && config.features.is_empty() && config.extra.is_empty() {
+    if config.mcp_servers.is_empty()
+        && config.features.is_empty()
+        && config.marketplaces.is_empty()
+        && config.plugins.is_empty()
+        && config.extra.is_empty()
+    {
         return Ok(None);
     }
 
@@ -2275,6 +2312,65 @@ fn codex_mcp_config_file(
         .into_bytes();
     contents.push(b'\n');
     Ok(Some(ManagedFile { path, contents }))
+}
+
+fn codex_managed_marketplace_name(
+    project_root: &Path,
+    packages: &[(ResolvedPackage, PathBuf)],
+    selected_adapters: Adapters,
+) -> Option<String> {
+    (selected_adapters.contains(Adapter::Codex)
+        && preferred_surface(Adapter::Codex) == PreferredSurface::PackagePluginWorkspaceMarketplace)
+        .then(|| native_marketplace_names(project_root, packages).0)
+}
+
+fn codex_plugin_marketplace_registration(
+    project_root: &Path,
+    packages: &[(ResolvedPackage, PathBuf)],
+    selected_adapters: Adapters,
+) -> Result<Option<CodexMarketplaceRegistration>> {
+    if !selected_adapters.contains(Adapter::Codex)
+        || preferred_surface(Adapter::Codex) != PreferredSurface::PackagePluginWorkspaceMarketplace
+    {
+        return Ok(None);
+    }
+
+    let Some((marketplace, enabled_plugins)) =
+        native_package_plugin_keys(project_root, packages, Adapter::Codex)?
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some(CodexMarketplaceRegistration {
+        marketplace,
+        enabled_plugins,
+    }))
+}
+
+fn absolute_codex_marketplace_source(project_root: &Path) -> Result<String> {
+    let source = super::native_marketplace_root(project_root);
+    let absolute = if source.is_absolute() {
+        source
+    } else {
+        env::current_dir()
+            .context("failed to resolve current directory for Codex marketplace source")?
+            .join(source)
+    };
+    let simplified = dunce::simplified(&absolute);
+    Ok(display_path(simplified))
+}
+
+fn codex_local_marketplace_config(source: String) -> TomlValue {
+    let mut table = toml::map::Map::new();
+    table.insert("source_type".into(), TomlValue::String("local".into()));
+    table.insert("source".into(), TomlValue::String(source));
+    TomlValue::Table(table)
+}
+
+fn codex_enabled_plugin_config() -> TomlValue {
+    let mut table = toml::map::Map::new();
+    table.insert("enabled".into(), TomlValue::Boolean(true));
+    TomlValue::Table(table)
 }
 
 fn read_project_codex_config(path: &Path) -> Result<ProjectCodexConfig> {

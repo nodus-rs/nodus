@@ -950,8 +950,6 @@ fn native_plugin_source_root(
     let path = Path::new(source);
     if path.is_absolute() {
         Some(path.to_path_buf())
-    } else if adapter == Adapter::Codex {
-        Some(project_root.join(path))
     } else {
         Some(project_root.join(".nodus").join(path))
     }
@@ -2178,7 +2176,7 @@ always_context = ["prompts/context.md"]
         assert!(output.contains("native-integration:"));
         assert!(output.contains("adapters = [claude, codex]"));
         assert!(output.contains(".nodus/.claude-plugin/marketplace.json (present"));
-        assert!(output.contains(".agents/plugins/marketplace.json (present"));
+        assert!(output.contains(".nodus/.agents/plugins/marketplace.json (present"));
         assert!(output.contains("claude shared@"));
         assert!(output.contains(".nodus/packages/shared/claude-plugin"));
         assert!(output.contains("codex shared@"));

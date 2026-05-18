@@ -86,15 +86,16 @@ emit a sync warning.
 
 ## Codex local marketplace
 
-Codex discovers repo-local plugin marketplaces from
-`.agents/plugins/marketplace.json`. When the Codex adapter is enabled, Nodus
-writes that marketplace and points entries at generated plugins under
-`.nodus/packages/<alias>/codex-plugin/`.
+When the Codex adapter is enabled, Nodus writes a repo-local marketplace at
+`.nodus/.agents/plugins/marketplace.json`. Project sync registers that
+marketplace in `.codex/config.toml` with `source_type = "local"` and an absolute
+`source` path to `.nodus`, then enables the generated
+`<plugin>@<marketplace>` keys in the same project config.
 
-Project sync does not edit `~/.codex/config.toml` or `$CODEX_HOME/config.toml`.
-Existing global entries are left untouched. `.codex/config.toml` remains the
-project config surface for Codex feature flags, hooks, and any direct project
-settings Nodus still needs to manage.
+Generated marketplace entries point at package plugins under
+`.nodus/packages/<alias>/codex-plugin/`. Project sync does not edit
+`~/.codex/config.toml` or `$CODEX_HOME/config.toml`; existing global entries are
+left untouched.
 
 ## Event catalog
 
