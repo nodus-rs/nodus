@@ -847,7 +847,6 @@ fn resolve_package_managed_exports(
         return Ok((Vec::new(), Vec::new()));
     }
 
-    let package_name = dependency_manifest.effective_name();
     resolve_managed_paths(
         alias,
         dependency_root,
@@ -855,7 +854,7 @@ fn resolve_package_managed_exports(
             .manifest
             .managed_exports
             .iter()
-            .map(|spec| resolve_managed_export_spec(spec, &package_name))
+            .map(|spec| resolve_managed_export_spec(spec, alias))
             .collect::<Result<Vec<_>>>()?,
     )
 }
@@ -869,12 +868,12 @@ struct ResolvedManagedPathSpec {
 
 fn resolve_managed_export_spec(
     spec: &ManagedExportSpec,
-    package_name: &str,
+    package_alias: &str,
 ) -> Result<ResolvedManagedPathSpec> {
     let target_root = match spec.placement {
         ManagedPlacement::Package => PathBuf::from(".nodus")
             .join("packages")
-            .join(package_name)
+            .join(package_alias)
             .join(spec.normalized_target()?),
         ManagedPlacement::Project => spec.normalized_target()?,
     };

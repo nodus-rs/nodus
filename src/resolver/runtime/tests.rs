@@ -3580,6 +3580,33 @@ path = "vendor/hook-plugin"
             .join(".nodus/packages/hook_plugin/claude-plugin/scripts/format-code.sh")
             .exists()
     );
+
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    let hook_plugin = lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == "hook_plugin")
+        .unwrap();
+    assert!(
+        hook_plugin
+            .owned_subtrees
+            .iter()
+            .any(|path| path == ".nodus/packages/hook_plugin/claude-plugin"),
+        "Claude hook-compat plugin roots should be package-owned subtrees; got {:?}",
+        hook_plugin.owned_subtrees
+    );
+    let root = lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == "root")
+        .unwrap();
+    assert!(
+        root.owned_files
+            .iter()
+            .all(|path| !path.starts_with(".nodus/packages/hook_plugin/claude-plugin/")),
+        "root owned_files should not enumerate package-internal Claude plugin files; got {:?}",
+        root.owned_files
+    );
 }
 
 #[test]
@@ -9365,6 +9392,88 @@ target = "learnings"
     );
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert_owned(&lockfile, temp.path(), ".nodus/packages/shared/learnings");
+}
+
+#[test]
+fn sync_uses_dependency_alias_for_package_managed_exports_inside_virtual_plugin_roots() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[adapters]
+enabled = ["opencode"]
+
+[dependencies.metrics_local]
+path = "vendor/metrics"
+"#,
+    );
+    write_manifest(
+        &temp.path().join("vendor/metrics"),
+        r#"
+name = "wenext-local-metrics"
+opencode_plugin_hooks = [".opencode/plugins/metrics-collector.js"]
+
+[[managed_exports]]
+source = ".opencode/metrics"
+target = "opencode-plugin/.opencode/metrics"
+"#,
+    );
+    write_file(
+        &temp
+            .path()
+            .join("vendor/metrics/.opencode/plugins/metrics-collector.js"),
+        "export default function plugin() {}\n",
+    );
+    write_file(
+        &temp
+            .path()
+            .join("vendor/metrics/.opencode/metrics/config.json"),
+        "{\n  \"enabled\": true\n}\n",
+    );
+
+    sync_in_dir_with_adapters_no_fast_path(temp.path(), cache.path(), &[Adapter::OpenCode])
+        .unwrap();
+
+    assert_eq!(
+        fs::read_to_string(
+            temp.path().join(
+                ".nodus/packages/metrics_local/opencode-plugin/.opencode/metrics/config.json"
+            )
+        )
+        .unwrap(),
+        "{\n  \"enabled\": true\n}\n"
+    );
+    assert!(
+        !temp
+            .path()
+            .join(".nodus/packages/wenext-local-metrics")
+            .exists(),
+        "package-managed exports should use the dependency alias root, not the package name"
+    );
+
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    let metrics = lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == "metrics_local")
+        .unwrap();
+    assert!(
+        metrics
+            .owned_subtrees
+            .iter()
+            .any(|path| path == ".nodus/packages/metrics_local/opencode-plugin"),
+        "virtual plugin install root should be the package-owned subtree; got {:?}",
+        metrics.owned_subtrees
+    );
+    assert!(
+        metrics
+            .owned_subtrees
+            .iter()
+            .all(|path| path != ".nodus/packages/metrics_local/opencode-plugin/.opencode/metrics"),
+        "managed export subtree inside the virtual plugin root should be pruned as redundant; got {:?}",
+        metrics.owned_subtrees
+    );
 }
 
 #[test]

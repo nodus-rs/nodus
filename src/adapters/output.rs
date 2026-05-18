@@ -3126,6 +3126,12 @@ fn prune_redundant_owned_paths(owned_by_package: &mut BTreeMap<String, PackageOw
     }
 
     for bucket in owned_by_package.values_mut() {
+        bucket.subtrees.retain(|subtree| {
+            let subtree = Path::new(subtree);
+            !subtrees
+                .iter()
+                .any(|parent| subtree != parent.as_path() && subtree.starts_with(parent))
+        });
         bucket.files.retain(|file| {
             let file = Path::new(file);
             !subtrees
@@ -3249,6 +3255,9 @@ fn attribute_hook_owned_paths(
                 .claude_plugin_hook_compat_sources()
                 .is_empty()
         {
+            let plugin_root =
+                super::native_package_plugin_root(project_root, Adapter::Claude, package);
+            track_owned_subtree(plan, project_root, alias, &plugin_root);
             track_owned_prefix(
                 plan,
                 alias,
