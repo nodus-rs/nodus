@@ -9,9 +9,9 @@ use toml::Value as TomlValue;
 
 use super::profile::runtime_root_name;
 use super::{
-    Adapter, Adapters, ArtifactKind, ManagedActivationHook, ManagedArtifactNames, ManagedFile,
-    ManagedHookSpec, PreferredSurface, artifact_supported, hook_supported_by_adapter,
-    managed_runtime_skill_id, preferred_surface,
+    Adapter, Adapters, ArtifactKind, MANAGED_MARKETPLACE_NAME, ManagedActivationHook,
+    ManagedArtifactNames, ManagedFile, ManagedHookSpec, ManagedPackageIdentities, PreferredSurface,
+    artifact_supported, hook_supported_by_adapter, managed_runtime_skill_id, preferred_surface,
 };
 use crate::lockfile::{Lockfile, OwnedPrefix, managed_mcp_server_name};
 use crate::manifest::{
@@ -23,6 +23,7 @@ use crate::resolver::{PackageSource, ResolvedPackage};
 #[derive(Debug, Default)]
 pub(crate) struct OutputPlan {
     pub files: Vec<ManagedFile>,
+    pub external_files: Vec<ManagedFile>,
     /// Flat list of every managed entry. Kept on the struct for symmetry with
     /// the per-package view and as a backstop for ad-hoc introspection in
     /// tests; v10 writes derive lockfile ownership from
@@ -80,6 +81,7 @@ struct CodexMarketplaceRegistration {
 #[derive(Debug, Default)]
 struct OutputAccumulator {
     files: BTreeMap<PathBuf, Vec<u8>>,
+    external_files: BTreeMap<PathBuf, Vec<u8>>,
     /// Flat list of managed entries. Mirrors the pre-Slice-3 shape (uses raw
     /// artifact IDs for entries like `.claude/skills/<id>`) so v9 lockfile
     /// reads keep producing the same expanded paths through
@@ -236,6 +238,9 @@ pub(crate) fn build_output_plan_with_options(
     let mut plan = OutputAccumulator::default();
     let managed_names =
         ManagedArtifactNames::from_resolved_packages(packages.iter().map(|(package, _)| package));
+    let package_identities = ManagedPackageIdentities::from_resolved_packages(
+        packages.iter().map(|(package, _)| package),
+    );
     let hooks = collected_hooks(packages);
     let has_activation = packages
         .iter()
@@ -707,6 +712,7 @@ pub(crate) fn build_output_plan_with_options(
             snapshot_root,
             selected_adapters,
             &managed_names,
+            &package_identities,
             NativePackagePluginHooks {
                 claude: &package_claude_plugin_hooks,
                 codex: &package_codex_plugin_hooks,
@@ -722,11 +728,13 @@ pub(crate) fn build_output_plan_with_options(
 
     let workspace_alias = workspace_owner_alias(packages);
 
-    for file in native_package_marketplace_files(project_root, packages, selected_adapters)? {
-        track_owned_file(&mut plan, project_root, &workspace_alias, &file.path);
-        plan.managed_files
-            .insert(display_relative(project_root, &file.path));
-        merge_file(&mut plan.files, file)?;
+    for file in native_package_marketplace_files(
+        project_root,
+        packages,
+        selected_adapters,
+        &package_identities,
+    )? {
+        merge_file(&mut plan.external_files, file)?;
     }
 
     if let Some(file) = mcp_config_file(
@@ -782,11 +790,22 @@ pub(crate) fn build_output_plan_with_options(
                 .claude_plugin_hook_compat_sources()
                 .is_empty()
         });
-    let has_virtual_plugins = has_virtual_plugin_outputs(packages, selected_adapters)?;
+    let has_virtual_plugins = has_virtual_plugin_outputs(
+        project_root,
+        packages,
+        selected_adapters,
+        &package_identities,
+    )?;
     let has_claude_native_plugin_enablement = selected_adapters.contains(Adapter::Claude)
         && preferred_surface(Adapter::Claude)
             == PreferredSurface::PackagePluginWorkspaceMarketplace
-        && native_package_plugin_keys(project_root, packages, Adapter::Claude)?.is_some();
+        && native_package_plugin_keys(
+            project_root,
+            packages,
+            Adapter::Claude,
+            &package_identities,
+        )?
+        .is_some();
 
     if !hooks.is_empty()
         || has_activation
@@ -808,6 +827,7 @@ pub(crate) fn build_output_plan_with_options(
             &hooks,
             &workspace_alias,
             selected_adapters,
+            &package_identities,
         )?;
 
         let emitted_hook_files = hook_files(
@@ -818,6 +838,7 @@ pub(crate) fn build_output_plan_with_options(
             selected_adapters,
             options.merge_existing_mcp,
             &mut plan.warnings,
+            &package_identities,
         )?;
 
         // Any hook-emitted file we did not pre-attribute (e.g. shared aggregator
@@ -826,6 +847,12 @@ pub(crate) fn build_output_plan_with_options(
         // wrappers we already covered via `track_*` helpers) falls back to the
         // workspace owner as an exact owned file.
         for file in emitted_hook_files {
+            if is_global_nodus_path(project_root, &file.path)
+                || strip_path_prefix(&file.path, project_root).is_none()
+            {
+                merge_file(&mut plan.external_files, file)?;
+                continue;
+            }
             let relative = display_relative(project_root, &file.path);
             if !already_attributed(&plan, project_root, &file.path) {
                 track_owned_file(&mut plan, project_root, &workspace_alias, &file.path);
@@ -883,6 +910,11 @@ pub(crate) fn build_output_plan_with_options(
             .into_iter()
             .map(|(path, contents)| ManagedFile { path, contents })
             .collect(),
+        external_files: plan
+            .external_files
+            .into_iter()
+            .map(|(path, contents)| ManagedFile { path, contents })
+            .collect(),
         managed_files,
         managed_files_by_package,
         warnings: plan.warnings,
@@ -897,6 +929,7 @@ fn native_package_marketplace_files(
     project_root: &Path,
     packages: &[(ResolvedPackage, PathBuf)],
     selected_adapters: Adapters,
+    package_identities: &ManagedPackageIdentities,
 ) -> Result<Vec<ManagedFile>> {
     if let Some(root) = packages
         .iter()
@@ -916,16 +949,24 @@ fn native_package_marketplace_files(
         let plugins = packages
             .iter()
             .filter_map(|(package, _)| {
-                native_marketplace_plugin_entry(project_root, package, Adapter::Claude)
+                native_marketplace_plugin_entry(
+                    project_root,
+                    package,
+                    Adapter::Claude,
+                    package_identities,
+                )
             })
             .collect::<Vec<_>>();
         if !plugins.is_empty() {
-            let (name, owner_name) = native_marketplace_names(project_root, packages);
+            let owner_name = native_marketplace_owner_name(project_root, packages);
             files.push(ManagedFile {
                 path: super::native_marketplace_path(project_root, Adapter::Claude)
                     .expect("claude marketplace path"),
                 contents: json_bytes(JsonMap::from_iter([
-                    ("name".to_string(), JsonValue::String(name)),
+                    (
+                        "name".to_string(),
+                        JsonValue::String(MANAGED_MARKETPLACE_NAME.to_string()),
+                    ),
                     (
                         "owner".to_string(),
                         JsonValue::Object(JsonMap::from_iter([(
@@ -939,22 +980,27 @@ fn native_package_marketplace_files(
         }
     }
 
-    if selected_adapters.contains(Adapter::Codex)
-        && preferred_surface(Adapter::Codex) == PreferredSurface::PackagePluginWorkspaceMarketplace
-    {
+    if selected_adapters.contains(Adapter::Codex) {
         let plugins = packages
             .iter()
             .filter_map(|(package, _)| {
-                native_marketplace_plugin_entry(project_root, package, Adapter::Codex)
+                native_marketplace_plugin_entry(
+                    project_root,
+                    package,
+                    Adapter::Codex,
+                    package_identities,
+                )
             })
             .collect::<Vec<_>>();
         if !plugins.is_empty() {
-            let (name, _) = native_marketplace_names(project_root, packages);
             files.push(ManagedFile {
                 path: super::native_marketplace_path(project_root, Adapter::Codex)
                     .expect("codex marketplace path"),
                 contents: json_bytes(JsonMap::from_iter([
-                    ("name".to_string(), JsonValue::String(name)),
+                    (
+                        "name".to_string(),
+                        JsonValue::String(MANAGED_MARKETPLACE_NAME.to_string()),
+                    ),
                     ("plugins".to_string(), JsonValue::Array(plugins)),
                 ]))?,
             });
@@ -979,7 +1025,7 @@ fn workspace_native_marketplace_files(
     }
 
     let mut files = Vec::new();
-    let marketplace_name = workspace_marketplace_name(root);
+    let marketplace_name = MANAGED_MARKETPLACE_NAME.to_string();
 
     if selected_adapters.contains(Adapter::Claude)
         && preferred_surface(Adapter::Claude) == PreferredSurface::PackagePluginWorkspaceMarketplace
@@ -1037,9 +1083,7 @@ fn workspace_native_marketplace_files(
         });
     }
 
-    if selected_adapters.contains(Adapter::Codex)
-        && preferred_surface(Adapter::Codex) == PreferredSurface::PackagePluginWorkspaceMarketplace
-    {
+    if selected_adapters.contains(Adapter::Codex) {
         let plugins = members
             .iter()
             .map(|member| {
@@ -1112,6 +1156,7 @@ fn native_marketplace_plugin_entry(
     project_root: &Path,
     package: &ResolvedPackage,
     adapter: Adapter,
+    package_identities: &ManagedPackageIdentities,
 ) -> Option<JsonValue> {
     if matches!(package.source, PackageSource::Root)
         || !package.emits_runtime_outputs()
@@ -1120,12 +1165,13 @@ fn native_marketplace_plugin_entry(
         return None;
     }
 
-    let plugin_root = super::native_package_plugin_root(project_root, adapter, package);
+    let plugin_root =
+        super::native_package_plugin_root(project_root, adapter, package, package_identities);
     let source_path =
         super::native_marketplace_plugin_source_path(project_root, adapter, &plugin_root);
     let mut entry = JsonMap::from_iter([(
         "name".to_string(),
-        JsonValue::String(native_package_plugin_name(package)),
+        JsonValue::String(package_identities.marketplace_plugin_name(package)),
     )]);
     if let Some(version) = package
         .manifest
@@ -1177,7 +1223,17 @@ fn native_marketplace_names(
     project_root: &Path,
     packages: &[(ResolvedPackage, PathBuf)],
 ) -> (String, String) {
-    let owner_name = packages
+    (
+        MANAGED_MARKETPLACE_NAME.to_string(),
+        native_marketplace_owner_name(project_root, packages),
+    )
+}
+
+fn native_marketplace_owner_name(
+    project_root: &Path,
+    packages: &[(ResolvedPackage, PathBuf)],
+) -> String {
+    packages
         .iter()
         .find(|(package, _)| matches!(package.source, PackageSource::Root))
         .map(|(package, _)| package.manifest.effective_name())
@@ -1188,8 +1244,7 @@ fn native_marketplace_names(
                 .filter(|value| !value.is_empty())
                 .map(ToOwned::to_owned)
                 .unwrap_or_else(|| "agentpack".to_string())
-        });
-    (normalize_marketplace_name(&owner_name), owner_name)
+        })
 }
 
 fn normalize_marketplace_name(value: &str) -> String {
@@ -1211,18 +1266,14 @@ fn normalize_marketplace_name(value: &str) -> String {
 }
 
 fn native_package_plugin_name(package: &ResolvedPackage) -> String {
-    let base = if matches!(package.source, PackageSource::Root) {
-        package.manifest.effective_name()
-    } else {
-        package.alias.clone()
-    };
-    normalize_marketplace_name(&base)
+    super::normalized_package_plugin_name(package)
 }
 
 fn native_package_plugin_keys(
-    project_root: &Path,
+    _project_root: &Path,
     packages: &[(ResolvedPackage, PathBuf)],
     adapter: Adapter,
+    package_identities: &ManagedPackageIdentities,
 ) -> Result<Option<(String, Vec<String>)>> {
     if !matches!(adapter, Adapter::Claude | Adapter::Codex) {
         return Ok(None);
@@ -1248,7 +1299,7 @@ fn native_package_plugin_keys(
             return Ok(None);
         }
 
-        let (marketplace, _) = native_marketplace_names(project_root, packages);
+        let marketplace = MANAGED_MARKETPLACE_NAME.to_string();
         return match adapter {
             Adapter::Claude => Ok(Some((marketplace, Vec::new()))),
             Adapter::Codex => {
@@ -1279,13 +1330,13 @@ fn native_package_plugin_keys(
                 && package.emits_runtime_outputs()
                 && native_package_plugin_has_content(adapter, package)
         })
-        .map(|(package, _)| native_package_plugin_name(package))
+        .map(|(package, _)| package_identities.marketplace_plugin_name(package))
         .collect::<Vec<_>>();
     if plugins.is_empty() {
         return Ok(None);
     }
 
-    let (marketplace, _) = native_marketplace_names(project_root, packages);
+    let marketplace = MANAGED_MARKETPLACE_NAME.to_string();
     let keys = plugins
         .into_iter()
         .map(|plugin| format!("{plugin}@{marketplace}"))
@@ -1318,10 +1369,6 @@ fn workspace_member_marketplace_plugin_name(
     }
 }
 
-fn workspace_marketplace_name(root: &LoadedManifest) -> String {
-    normalize_marketplace_name(&workspace_marketplace_owner_name(root))
-}
-
 fn workspace_marketplace_owner_name(root: &LoadedManifest) -> String {
     root.manifest
         .name
@@ -1340,6 +1387,7 @@ fn workspace_marketplace_root_basename(root: &Path) -> String {
         .unwrap_or_else(|| String::from("agentpack"))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_native_package_plugins(
     plan: &mut OutputAccumulator,
     project_root: &Path,
@@ -1347,6 +1395,7 @@ fn emit_native_package_plugins(
     snapshot_root: &Path,
     selected_adapters: Adapters,
     managed_names: &ManagedArtifactNames,
+    package_identities: &ManagedPackageIdentities,
     plugin_hooks: NativePackagePluginHooks<'_>,
 ) -> Result<()> {
     if !package.emits_runtime_outputs() {
@@ -1357,7 +1406,12 @@ fn emit_native_package_plugins(
         && preferred_surface(Adapter::Claude) == PreferredSurface::PackagePluginWorkspaceMarketplace
         && native_package_plugin_has_content(Adapter::Claude, package)
     {
-        let plugin_root = super::native_package_plugin_root(project_root, Adapter::Claude, package);
+        let plugin_root = super::native_package_plugin_root(
+            project_root,
+            Adapter::Claude,
+            package,
+            package_identities,
+        );
         let activation_hook = if package_emits_claude_plugin_hooks(package)
             && package.manifest.manifest.activation_enabled()
         {
@@ -1373,30 +1427,39 @@ fn emit_native_package_plugins(
         } else {
             None
         };
-        merge_files(
-            &mut plan.files,
-            claude_native_package_plugin_files(
-                &plugin_root,
-                package,
-                snapshot_root,
-                plugin_hooks.claude,
-                activation_hook.as_ref(),
-            )?,
-        )?;
-        register_native_package_plugin_root(
-            project_root,
-            plan,
-            Adapter::Claude,
-            package,
+        let plugin_files = claude_native_package_plugin_files(
             &plugin_root,
-        );
+            package,
+            snapshot_root,
+            plugin_hooks.claude,
+            activation_hook.as_ref(),
+        )?;
+        if matches!(package.source, PackageSource::Root) {
+            merge_files(&mut plan.files, plugin_files)?;
+            register_native_package_plugin_root(
+                project_root,
+                plan,
+                Adapter::Claude,
+                package,
+                &plugin_root,
+            );
+        } else {
+            merge_files(&mut plan.external_files, plugin_files)?;
+        }
     }
 
     if selected_adapters.contains(Adapter::Codex)
-        && preferred_surface(Adapter::Codex) == PreferredSurface::PackagePluginWorkspaceMarketplace
+        && (preferred_surface(Adapter::Codex)
+            == PreferredSurface::PackagePluginWorkspaceMarketplace
+            || !matches!(package.source, PackageSource::Root))
         && native_package_plugin_has_content(Adapter::Codex, package)
     {
-        let plugin_root = super::native_package_plugin_root(project_root, Adapter::Codex, package);
+        let plugin_root = super::native_package_plugin_root(
+            project_root,
+            Adapter::Codex,
+            package,
+            package_identities,
+        );
         let activation_hook = if package_emits_codex_plugin_hooks(package)
             && package.manifest.manifest.activation_enabled()
         {
@@ -1412,23 +1475,26 @@ fn emit_native_package_plugins(
         } else {
             None
         };
-        merge_files(
-            &mut plan.files,
-            codex_native_package_plugin_files(
-                &plugin_root,
-                package,
-                snapshot_root,
-                plugin_hooks.codex,
-                activation_hook.as_ref(),
-            )?,
-        )?;
-        register_native_package_plugin_root(
-            project_root,
-            plan,
-            Adapter::Codex,
-            package,
+        let plugin_files = codex_native_package_plugin_files(
             &plugin_root,
-        );
+            package,
+            snapshot_root,
+            plugin_hooks.codex,
+            activation_hook.as_ref(),
+        )?;
+        if preferred_surface(Adapter::Codex) == PreferredSurface::PackagePluginWorkspaceMarketplace
+        {
+            merge_files(&mut plan.files, plugin_files)?;
+            register_native_package_plugin_root(
+                project_root,
+                plan,
+                Adapter::Codex,
+                package,
+                &plugin_root,
+            );
+        } else {
+            merge_files(&mut plan.external_files, plugin_files)?;
+        }
     }
 
     Ok(())
@@ -2244,6 +2310,7 @@ fn codex_mcp_config_file(
 
     let managed_marketplace =
         codex_managed_marketplace_name(project_root, packages, selected_adapters);
+    let legacy_marketplace = legacy_project_marketplace_name(project_root, packages);
     let plugin_registration =
         codex_plugin_marketplace_registration(project_root, packages, selected_adapters)?;
     let needs_config_for_outputs = !desired_servers.is_empty()
@@ -2255,6 +2322,8 @@ fn codex_mcp_config_file(
         false
     } else {
         codex_project_config_has_marketplace_entries(&path, managed_marketplace.as_deref())?
+            || (managed_marketplace.as_deref() != Some(legacy_marketplace.as_str())
+                && codex_project_config_has_marketplace_entries(&path, Some(&legacy_marketplace))?)
     };
 
     if !needs_config_for_outputs && !needs_marketplace_cleanup {
@@ -2268,9 +2337,10 @@ fn codex_mcp_config_file(
     };
 
     if let Some(marketplace) = managed_marketplace.as_deref() {
-        let suffix = format!("@{marketplace}");
-        config.plugins.retain(|key, _| !key.ends_with(&suffix));
-        config.marketplaces.remove(marketplace);
+        remove_codex_marketplace_config(&mut config, marketplace);
+    }
+    if managed_marketplace.as_deref() != Some(legacy_marketplace.as_str()) {
+        remove_codex_marketplace_config(&mut config, &legacy_marketplace);
     }
     if let Some(registration) = plugin_registration {
         let source = absolute_codex_marketplace_source(project_root)?;
@@ -2329,6 +2399,19 @@ fn codex_managed_marketplace_name(
         .then(|| native_marketplace_names(project_root, packages).0)
 }
 
+fn legacy_project_marketplace_name(
+    project_root: &Path,
+    packages: &[(ResolvedPackage, PathBuf)],
+) -> String {
+    normalize_marketplace_name(&native_marketplace_owner_name(project_root, packages))
+}
+
+fn remove_codex_marketplace_config(config: &mut ProjectCodexConfig, marketplace: &str) {
+    let suffix = format!("@{marketplace}");
+    config.plugins.retain(|key, _| !key.ends_with(&suffix));
+    config.marketplaces.remove(marketplace);
+}
+
 fn codex_project_config_has_marketplace_entries(
     path: &Path,
     marketplace: Option<&str>,
@@ -2359,8 +2442,14 @@ fn codex_plugin_marketplace_registration(
         return Ok(None);
     }
 
-    let Some((marketplace, enabled_plugins)) =
-        native_package_plugin_keys(project_root, packages, Adapter::Codex)?
+    let Some((marketplace, enabled_plugins)) = native_package_plugin_keys(
+        project_root,
+        packages,
+        Adapter::Codex,
+        &ManagedPackageIdentities::from_resolved_packages(
+            packages.iter().map(|(package, _)| package),
+        ),
+    )?
     else {
         return Ok(None);
     };
@@ -2935,6 +3024,7 @@ fn render_gitignore(explicit_lines: &[String], patterns: &BTreeSet<String>) -> S
     output
 }
 
+#[allow(clippy::too_many_arguments)]
 fn hook_files(
     project_root: &Path,
     packages: &[(ResolvedPackage, PathBuf)],
@@ -2943,6 +3033,7 @@ fn hook_files(
     selected_adapters: Adapters,
     merge_existing_mcp: bool,
     warnings: &mut Vec<String>,
+    package_identities: &ManagedPackageIdentities,
 ) -> Result<Vec<ManagedFile>> {
     let mut files = Vec::new();
 
@@ -2985,7 +3076,7 @@ fn hook_files(
     let claude_plugin_enablement = if selected_adapters.contains(Adapter::Claude)
         && preferred_surface(Adapter::Claude) == PreferredSurface::PackagePluginWorkspaceMarketplace
     {
-        native_package_plugin_keys(project_root, packages, Adapter::Claude)?
+        native_package_plugin_keys(project_root, packages, Adapter::Claude, package_identities)?
     } else {
         None
     };
@@ -2995,6 +3086,8 @@ fn hook_files(
             .map_or((None, &[][..]), |(marketplace, plugins)| {
                 (Some(marketplace.as_str()), plugins.as_slice())
             });
+    let claude_plugin_marketplace_source = claude_plugin_marketplace
+        .map(|_| super::native_marketplace_source_path(project_root, Adapter::Claude));
     if !claude_hooks.is_empty()
         || !claude_activation_hooks.is_empty()
         || !claude_plugin_packages.is_empty()
@@ -3006,8 +3099,10 @@ fn hook_files(
             &claude_activation_hooks,
             &claude_plugin_packages,
             claude_plugin_marketplace,
+            claude_plugin_marketplace_source.as_deref(),
             claude_enabled_plugins,
             merge_existing_mcp,
+            package_identities,
         )?;
         files.extend(claude_files);
         warnings.extend(claude_warnings);
@@ -3020,6 +3115,7 @@ fn hook_files(
         project_root,
         packages,
         selected_adapters,
+        package_identities,
     )?);
     if hooks
         .iter()
@@ -3075,15 +3171,27 @@ fn hook_files(
 }
 
 fn has_virtual_plugin_outputs(
+    project_root: &Path,
     packages: &[(ResolvedPackage, PathBuf)],
     selected_adapters: Adapters,
+    package_identities: &ManagedPackageIdentities,
 ) -> Result<bool> {
     for adapter in selected_adapters.iter() {
+        if adapter == Adapter::Codex {
+            continue;
+        }
         let Some(backend) = super::virtual_plugin_backend(adapter) else {
             continue;
         };
         for (package, _) in packages {
-            if super::virtual_plugin_install_root_for_package(backend, package)?.is_some() {
+            if super::virtual_plugin_install_root_for_package(
+                backend,
+                project_root,
+                package,
+                package_identities,
+            )?
+            .is_some()
+            {
                 return Ok(true);
             }
         }
@@ -3095,6 +3203,7 @@ fn virtual_plugin_files(
     project_root: &Path,
     packages: &[(ResolvedPackage, PathBuf)],
     selected_adapters: Adapters,
+    package_identities: &ManagedPackageIdentities,
 ) -> Result<Vec<ManagedFile>> {
     let mut files = Vec::new();
     let plugin_packages = packages
@@ -3103,6 +3212,9 @@ fn virtual_plugin_files(
         .collect::<Vec<_>>();
 
     for adapter in selected_adapters.iter() {
+        if adapter == Adapter::Codex {
+            continue;
+        }
         let Some(backend) = super::virtual_plugin_backend(adapter) else {
             continue;
         };
@@ -3110,6 +3222,7 @@ fn virtual_plugin_files(
             project_root,
             backend,
             &plugin_packages,
+            package_identities,
         )?);
     }
 
@@ -3344,6 +3457,7 @@ fn attribute_hook_owned_paths(
     hooks: &[ManagedHookSpec],
     workspace_alias: &str,
     selected_adapters: Adapters,
+    package_identities: &ManagedPackageIdentities,
 ) -> Result<()> {
     let codex_plugin_hook_packages: BTreeSet<String> = packages
         .iter()
@@ -3410,9 +3524,6 @@ fn attribute_hook_owned_paths(
                 .claude_plugin_hook_compat_sources()
                 .is_empty()
         {
-            let plugin_root =
-                super::native_package_plugin_root(project_root, Adapter::Claude, package);
-            track_owned_subtree(plan, project_root, alias, &plugin_root);
             track_owned_prefix(
                 plan,
                 alias,
@@ -3424,10 +3535,19 @@ fn attribute_hook_owned_paths(
 
     for (package, _) in packages {
         for adapter in selected_adapters.iter() {
+            if adapter == Adapter::Codex {
+                continue;
+            }
             let Some(backend) = super::virtual_plugin_backend(adapter) else {
                 continue;
             };
-            attribute_virtual_plugin_owned_paths(plan, project_root, package, backend)?;
+            attribute_virtual_plugin_owned_paths(
+                plan,
+                project_root,
+                package,
+                backend,
+                package_identities,
+            )?;
         }
     }
 
@@ -3455,19 +3575,34 @@ fn attribute_virtual_plugin_owned_paths(
     project_root: &Path,
     package: &ResolvedPackage,
     backend: &dyn super::VirtualPluginBackend,
+    package_identities: &ManagedPackageIdentities,
 ) -> Result<()> {
-    let Some(install_root) = super::virtual_plugin_install_root_for_package(backend, package)?
+    let Some(install_root) = super::virtual_plugin_install_root_for_package(
+        backend,
+        project_root,
+        package,
+        package_identities,
+    )?
     else {
         return Ok(());
     };
-    let entries = super::virtual_plugin_entries_for_package(backend, package)?;
-
-    track_owned_subtree(
-        plan,
+    let entries = super::virtual_plugin_entries_for_package(
+        backend,
         project_root,
-        &package.alias,
-        &project_root.join(install_root),
-    );
+        package,
+        package_identities,
+    )?;
+
+    if !is_global_nodus_path(project_root, &install_root)
+        && (strip_path_prefix(&install_root, project_root).is_some() || !install_root.is_absolute())
+    {
+        let install_root = if install_root.is_absolute() {
+            install_root
+        } else {
+            project_root.join(install_root)
+        };
+        track_owned_subtree(plan, project_root, &package.alias, &install_root);
+    }
     if !entries.is_empty() {
         track_owned_prefix(
             plan,
@@ -3477,6 +3612,11 @@ fn attribute_virtual_plugin_owned_paths(
         );
     }
     Ok(())
+}
+
+fn is_global_nodus_path(project_root: &Path, path: &Path) -> bool {
+    let global_home = super::global_nodus_home(project_root);
+    path == global_home || path.starts_with(global_home)
 }
 
 fn attribute_single_hook(

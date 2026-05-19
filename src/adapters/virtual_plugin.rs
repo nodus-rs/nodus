@@ -3,7 +3,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use super::{Adapter, ManagedFile, VirtualPluginSurface, virtual_plugin_surface};
+use super::{
+    Adapter, ManagedFile, ManagedPackageIdentities, VirtualPluginSurface, global_nodus_home,
+    virtual_plugin_surface,
+};
 use crate::manifest::LoadedManifest;
 use crate::paths::{display_path, strip_path_prefix};
 use crate::resolver::{PackageSource, ResolvedPackage};
@@ -78,13 +81,16 @@ pub(crate) fn virtual_plugin_entries_for_manifest(
 
 pub(crate) fn virtual_plugin_entries_for_package(
     backend: &dyn VirtualPluginBackend,
+    project_root: &Path,
     package: &ResolvedPackage,
+    package_identities: &ManagedPackageIdentities,
 ) -> Result<Vec<VirtualPluginEntry>> {
     if !package_selects_virtual_plugins(package) {
         return Ok(Vec::new());
     }
 
-    let install_root = virtual_plugin_install_root_relative(backend.adapter(), package);
+    let install_root =
+        virtual_plugin_install_root(backend.adapter(), project_root, package, package_identities);
     let mut entries = backend
         .entry_paths(package)?
         .into_iter()
@@ -101,7 +107,9 @@ pub(crate) fn virtual_plugin_entries_for_package(
 
 pub(crate) fn virtual_plugin_install_root_for_package(
     backend: &dyn VirtualPluginBackend,
+    project_root: &Path,
     package: &ResolvedPackage,
+    package_identities: &ManagedPackageIdentities,
 ) -> Result<Option<PathBuf>> {
     if !package_selects_virtual_plugins(package) {
         return Ok(None);
@@ -119,9 +127,11 @@ pub(crate) fn virtual_plugin_install_root_for_package(
         return Ok(None);
     }
 
-    Ok(Some(virtual_plugin_install_root_relative(
+    Ok(Some(virtual_plugin_install_root(
         backend.adapter(),
+        project_root,
         package,
+        package_identities,
     )))
 }
 
@@ -145,6 +155,23 @@ pub(crate) fn virtual_plugin_install_root_relative(
     virtual_plugin_install_root_relative_for_alias(adapter, &package.alias)
 }
 
+pub(crate) fn virtual_plugin_install_root(
+    adapter: Adapter,
+    project_root: &Path,
+    package: &ResolvedPackage,
+    package_identities: &ManagedPackageIdentities,
+) -> PathBuf {
+    if matches!(package.source, PackageSource::Root) {
+        return virtual_plugin_install_root_relative(adapter, package);
+    }
+    let surface =
+        virtual_plugin_surface(adapter).expect("virtual plugin install roots require a surface");
+    global_nodus_home(project_root)
+        .join("packages")
+        .join(package_identities.managed_package_id(package))
+        .join(surface.install_root_name)
+}
+
 pub(crate) fn virtual_plugin_install_root_relative_for_alias(
     adapter: Adapter,
     package_alias: &str,
@@ -161,21 +188,33 @@ pub(crate) fn emit_virtual_plugin_files(
     project_root: &Path,
     backend: &dyn VirtualPluginBackend,
     plugin_packages: &[(&ResolvedPackage, &Path)],
+    package_identities: &ManagedPackageIdentities,
 ) -> Result<Vec<ManagedFile>> {
     let mut files = Vec::new();
 
     for (package, snapshot_root) in plugin_packages {
-        let Some(install_root) = virtual_plugin_install_root_for_package(backend, package)? else {
+        let Some(install_root) = virtual_plugin_install_root_for_package(
+            backend,
+            project_root,
+            package,
+            package_identities,
+        )?
+        else {
             continue;
         };
 
         files.extend(copy_package_files(
-            project_root.join(install_root),
+            if install_root.is_absolute() {
+                install_root.clone()
+            } else {
+                project_root.join(&install_root)
+            },
             package,
             snapshot_root,
         )?);
 
-        let entries = virtual_plugin_entries_for_package(backend, package)?;
+        let entries =
+            virtual_plugin_entries_for_package(backend, project_root, package, package_identities)?;
         for entry in entries {
             files.push(ManagedFile {
                 path: project_root.join(&entry.loader_path),

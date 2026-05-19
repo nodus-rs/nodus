@@ -328,9 +328,25 @@ fn first_runtime_file_under(root: &Path, adapter: Adapter, file_name: &str) -> P
 }
 
 fn claude_package_skill(root: &Path, alias: &str, skill_id: &str) -> PathBuf {
-    root.join(format!(
-        ".nodus/packages/{alias}/claude-plugin/skills/{skill_id}/SKILL.md"
-    ))
+    let packages_root = root.join(".nodus-global/packages");
+    WalkDir::new(&packages_root)
+        .into_iter()
+        .filter_map(Result::ok)
+        .map(|entry| entry.into_path())
+        .find(|path| {
+            path.ends_with(format!("claude-plugin/skills/{skill_id}/SKILL.md"))
+                && path
+                    .strip_prefix(&packages_root)
+                    .ok()
+                    .and_then(|relative| relative.components().next())
+                    .and_then(|component| component.as_os_str().to_str())
+                    .is_some_and(|managed_id| managed_id.starts_with(alias))
+        })
+        .unwrap_or_else(|| {
+            root.join(format!(
+                ".nodus-global/packages/{alias}/claude-plugin/skills/{skill_id}/SKILL.md"
+            ))
+        })
 }
 
 #[test]
@@ -1884,7 +1900,7 @@ fn add_command_tracks_current_branch_for_local_checkout_ahead_of_latest_tag() {
     assert!(manifest.contains("branch = \"main\""));
     assert!(!manifest.contains("tag = \"v0.1.0\""));
     assert!(
-        WalkDir::new(temp.path().join(".nodus/packages"))
+        WalkDir::new(temp.path().join(".nodus-global/packages"))
             .into_iter()
             .filter_map(Result::ok)
             .any(|entry| entry.path().ends_with("skills/testing/SKILL.md"))
@@ -2186,8 +2202,19 @@ fn members_set_empty_clears_workspace_dependency_selection() {
     assert!(set_output.contains("firebase (disabled)"));
     let manifest = fs::read_to_string(temp.path().join("nodus.toml")).unwrap();
     assert!(!manifest.contains("members ="));
-    assert!(!claude_package_skill(temp.path(), "axiom", "review").exists());
-    assert!(!claude_package_skill(temp.path(), "firebase", "checks").exists());
+    let lockfile = Lockfile::read(&temp.path().join("nodus.lock")).unwrap();
+    assert!(
+        !lockfile
+            .packages
+            .iter()
+            .any(|package| package.alias == "axiom")
+    );
+    assert!(
+        !lockfile
+            .packages
+            .iter()
+            .any(|package| package.alias == "firebase")
+    );
 }
 
 #[test]
@@ -2375,8 +2402,19 @@ fn members_enable_and_disable_manage_wrapper_child_packages() {
     );
     assert!(disable_output.contains("checks (disabled)"));
     assert!(disable_output.contains("review (disabled)"));
-    assert!(!claude_package_skill(temp.path(), "checks", "checks").exists());
-    assert!(!claude_package_skill(temp.path(), "review", "review").exists());
+    let lockfile = Lockfile::read(&temp.path().join("nodus.lock")).unwrap();
+    assert!(
+        !lockfile
+            .packages
+            .iter()
+            .any(|package| package.alias == "checks")
+    );
+    assert!(
+        !lockfile
+            .packages
+            .iter()
+            .any(|package| package.alias == "review")
+    );
 }
 
 #[test]
@@ -3822,9 +3860,10 @@ shared = { path = "vendor/shared" }
         "dependency Codex agent should also land in .codex/agents/"
     );
     assert!(
-        temp.path()
-            .join(".nodus/packages/shared/codex-plugin/agents/dep-agent.md")
-            .exists(),
-        "the Codex virtual package root should keep a raw dependency payload copy"
+        !WalkDir::new(temp.path().join(".nodus-global/packages"))
+            .into_iter()
+            .filter_map(Result::ok)
+            .any(|entry| entry.path().ends_with("codex-plugin/agents/dep-agent.md")),
+        "dependency agents are loaded from .codex/agents/, not the Codex plugin payload"
     );
 }

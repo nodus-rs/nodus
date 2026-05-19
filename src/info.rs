@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 use crate::adapters::{
-    Adapter, effective_session_start_sources, hook_supported_by_adapter, virtual_plugin_backend,
-    virtual_plugin_entries_for_manifest, virtual_plugin_surface,
+    Adapter, VirtualPluginBackend, effective_session_start_sources, hook_supported_by_adapter,
+    virtual_plugin_backend, virtual_plugin_entries_for_manifest,
 };
 use crate::domain::dependency_query::{
     ResolvedInspectionSource, load_manifest_for_inspection, resolve_inspection_target,
@@ -696,7 +696,7 @@ fn collect_installed_virtual_plugins(
     project_root: &Path,
     _warnings: &mut Vec<String>,
 ) {
-    let packages_root = project_root.join(".nodus").join("packages");
+    let packages_root = crate::adapters::global_nodus_home(project_root).join("packages");
     let Ok(package_dirs) = fs::read_dir(&packages_root) else {
         return;
     };
@@ -711,40 +711,195 @@ fn collect_installed_virtual_plugins(
         if !file_type.is_dir() {
             continue;
         }
-        let Some(package_alias) = package_dir.file_name().to_str().map(str::to_string) else {
+        let Some(managed_package_id) = package_dir.file_name().to_str().map(str::to_string) else {
             continue;
         };
         for adapter in Adapter::ALL {
-            if virtual_plugin_surface(adapter).is_none() {
+            let Some(backend) = virtual_plugin_backend(adapter) else {
                 continue;
-            }
-            let install_root_relative =
-                crate::adapters::virtual_plugin_install_root_relative_for_alias(
-                    adapter,
-                    &package_alias,
-                );
-            let install_root = project_root.join(&install_root_relative);
+            };
+            let surface = backend.surface();
+            let install_root = package_dir.path().join(surface.install_root_name);
             if !install_root.join(crate::manifest::MANIFEST_FILE).is_file() {
                 continue;
             }
+            let fallback_alias = managed_package_id_friendly_name(&managed_package_id);
             match load_package_manifest_for_inspection(&install_root) {
-                Ok((manifest, _)) => collect_virtual_plugin_manifest_entries(
+                Ok((manifest, _)) => collect_installed_virtual_plugin_entries(
                     plugins,
                     project_root,
-                    &package_alias,
+                    backend,
+                    &fallback_alias,
+                    &install_root,
                     &manifest,
-                    true,
                 ),
                 Err(_) => insert_managed_virtual_plugin(
                     plugins,
                     project_root,
                     adapter,
-                    &package_alias,
-                    &install_root_relative,
+                    &fallback_alias,
+                    &install_root,
                 ),
             }
         }
     }
+}
+
+fn collect_installed_virtual_plugin_entries(
+    plugins: &mut BTreeMap<(Adapter, String, String), PackageVirtualPluginInfo>,
+    project_root: &Path,
+    backend: &dyn VirtualPluginBackend,
+    fallback_alias: &str,
+    install_root: &Path,
+    manifest: &LoadedManifest,
+) {
+    let adapter = backend.adapter();
+    let Ok(entries) = backend.entry_paths_from_manifest(manifest) else {
+        return;
+    };
+    if entries.is_empty() {
+        if backend
+            .manifest_has_installable_content(manifest)
+            .unwrap_or(false)
+        {
+            insert_managed_virtual_plugin(
+                plugins,
+                project_root,
+                adapter,
+                fallback_alias,
+                install_root,
+            );
+        }
+        return;
+    }
+
+    for entry_path in entries {
+        let source_entry_path = display_path(&entry_path);
+        let (package_alias, loader_path, status) = installed_virtual_plugin_loader_state(
+            project_root,
+            backend,
+            fallback_alias,
+            install_root,
+            &entry_path,
+        );
+        plugins.insert(
+            (adapter, package_alias.clone(), source_entry_path.clone()),
+            PackageVirtualPluginInfo {
+                kind: VirtualPluginKind::Loader,
+                adapter,
+                package_alias,
+                source_entry_path: Some(source_entry_path),
+                install_root: display_path(install_root),
+                loader_path,
+                status,
+            },
+        );
+    }
+}
+
+fn installed_virtual_plugin_loader_state(
+    project_root: &Path,
+    backend: &dyn VirtualPluginBackend,
+    fallback_alias: &str,
+    install_root: &Path,
+    entry_path: &Path,
+) -> (String, Option<String>, VirtualPluginStatus) {
+    if let Some(loader_path) =
+        find_loader_importing_entry(project_root, backend, install_root, entry_path)
+    {
+        let alias = loader_alias_from_path(backend, entry_path, &loader_path)
+            .unwrap_or_else(|| fallback_alias.to_string());
+        let status = if install_root.join(entry_path).is_file() && loader_path.is_file() {
+            VirtualPluginStatus::Present
+        } else {
+            VirtualPluginStatus::Missing
+        };
+        return (
+            alias,
+            Some(display_project_path(project_root, &loader_path)),
+            status,
+        );
+    }
+
+    let loader_path = backend.loader_path_for_alias(fallback_alias, entry_path);
+    let status = virtual_plugin_install_status(project_root, install_root);
+    (
+        fallback_alias.to_string(),
+        Some(display_path(&loader_path)),
+        status,
+    )
+}
+
+fn find_loader_importing_entry(
+    project_root: &Path,
+    backend: &dyn VirtualPluginBackend,
+    install_root: &Path,
+    entry_path: &Path,
+) -> Option<PathBuf> {
+    let loader_dir = project_root.join(backend.surface().loader_dir);
+    let needle = display_path_for_loader_import(&install_root.join(entry_path));
+    let entries = fs::read_dir(loader_dir).ok()?;
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(contents) = fs::read_to_string(&path) else {
+            continue;
+        };
+        if contents.contains(&needle) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn loader_alias_from_path(
+    backend: &dyn VirtualPluginBackend,
+    entry_path: &Path,
+    loader_path: &Path,
+) -> Option<String> {
+    let file_stem = loader_path.file_stem()?.to_str()?;
+    let rest = file_stem.strip_prefix(backend.surface().loader_file_prefix)?;
+    let entry_stem = normalized_loader_entry_stem(entry_path);
+    let separator = format!("-{entry_stem}-");
+    let (alias, digest) = rest.rsplit_once(&separator)?;
+    if !alias.is_empty()
+        && digest.len() == 8
+        && digest
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    {
+        Some(alias.to_string())
+    } else {
+        None
+    }
+}
+
+fn normalized_loader_entry_stem(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("plugin")
+        .chars()
+        .map(|character| match character {
+            'a'..='z' | '0'..='9' => character,
+            'A'..='Z' => character.to_ascii_lowercase(),
+            _ => '-',
+        })
+        .collect()
+}
+
+fn managed_package_id_friendly_name(managed_package_id: &str) -> String {
+    managed_package_id
+        .split('+')
+        .next()
+        .filter(|value| !value.is_empty())
+        .unwrap_or(managed_package_id)
+        .to_string()
+}
+
+fn display_path_for_loader_import(path: &Path) -> String {
+    display_path(path).replace('\\', "/")
 }
 
 fn insert_managed_virtual_plugin(
@@ -771,9 +926,12 @@ fn virtual_plugin_status(
     project_root: &Path,
     entry: &crate::adapters::VirtualPluginEntry,
 ) -> VirtualPluginStatus {
-    let installed_entry = project_root
-        .join(&entry.install_root)
-        .join(&entry.entry_path);
+    let install_root = if entry.install_root.is_absolute() {
+        entry.install_root.clone()
+    } else {
+        project_root.join(&entry.install_root)
+    };
+    let installed_entry = install_root.join(&entry.entry_path);
     let loader = project_root.join(&entry.loader_path);
     if installed_entry.is_file() && loader.is_file() {
         VirtualPluginStatus::Present
@@ -783,7 +941,12 @@ fn virtual_plugin_status(
 }
 
 fn virtual_plugin_install_status(project_root: &Path, install_root: &Path) -> VirtualPluginStatus {
-    if project_root.join(install_root).is_dir() {
+    let install_root = if install_root.is_absolute() {
+        install_root.to_path_buf()
+    } else {
+        project_root.join(install_root)
+    };
+    if install_root.is_dir() {
         VirtualPluginStatus::Present
     } else {
         VirtualPluginStatus::Missing
@@ -2179,23 +2342,15 @@ always_context = ["prompts/context.md"]
 
         assert!(output.contains("native-integration:"));
         assert!(output.contains("adapters = [claude, codex]"));
-        assert!(output.contains(".nodus/.claude-plugin/marketplace.json (present"));
+        assert!(output.contains(".nodus-global/marketplaces/claude/marketplace.json (present"));
         assert!(!output.contains(".agents/plugins/marketplace.json"));
-        assert!(output.contains("claude shared@"));
-        assert!(output.contains(".nodus/packages/shared/claude-plugin"));
-        assert!(output.contains("virtual-plugins:"));
-        assert!(output.contains("managed plugin -> .nodus/packages/shared/codex-plugin"));
-        assert!(output.contains(".nodus/packages/shared/codex-plugin"));
+        assert!(output.contains("claude shared-tools@"));
+        assert!(output.contains(".nodus-global/packages/shared-tools+"));
         assert!(output.contains("plugin_hooks=unknown plugin_hooks_required=false"));
         assert!(output.contains("registration=project-runtime"));
 
         let info =
             describe_package_json_in_dir(project.path(), cache.path(), ".", None, None).unwrap();
-        assert!(info.virtual_plugins.iter().any(|plugin| {
-            plugin.adapter == Adapter::Codex
-                && plugin.package_alias == "shared"
-                && plugin.status == VirtualPluginStatus::Present
-        }));
         let native = info.native_integration.unwrap();
         assert_eq!(native.adapters, vec![Adapter::Claude, Adapter::Codex]);
         assert_eq!(native.codex.hooks, Some(true));
@@ -2207,7 +2362,7 @@ always_context = ["prompts/context.md"]
                 .claude
                 .enabled_plugins
                 .iter()
-                .any(|plugin| plugin.starts_with("shared@"))
+                .any(|plugin| plugin.starts_with("shared-tools@"))
         );
     }
 
@@ -2273,18 +2428,20 @@ name = "skills"
         assert!(output.contains(
             "opencode shared hooks/nodus-plugin.ts -> .opencode/plugins/nodus-shared-nodus-plugin-"
         ));
-        assert!(output.contains("(install .nodus/packages/shared/opencode-plugin, present)"));
+        assert!(output.contains("(install "));
+        assert!(output.contains(".nodus-global/packages/shared+"));
+        assert!(output.contains("/opencode-plugin, present)"));
         assert!(
-            output.contains(
-                "opencode skills managed plugin -> .nodus/packages/skills/opencode-plugin (present)"
-            ),
+            output.contains("opencode skills managed plugin ->")
+                && output.contains(".nodus-global/packages/skills+")
+                && output.contains("/opencode-plugin (present)"),
             "{output}"
         );
         assert!(!output.contains("native-integration:"));
 
         let info =
             describe_package_json_in_dir(project.path(), cache.path(), ".", None, None).unwrap();
-        assert_eq!(info.virtual_plugins.len(), 3);
+        assert_eq!(info.virtual_plugins.len(), 2);
         let plugin = info
             .virtual_plugins
             .iter()
@@ -2296,10 +2453,12 @@ name = "skills"
             plugin.source_entry_path.as_deref(),
             Some("hooks/nodus-plugin.ts")
         );
-        assert_eq!(
-            plugin.install_root,
-            ".nodus/packages/shared/opencode-plugin"
+        assert!(
+            plugin
+                .install_root
+                .contains(".nodus-global/packages/shared+")
         );
+        assert!(plugin.install_root.ends_with("/opencode-plugin"));
         assert!(
             plugin
                 .loader_path
@@ -2316,27 +2475,15 @@ name = "skills"
             .unwrap();
         assert_eq!(managed.kind, VirtualPluginKind::ManagedPlugin);
         assert_eq!(managed.adapter, Adapter::OpenCode);
-        assert_eq!(
-            managed.install_root,
-            ".nodus/packages/skills/opencode-plugin"
+        assert!(
+            managed
+                .install_root
+                .contains(".nodus-global/packages/skills+")
         );
+        assert!(managed.install_root.ends_with("/opencode-plugin"));
         assert_eq!(managed.source_entry_path, None);
         assert_eq!(managed.loader_path, None);
         assert_eq!(managed.status, VirtualPluginStatus::Present);
-
-        let codex_managed = info
-            .virtual_plugins
-            .iter()
-            .find(|plugin| plugin.package_alias == "skills" && plugin.adapter == Adapter::Codex)
-            .unwrap();
-        assert_eq!(codex_managed.kind, VirtualPluginKind::ManagedPlugin);
-        assert_eq!(
-            codex_managed.install_root,
-            ".nodus/packages/skills/codex-plugin"
-        );
-        assert_eq!(codex_managed.source_entry_path, None);
-        assert_eq!(codex_managed.loader_path, None);
-        assert_eq!(codex_managed.status, VirtualPluginStatus::Missing);
     }
 
     #[test]
@@ -2388,9 +2535,9 @@ name = "helper"
         let output = capture_info_output(project.path(), cache.path(), ".", None, None);
 
         assert!(
-            output.contains(
-                "opencode shared managed plugin -> .nodus/packages/shared/opencode-plugin (present)"
-            ),
+            output.contains("opencode shared managed plugin ->")
+                && output.contains(".nodus-global/packages/shared+")
+                && output.contains("/opencode-plugin (present)"),
             "{output}"
         );
         assert!(!output.contains("failed to inspect virtual plugin package"));

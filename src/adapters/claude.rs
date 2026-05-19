@@ -6,13 +6,14 @@ use serde_json::{Map, Value, json};
 
 use crate::adapters::{
     ArtifactKind, ManagedActivationHook, ManagedArtifactNames, ManagedFile, ManagedHookSpec,
-    hook_tool_matchers_for_adapter, managed_artifact_path, managed_skill_root,
+    ManagedPackageIdentities, hook_tool_matchers_for_adapter, managed_artifact_path,
+    managed_skill_root,
 };
 use crate::agent_format::markdown_from_codex_agent_toml;
 use crate::hashing::blake3_hex;
 use crate::manifest::{AgentEntry, FileEntry, SkillEntry};
 use crate::manifest::{HookEvent, HookHandlerType, HookSessionSource};
-use crate::paths::strip_path_prefix;
+use crate::paths::{display_path, strip_path_prefix};
 use crate::resolver::ResolvedPackage;
 
 pub fn skill_files(
@@ -114,14 +115,17 @@ pub fn rule_file(
 /// generated plugin manifests do not also reference it through `hooks`.
 pub const PLUGIN_HOOKS_JSON_PATH: &str = "hooks/hooks.json";
 
+#[allow(clippy::too_many_arguments)]
 pub fn hook_files(
     project_root: &Path,
     hooks: &[ManagedHookSpec],
     activation_hooks: &[ManagedActivationHook],
     plugin_packages: &[(&ResolvedPackage, &Path)],
     managed_plugin_marketplace: Option<&str>,
+    managed_plugin_marketplace_source: Option<&str>,
     managed_enabled_plugins: &[String],
     merge_existing: bool,
+    package_identities: &ManagedPackageIdentities,
 ) -> Result<(Vec<ManagedFile>, Vec<String>)> {
     let settings_path = project_root.join(".claude/settings.json");
     let mut files = hooks
@@ -168,13 +172,13 @@ pub fn hook_files(
         // `${CLAUDE_PLUGIN_ROOT}` commands keep working without treating these
         // configs as portable Nodus hooks.
         files.extend(copy_package_files(
-            plugin_install_root(project_root, package),
+            plugin_install_root(project_root, package, package_identities),
             package,
             snapshot_root,
         )?);
 
         let (package_entries, package_scripts, package_warnings) =
-            plugin_hook_entries(project_root, package, snapshot_root)?;
+            plugin_hook_entries(project_root, package, snapshot_root, package_identities)?;
         entries.extend(package_entries);
         files.extend(package_scripts);
         warnings.extend(package_warnings);
@@ -188,6 +192,7 @@ pub fn hook_files(
                 merge_existing,
                 &entries,
                 managed_plugin_marketplace,
+                managed_plugin_marketplace_source,
                 managed_enabled_plugins,
             )?,
         });
@@ -311,10 +316,16 @@ fn plugin_hook_entries(
     project_root: &Path,
     package: &ResolvedPackage,
     snapshot_root: &Path,
+    package_identities: &ManagedPackageIdentities,
 ) -> Result<(Vec<ManagedSettingsEntry>, Vec<ManagedFile>, Vec<String>)> {
     let mut entries = Vec::new();
     let mut files = Vec::new();
     let mut warnings = Vec::new();
+    let plugin_root = display_path(&plugin_install_root(
+        project_root,
+        package,
+        package_identities,
+    ));
 
     for source in package.manifest.claude_plugin_hook_compat_sources() {
         let config = match source {
@@ -410,7 +421,7 @@ fn plugin_hook_entries(
                     let script_relative_path = format!(".claude/hooks/{script_stem}.sh");
                     files.push(ManagedFile {
                         path: project_root.join(&script_relative_path),
-                        contents: plugin_hook_script_contents(package, command),
+                        contents: plugin_hook_script_contents(package, command, &plugin_root),
                     });
 
                     let mut managed_action = action_object.clone();
@@ -444,18 +455,22 @@ fn plugin_hook_entries(
     Ok((entries, files, warnings))
 }
 
-fn plugin_hook_script_contents(package: &ResolvedPackage, command: &str) -> Vec<u8> {
+fn plugin_hook_script_contents(
+    package: &ResolvedPackage,
+    command: &str,
+    plugin_root: &str,
+) -> Vec<u8> {
     format!(
         r#"#!/bin/sh
 set -eu
 
 project_root="${{CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
-export CLAUDE_PLUGIN_ROOT="$project_root/{plugin_root}"
+export CLAUDE_PLUGIN_ROOT={plugin_root}
 export CLAUDE_PLUGIN_DATA="$project_root/{plugin_data}"
 
 exec sh -lc {command}
 "#,
-        plugin_root = plugin_install_root_relative(package),
+        plugin_root = shell_quote(plugin_root),
         plugin_data = plugin_data_root_relative(package),
         command = shell_quote(command),
     )
@@ -655,12 +670,17 @@ fn plugin_activation_script_stem(hook: &ManagedActivationHook) -> String {
     )
 }
 
-fn plugin_install_root(project_root: &Path, package: &ResolvedPackage) -> std::path::PathBuf {
-    project_root.join(plugin_install_root_relative(package))
-}
-
-fn plugin_install_root_relative(package: &ResolvedPackage) -> String {
-    format!(".nodus/packages/{}/claude-plugin", package.alias)
+fn plugin_install_root(
+    project_root: &Path,
+    package: &ResolvedPackage,
+    package_identities: &ManagedPackageIdentities,
+) -> std::path::PathBuf {
+    super::native_package_plugin_root(
+        project_root,
+        crate::adapters::Adapter::Claude,
+        package,
+        package_identities,
+    )
 }
 
 fn plugin_data_root_relative(package: &ResolvedPackage) -> String {
@@ -689,6 +709,7 @@ fn settings_contents(
     merge_existing: bool,
     entries: &[ManagedSettingsEntry],
     managed_plugin_marketplace: Option<&str>,
+    managed_plugin_marketplace_source: Option<&str>,
     managed_enabled_plugins: &[String],
 ) -> Result<Vec<u8>> {
     let mut root = if merge_existing && path.exists() {
@@ -713,13 +734,14 @@ fn settings_contents(
         }
     }
     if let Some(marketplace_name) = managed_plugin_marketplace {
+        let marketplace_source = managed_plugin_marketplace_source.unwrap_or_default();
         let extra_marketplaces = object_field(root_object, "extraKnownMarketplaces", path)?;
         extra_marketplaces.insert(
             marketplace_name.to_string(),
             serde_json::json!({
                 "source": {
                     "source": "directory",
-                    "path": super::native_marketplace_source_path()
+                    "path": marketplace_source
                 }
             }),
         );

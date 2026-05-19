@@ -7,7 +7,6 @@ use crate::adapters::{
     Adapter, ArtifactKind, ManagedArtifactNames, ManagedFile, ManagedHookSpec,
     VirtualPluginBackend, hook_supported_by_adapter, hook_tool_matchers_for_adapter,
     managed_artifact_path, managed_skill_id, managed_skill_root,
-    virtual_plugin_install_root_relative,
 };
 use crate::agent_format::markdown_from_codex_agent_toml;
 use crate::hashing::blake3_hex;
@@ -55,7 +54,7 @@ impl VirtualPluginBackend for OpenCodeVirtualPluginBackend {
         package: &ResolvedPackage,
         entry: &crate::adapters::VirtualPluginEntry,
     ) -> Vec<u8> {
-        plugin_wrapper_contents(package, &entry.entry_path)
+        plugin_wrapper_contents(package, entry)
     }
 }
 
@@ -263,9 +262,16 @@ fn plugin_wrapper_relative_path_for_alias(package_alias: &str, path: &Path) -> S
     )
 }
 
-pub(crate) fn plugin_wrapper_contents(package: &ResolvedPackage, path: &Path) -> Vec<u8> {
-    let install_root = virtual_plugin_install_root_relative(Adapter::OpenCode, package);
-    let import_path = format!("../../{}", display_path_js(&install_root.join(path)));
+pub(crate) fn plugin_wrapper_contents(
+    _package: &ResolvedPackage,
+    entry: &crate::adapters::VirtualPluginEntry,
+) -> Vec<u8> {
+    let path = &entry.entry_path;
+    let import_path = if entry.install_root.is_absolute() {
+        display_path_js(&entry.install_root.join(path))
+    } else {
+        format!("../../{}", display_path_js(&entry.install_root.join(path)))
+    };
     format!(
         r#"import * as pluginModule from {import_path};
 

@@ -6,8 +6,8 @@ use anyhow::{Context, Result, bail};
 
 use super::{DependencyContext, RelayFileMapping, RelayTransform};
 use crate::adapters::{
-    Adapter, Adapters, ArtifactKind, ManagedArtifactNames, managed_artifact_id,
-    managed_artifact_path, managed_skill_root,
+    Adapter, Adapters, ArtifactKind, ManagedArtifactNames, ManagedPackageIdentities,
+    managed_artifact_id, managed_artifact_path, managed_skill_root,
 };
 use crate::agent_format::{
     default_codex_agent_description, emitted_codex_agent_toml,
@@ -20,7 +20,7 @@ use crate::resolver::ResolvedPackage;
 
 pub(super) fn build_mappings(
     names: &ManagedArtifactNames,
-    _packages: &[ResolvedPackage],
+    packages: &[ResolvedPackage],
     dependency: &DependencyContext,
     project_root: &Path,
     selected_adapters: Adapters,
@@ -29,6 +29,7 @@ pub(super) fn build_mappings(
     let mut mappings = Vec::new();
     let package = &dependency.package;
     let snapshot_root = &dependency.snapshot_root;
+    let identities = ManagedPackageIdentities::from_resolved_packages(packages.iter());
 
     for skill in &package.manifest.discovered.skills {
         if !package.selects_component(crate::manifest::DependencyComponent::Skills) {
@@ -47,7 +48,14 @@ pub(super) fn build_mappings(
                 continue;
             }
             let source_root = snapshot_root.join(&skill.path);
-            let managed_root = managed_skill_root(names, project_root, adapter, package, &skill.id);
+            let managed_root = relay_managed_skill_root(
+                names,
+                project_root,
+                adapter,
+                package,
+                &skill.id,
+                &identities,
+            );
             let target_root = linked_repo.join(&skill.path);
             mappings.extend(skill_mappings(
                 names,
@@ -72,13 +80,14 @@ pub(super) fn build_mappings(
                 continue;
             }
             for agent in package.manifest.discovered.selected_agents(adapter) {
-                if let Some(managed_path) = managed_artifact_path(
+                if let Some(managed_path) = relay_managed_artifact_path(
                     names,
                     project_root,
                     adapter,
                     ArtifactKind::Agent,
                     package,
                     &agent.id,
+                    &identities,
                 ) {
                     mappings.push(file_mapping(
                         managed_path,
@@ -104,9 +113,15 @@ pub(super) fn build_mappings(
             if !selected_adapters.contains(adapter) {
                 continue;
             }
-            if let Some(managed_path) =
-                managed_artifact_path(names, project_root, adapter, kind, package, &rule.id)
-            {
+            if let Some(managed_path) = relay_managed_artifact_path(
+                names,
+                project_root,
+                adapter,
+                kind,
+                package,
+                &rule.id,
+                &identities,
+            ) {
                 mappings.push(file_mapping(
                     managed_path,
                     Some(snapshot_root.join(&rule.path)),
@@ -128,7 +143,7 @@ pub(super) fn build_mappings(
             mappings.push(file_mapping(
                 managed_skill_root(
                     names,
-                    project_root,
+                    &relay_runtime_root(project_root, Adapter::Codex, package, &identities),
                     Adapter::Codex,
                     package,
                     &managed_skill_id,
@@ -152,9 +167,15 @@ pub(super) fn build_mappings(
             if !selected_adapters.contains(adapter) {
                 continue;
             }
-            if let Some(managed_path) =
-                managed_artifact_path(names, project_root, adapter, kind, package, &command.id)
-            {
+            if let Some(managed_path) = relay_managed_artifact_path(
+                names,
+                project_root,
+                adapter,
+                kind,
+                package,
+                &command.id,
+                &identities,
+            ) {
                 mappings.push(file_mapping(
                     managed_path,
                     Some(snapshot_root.join(&command.path)),
@@ -280,8 +301,10 @@ fn build_missing_mappings_for_adapter(
     linked_repo: &Path,
 ) -> Result<Vec<RelayFileMapping>> {
     let mut mappings = Vec::new();
-    let runtime_root =
-        crate::adapters::managed_runtime_root(project_root, adapter, &dependency.package);
+    let identities = ManagedPackageIdentities::from_resolved_packages(packages.iter());
+    let runtime_base = relay_runtime_root(project_root, adapter, &dependency.package, &identities);
+    let managed_runtime_root =
+        crate::adapters::managed_runtime_root(&runtime_base, adapter, &dependency.package);
 
     if dependency
         .package
@@ -306,7 +329,14 @@ fn build_missing_mappings_for_adapter(
                     .skills
                     .iter()
                     .map(|skill| {
-                        managed_skill_root(names, project_root, adapter, package, &skill.id)
+                        relay_managed_skill_root(
+                            names,
+                            project_root,
+                            adapter,
+                            package,
+                            &skill.id,
+                            &identities,
+                        )
                     })
                     .collect::<Vec<_>>();
                 if adapter == Adapter::Codex
@@ -318,13 +348,20 @@ fn build_missing_mappings_for_adapter(
                             package,
                             &command.id,
                         );
-                        managed_skill_root(names, project_root, adapter, package, &managed_skill_id)
+                        relay_managed_skill_root(
+                            names,
+                            project_root,
+                            adapter,
+                            package,
+                            &managed_skill_id,
+                            &identities,
+                        )
                     }));
                 }
                 roots
             })
             .collect::<std::collections::BTreeSet<_>>();
-        let skills_root = runtime_root.join("skills");
+        let skills_root = managed_runtime_root.join("skills");
         if skills_root.is_dir() {
             for entry in fs::read_dir(&skills_root)
                 .with_context(|| format!("failed to read {}", skills_root.display()))?
@@ -409,25 +446,19 @@ fn build_missing_mappings_for_adapter(
                     .selected_agents(adapter)
                     .into_iter()
                     .filter_map(|agent| {
-                        managed_artifact_path(
+                        relay_managed_artifact_path(
                             names,
                             project_root,
                             adapter,
                             ArtifactKind::Agent,
                             package,
                             &agent.id,
+                            &identities,
                         )
                     })
             })
             .collect::<std::collections::BTreeSet<_>>();
-        // Codex emits agents under the project-level runtime root rather than
-        // inside the plugin folder, because Codex's plugin format does not
-        // declare agents.
-        let agents_root = if adapter == Adapter::Codex {
-            crate::adapters::runtime_root(project_root, adapter).join("agents")
-        } else {
-            runtime_root.join("agents")
-        };
+        let agents_root = managed_runtime_root.join("agents");
         if agents_root.is_dir() {
             for entry in fs::read_dir(&agents_root)
                 .with_context(|| format!("failed to read {}", agents_root.display()))?
@@ -467,6 +498,48 @@ fn build_missing_mappings_for_adapter(
     }
 
     Ok(mappings)
+}
+
+fn relay_managed_skill_root(
+    names: &ManagedArtifactNames,
+    project_root: &Path,
+    adapter: Adapter,
+    package: &ResolvedPackage,
+    skill_id: &str,
+    identities: &ManagedPackageIdentities,
+) -> PathBuf {
+    let runtime_root = relay_runtime_root(project_root, adapter, package, identities);
+    managed_skill_root(names, &runtime_root, adapter, package, skill_id)
+}
+
+fn relay_managed_artifact_path(
+    names: &ManagedArtifactNames,
+    project_root: &Path,
+    adapter: Adapter,
+    kind: ArtifactKind,
+    package: &ResolvedPackage,
+    artifact_id: &str,
+    identities: &ManagedPackageIdentities,
+) -> Option<PathBuf> {
+    let runtime_root = relay_runtime_root(project_root, adapter, package, identities);
+    managed_artifact_path(names, &runtime_root, adapter, kind, package, artifact_id)
+}
+
+fn relay_runtime_root(
+    project_root: &Path,
+    adapter: Adapter,
+    package: &ResolvedPackage,
+    identities: &ManagedPackageIdentities,
+) -> PathBuf {
+    if adapter == Adapter::Claude && !matches!(package.source, crate::resolver::PackageSource::Root)
+    {
+        crate::adapters::global_nodus_home(project_root)
+            .join("packages")
+            .join(identities.managed_package_id(package))
+            .join("claude-plugin")
+    } else {
+        project_root.to_path_buf()
+    }
 }
 
 fn agent_transform(

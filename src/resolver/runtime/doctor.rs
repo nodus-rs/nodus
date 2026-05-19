@@ -102,6 +102,7 @@ struct DoctorInspection {
     owned_paths: OwnedSet,
     desired_paths: HashSet<PathBuf>,
     planned_files: Vec<ManagedFile>,
+    external_files: Vec<ManagedFile>,
     sync_summary: super::SyncSummary,
     has_existing_lockfile: bool,
     has_missing_managed_files: bool,
@@ -118,6 +119,7 @@ struct LockfileInspection<'a> {
     existing_lockfile: Option<&'a Lockfile>,
     owned_paths: &'a OwnedSet,
     planned_files: &'a [ManagedFile],
+    external_files: &'a [ManagedFile],
     desired_paths: &'a HashSet<PathBuf>,
 }
 
@@ -247,6 +249,7 @@ fn inspect_doctor_state(
             )?
         }
     };
+    let external_files = output_plan.external_files;
     let planned_files = output_plan.files;
     let managed_file_count = planned_files.len();
     if existing_lockfile.is_none() {
@@ -276,6 +279,7 @@ fn inspect_doctor_state(
         existing_lockfile: existing_lockfile.as_ref(),
         owned_paths: &owned_paths,
         planned_files: &planned_files,
+        external_files: &external_files,
         desired_paths: &desired_paths,
     }
     .inspect()?;
@@ -296,6 +300,7 @@ fn inspect_doctor_state(
         owned_paths,
         desired_paths,
         planned_files,
+        external_files,
         sync_summary: super::SyncSummary {
             package_count: resolution.packages.len(),
             adapters: selection.adapters,
@@ -392,6 +397,13 @@ impl LockfileInspection<'_> {
             }
             findings.push(classify_state_consistency_finding(message));
         }
+        if let Err(error) = validate_external_files(self.external_files) {
+            let message = error.to_string();
+            if message.starts_with("managed file is missing from disk") {
+                has_missing_managed_files = true;
+            }
+            findings.push(classify_state_consistency_finding(message));
+        }
 
         Ok(LockfileInspectionResult {
             findings,
@@ -399,6 +411,15 @@ impl LockfileInspection<'_> {
             has_missing_managed_files,
         })
     }
+}
+
+fn validate_external_files(external_files: &[ManagedFile]) -> Result<()> {
+    for file in external_files {
+        if !file.path.exists() {
+            bail!("managed file is missing from disk: {}", file.path.display());
+        }
+    }
+    Ok(())
 }
 
 fn classify_state_consistency_finding(message: String) -> DoctorFinding {
@@ -514,7 +535,7 @@ fn execute_safe_repairs(
         &inspection.owned_paths,
         &inspection.desired_paths,
         &inspection.planned_files,
-        Vec::new(),
+        inspection.external_files.clone(),
         inspection.warnings.clone(),
         inspection.sync_summary.clone(),
         SyncMode::Normal,

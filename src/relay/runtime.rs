@@ -489,9 +489,15 @@ fn adapters_from_lockfile(lockfile: &Lockfile) -> Adapters {
             .chain(package.owned_files.iter().map(String::as_str))
             .chain(package.owned_prefixes.iter().map(|rule| rule.dir.as_str()))
     });
+    let v10_runtime_adapters = lockfile
+        .packages
+        .iter()
+        .flat_map(|package| package.owned_runtime_adapters.iter().copied());
+
     v9_paths
         .chain(v10_paths)
         .filter_map(adapter_for_managed_path)
+        .chain(v10_runtime_adapters)
         .fold(Adapters::NONE, |selected, adapter| {
             selected.union(adapter.into())
         })
@@ -1063,7 +1069,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::adapters::{ArtifactKind, ManagedArtifactNames};
+    use crate::adapters::{ArtifactKind, ManagedArtifactNames, ManagedPackageIdentities};
     use crate::git::{AddDependencyOptions, add_dependency_in_dir_with_adapters};
     use crate::report::ColorMode;
 
@@ -1135,7 +1141,8 @@ mod tests {
         let names = Lockfile::read(&project_root.join(LOCKFILE_NAME))
             .map(|lockfile| ManagedArtifactNames::from_locked_packages(lockfile.packages.iter()))
             .unwrap_or_else(|_| ManagedArtifactNames::from_resolved_packages([package]));
-        crate::adapters::managed_skill_root(&names, project_root, adapter, package, skill_id)
+        let runtime_root = test_managed_runtime_root(project_root, adapter, package);
+        crate::adapters::managed_skill_root(&names, &runtime_root, adapter, package, skill_id)
     }
 
     fn managed_artifact_path(
@@ -1148,14 +1155,31 @@ mod tests {
         let names = Lockfile::read(&project_root.join(LOCKFILE_NAME))
             .map(|lockfile| ManagedArtifactNames::from_locked_packages(lockfile.packages.iter()))
             .unwrap_or_else(|_| ManagedArtifactNames::from_resolved_packages([package]));
+        let runtime_root = test_managed_runtime_root(project_root, adapter, package);
         crate::adapters::managed_artifact_path(
             &names,
-            project_root,
+            &runtime_root,
             adapter,
             kind,
             package,
             artifact_id,
         )
+    }
+
+    fn test_managed_runtime_root(
+        project_root: &Path,
+        adapter: Adapter,
+        package: &ResolvedPackage,
+    ) -> PathBuf {
+        if adapter == Adapter::Claude && !matches!(package.source, PackageSource::Root) {
+            let identities = ManagedPackageIdentities::from_resolved_packages([package]);
+            crate::adapters::global_nodus_home(project_root)
+                .join("packages")
+                .join(identities.managed_package_id(package))
+                .join("claude-plugin")
+        } else {
+            project_root.to_path_buf()
+        }
     }
 
     fn managed_codex_command_skill_path(

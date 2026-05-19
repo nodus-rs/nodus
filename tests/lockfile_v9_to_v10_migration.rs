@@ -6,7 +6,7 @@
 //! (exit status, stderr/stdout messages, post-sync lockfile contents).
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::Instant;
 
@@ -21,6 +21,7 @@ where
 {
     Command::new(env!("CARGO_BIN_EXE_nodus"))
         .current_dir(cwd)
+        .env("NODUS_HOME", cwd.join(".nodus-global"))
         .args(args)
         .output()
         .expect("spawn nodus binary")
@@ -62,6 +63,36 @@ shared = { path = "vendor/shared" }
     .expect("write SKILL.md");
 
     cache
+}
+
+fn global_claude_skill_path(workspace: &Path, package_prefix: &str, skill_id: &str) -> PathBuf {
+    let packages_root = workspace.join(".nodus-global/packages");
+    let package_root = fs::read_dir(&packages_root)
+        .unwrap_or_else(|error| {
+            panic!(
+                "failed to read global packages root {}: {error}",
+                packages_root.display()
+            )
+        })
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(package_prefix))
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a global package directory starting with `{package_prefix}` under {}",
+                packages_root.display()
+            )
+        });
+
+    package_root
+        .join("claude-plugin")
+        .join("skills")
+        .join(skill_id)
+        .join("SKILL.md")
 }
 
 /// Acceptance: a v9-shape lockfile on disk is read by `nodus sync`, the
@@ -205,13 +236,10 @@ fn sync_repairs_drifted_owned_file_and_keeps_install_digest_consistent() {
         String::from_utf8_lossy(&initial.stderr)
     );
 
-    // Pick any file Nodus owns and overwrite its contents. The native
-    // Claude plugin emits the skill under
-    // `.nodus/packages/shared/claude-plugin/skills/review/SKILL.md` —
-    // that's the stable target produced by this fixture.
-    let drifted_file = temp
-        .path()
-        .join(".nodus/packages/shared/claude-plugin/skills/review/SKILL.md");
+    // Pick any file Nodus owns and overwrite its contents. Dependency
+    // Claude plugin payloads live under the global NODUS_HOME package cache,
+    // keyed by the managed package ID.
+    let drifted_file = global_claude_skill_path(temp.path(), "shared+", "review");
     assert!(
         drifted_file.exists(),
         "expected the planned SKILL.md to exist on disk after the initial sync; got missing path {}",

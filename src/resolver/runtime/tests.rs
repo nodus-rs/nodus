@@ -7,7 +7,10 @@ use tempfile::TempDir;
 use walkdir::WalkDir;
 
 use super::*;
-use crate::adapters::{Adapter, Adapters, ArtifactKind, ManagedArtifactNames, build_output_plan};
+use crate::adapters::{
+    Adapter, Adapters, ArtifactKind, ManagedArtifactNames, ManagedPackageIdentities,
+    build_output_plan,
+};
 use crate::git::{
     AddDependencyOptions, AddSummary, RemoveSummary, add_dependency_at_paths_with_adapters,
     add_dependency_in_dir_with_adapters as add_dependency_in_dir_with_adapters_impl,
@@ -110,11 +113,43 @@ fn write_codex_marketplace(path: &Path, contents: &str) {
 }
 
 fn generated_claude_marketplace_path(path: &Path) -> PathBuf {
-    path.join(".nodus/.claude-plugin/marketplace.json")
+    path.join(".nodus-global/marketplaces/claude/marketplace.json")
 }
 
 fn generated_codex_marketplace_path(path: &Path) -> PathBuf {
-    path.join(".agents/plugins/marketplace.json")
+    path.join(".nodus-global/marketplaces/codex/marketplace.json")
+}
+
+fn generated_global_packages_root(path: &Path) -> PathBuf {
+    path.join(".nodus-global/packages")
+}
+
+fn global_native_plugin_root(
+    project_root: &Path,
+    package: &ResolvedPackage,
+    adapter: Adapter,
+) -> PathBuf {
+    let identities = ManagedPackageIdentities::from_resolved_packages([package]);
+    generated_global_packages_root(project_root)
+        .join(identities.managed_package_id(package))
+        .join(match adapter {
+            Adapter::Claude => "claude-plugin",
+            Adapter::Codex => "codex-plugin",
+            Adapter::OpenCode => "opencode-plugin",
+            Adapter::Agents | Adapter::Copilot | Adapter::Cursor => {
+                panic!("adapter {adapter} does not have a native plugin root")
+            }
+        })
+}
+
+fn dependency_managed_package_id(resolution: &Resolution) -> String {
+    let package = resolution
+        .packages
+        .iter()
+        .find(|package| !matches!(package.source, PackageSource::Root))
+        .expect("resolution should include a dependency package");
+    let identities = ManagedPackageIdentities::from_resolved_packages(resolution.packages.iter());
+    identities.managed_package_id(package)
 }
 
 fn read_codex_project_config(path: &Path) -> toml::Value {
@@ -319,34 +354,52 @@ fn runtime_file_exists(project_root: &Path, adapter: Adapter, file_name: &str) -
 
 fn plugin_hook_script_path(
     project_root: &Path,
-    package_alias: &str,
+    _package_alias: &str,
     name_fragment: &str,
 ) -> PathBuf {
-    let scripts_dir = project_root
-        .join(".nodus/packages")
-        .join(package_alias)
-        .join("claude-plugin/hooks/scripts");
-    let matches = fs::read_dir(&scripts_dir)
-        .unwrap_or_else(|err| {
-            panic!(
-                "expected plugin scripts dir at {}: {err}",
-                scripts_dir.display()
-            )
-        })
-        .map(|entry| entry.unwrap().path())
+    let scripts_root = generated_global_packages_root(project_root);
+    let matches = WalkDir::new(&scripts_root)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| entry.into_path())
         .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.contains(name_fragment))
+            path.components()
+                .any(|component| component.as_os_str() == "claude-plugin")
+                && path
+                    .components()
+                    .any(|component| component.as_os_str() == "scripts")
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.contains(name_fragment))
         })
         .collect::<Vec<_>>();
     assert_eq!(
         matches.len(),
         1,
         "expected one plugin hook script containing `{name_fragment}` in {}",
-        scripts_dir.display()
+        scripts_root.display()
     );
     matches.into_iter().next().unwrap()
+}
+
+fn global_plugin_file_exists(
+    project_root: &Path,
+    adapter_plugin_dir: &str,
+    path_fragment: &str,
+) -> bool {
+    WalkDir::new(generated_global_packages_root(project_root))
+        .into_iter()
+        .filter_map(Result::ok)
+        .any(|entry| {
+            entry.file_type().is_file()
+                && entry
+                    .path()
+                    .components()
+                    .any(|component| component.as_os_str() == adapter_plugin_dir)
+                && display_path(entry.path()).contains(path_fragment)
+        })
 }
 
 fn codex_hook_script_path(project_root: &Path, name_fragment: &str) -> PathBuf {
@@ -393,7 +446,15 @@ fn managed_skill_file(
     skill_id: &str,
 ) -> PathBuf {
     let names = ManagedArtifactNames::from_resolved_packages([package]);
-    crate::adapters::managed_skill_root(&names, project_root, adapter, package, skill_id)
+    let runtime_root = if adapter == Adapter::Claude
+        && !matches!(package.source, PackageSource::Root)
+        && project_root.file_name().and_then(|name| name.to_str()) != Some("claude-plugin")
+    {
+        global_native_plugin_root(project_root, package, adapter)
+    } else {
+        project_root.to_path_buf()
+    };
+    crate::adapters::managed_skill_root(&names, &runtime_root, adapter, package, skill_id)
         .join("SKILL.md")
 }
 
@@ -405,9 +466,17 @@ fn managed_artifact_file(
     artifact_id: &str,
 ) -> PathBuf {
     let names = ManagedArtifactNames::from_resolved_packages([package]);
+    let runtime_root = if adapter == Adapter::Claude
+        && !matches!(package.source, PackageSource::Root)
+        && project_root.file_name().and_then(|name| name.to_str()) != Some("claude-plugin")
+    {
+        global_native_plugin_root(project_root, package, adapter)
+    } else {
+        project_root.to_path_buf()
+    };
     crate::adapters::managed_artifact_path(
         &names,
-        project_root,
+        &runtime_root,
         adapter,
         kind,
         package,
@@ -1107,11 +1176,14 @@ shared = { path = "vendor/shared" }
     assert_eq!(lockfile.packages[0].alias, "root");
     assert_eq!(lockfile.packages[1].alias, "shared");
     assert_not_owned(&lockfile, temp.path(), ".claude/skills/review");
-    assert_owned(
-        &lockfile,
-        temp.path(),
-        ".nodus/packages/shared/claude-plugin",
-    );
+    let shared = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .unwrap();
+    let plugin_root = global_native_plugin_root(temp.path(), shared, Adapter::Claude);
+    let plugin_root_relative = display_path(plugin_root.strip_prefix(temp.path()).unwrap());
+    assert_not_owned(&lockfile, temp.path(), &plugin_root_relative);
 }
 
 #[test]
@@ -1132,9 +1204,14 @@ root_skill_pack = { path = "vendor/root-skill-pack" }
 
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Claude]).unwrap();
 
-    let emitted_skill = temp
-        .path()
-        .join(".nodus/packages/root_skill_pack/claude-plugin/skills/root-skill-pack");
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let dependency = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "root_skill_pack")
+        .unwrap();
+    let emitted_skill = global_native_plugin_root(temp.path(), dependency, Adapter::Claude)
+        .join("skills/root-skill-pack");
     assert!(emitted_skill.join("SKILL.md").exists());
     assert_eq!(
         fs::read_to_string(emitted_skill.join("assets/reference.md")).unwrap(),
@@ -1304,6 +1381,125 @@ fn add_dependency_uses_latest_tag_when_not_provided() {
 
     let manifest = fs::read_to_string(temp.path().join(MANIFEST_FILE)).unwrap();
     assert!(manifest.contains("tag = \"v1.2.0\""));
+}
+
+#[test]
+fn managed_package_ids_prefer_tag_version_branch_then_revision() {
+    let tag_project = TempDir::new().unwrap();
+    let tag_cache = cache_dir();
+    let tagged_repo = TempDir::new().unwrap();
+    write_manifest(tagged_repo.path(), r#"name = "playbook-ios""#);
+    write_skill(&tagged_repo.path().join("skills/review"), "Review");
+    init_git_repo(tagged_repo.path());
+    tag_repo(tagged_repo.path(), "v0.6.1");
+
+    add_dependency_in_dir_with_adapters(
+        tag_project.path(),
+        tag_cache.path(),
+        &tagged_repo.path().to_string_lossy(),
+        Some("v0.6.1"),
+        &[Adapter::Claude],
+        &[],
+    )
+    .unwrap();
+    let (resolution, _) = resolve_project_from_existing_lockfile_in_dir(
+        tag_project.path(),
+        tag_cache.path(),
+        &[Adapter::Claude],
+    )
+    .unwrap();
+    assert_eq!(
+        dependency_managed_package_id(&resolution),
+        "playbook-ios+v0.6.1"
+    );
+
+    let version_project = TempDir::new().unwrap();
+    let version_cache = cache_dir();
+    let version_repo = TempDir::new().unwrap();
+    write_manifest(
+        version_repo.path(),
+        r#"name = "playbook-ios"
+version = "0.6.1"
+"#,
+    );
+    write_skill(&version_repo.path().join("skills/review"), "Review");
+    init_git_repo(version_repo.path());
+
+    add_dependency_in_dir_with_adapters(
+        version_project.path(),
+        version_cache.path(),
+        &version_repo.path().to_string_lossy(),
+        None,
+        &[Adapter::Claude],
+        &[],
+    )
+    .unwrap();
+    let (resolution, _) = resolve_project_from_existing_lockfile_in_dir(
+        version_project.path(),
+        version_cache.path(),
+        &[Adapter::Claude],
+    )
+    .unwrap();
+    assert_eq!(
+        dependency_managed_package_id(&resolution),
+        "playbook-ios+0.6.1"
+    );
+
+    let branch_project = TempDir::new().unwrap();
+    let branch_cache = cache_dir();
+    let branch_repo = TempDir::new().unwrap();
+    write_manifest(branch_repo.path(), r#"name = "playbook-ios""#);
+    write_skill(&branch_repo.path().join("skills/review"), "Review");
+    init_git_repo(branch_repo.path());
+    rename_current_branch(branch_repo.path(), "main");
+
+    add_dependency_in_dir_with_adapters(
+        branch_project.path(),
+        branch_cache.path(),
+        &branch_repo.path().to_string_lossy(),
+        None,
+        &[Adapter::Claude],
+        &[],
+    )
+    .unwrap();
+    let (resolution, _) = resolve_project_from_existing_lockfile_in_dir(
+        branch_project.path(),
+        branch_cache.path(),
+        &[Adapter::Claude],
+    )
+    .unwrap();
+    assert_eq!(
+        dependency_managed_package_id(&resolution),
+        "playbook-ios+main"
+    );
+
+    let rev_project = TempDir::new().unwrap();
+    let rev_cache = cache_dir();
+    let rev_repo = TempDir::new().unwrap();
+    write_manifest(rev_repo.path(), r#"name = "playbook-ios""#);
+    write_skill(&rev_repo.path().join("skills/review"), "Review");
+    init_git_repo(rev_repo.path());
+    let revision = crate::git::current_rev(rev_repo.path()).unwrap();
+
+    add_dependency_in_dir_with_git_ref(
+        rev_project.path(),
+        rev_cache.path(),
+        &rev_repo.path().to_string_lossy(),
+        RequestedGitRef::Revision(revision.as_str()),
+        &[Adapter::Claude],
+        &[],
+    )
+    .unwrap();
+    let (resolution, _) = resolve_project_from_existing_lockfile_in_dir(
+        rev_project.path(),
+        rev_cache.path(),
+        &[Adapter::Claude],
+    )
+    .unwrap();
+    assert_eq!(
+        dependency_managed_package_id(&resolution),
+        format!("playbook-ios+{}", &revision[..4])
+    );
 }
 
 #[test]
@@ -1696,40 +1892,42 @@ fn sync_generates_claude_workspace_marketplace_files() {
         &fs::read_to_string(generated_claude_marketplace_path(repo.path())).unwrap(),
     )
     .unwrap();
-    let expected_marketplace_name = normalize_workspace_marketplace_name(&expected_owner_name);
-    assert_eq!(
-        claude["name"].as_str(),
-        Some(expected_marketplace_name.as_str())
-    );
+    let expected_marketplace_name = "nodus";
+    assert_eq!(claude["name"].as_str(), Some(expected_marketplace_name));
     assert_eq!(
         claude["owner"]["name"].as_str(),
         Some(expected_owner_name.as_str())
     );
     assert_eq!(claude["plugins"].as_array().unwrap().len(), 2);
-    assert_eq!(
-        claude["plugins"][0]["source"].as_str(),
-        Some("../plugins/axiom")
+    assert!(
+        claude["plugins"][0]["source"]
+            .as_str()
+            .is_some_and(|source| source.ends_with("/plugins/axiom"))
     );
 
-    assert!(!generated_codex_marketplace_path(repo.path()).exists());
+    assert!(generated_codex_marketplace_path(repo.path()).exists());
     let settings: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(repo.path().join(".claude/settings.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(
-        settings["extraKnownMarketplaces"][expected_marketplace_name.as_str()]["source"]["path"]
-            .as_str(),
-        Some("./.nodus")
+    assert!(
+        settings["extraKnownMarketplaces"][expected_marketplace_name]["source"]["path"]
+            .as_str()
+            .is_some_and(|source| source.ends_with(".nodus-global/marketplaces/claude"))
     );
     assert!(settings.get("enabledPlugins").is_none());
 
     let lockfile = Lockfile::read(&repo.path().join(LOCKFILE_NAME)).unwrap();
-    assert_owned(
+    assert_not_owned(
         &lockfile,
         repo.path(),
-        ".nodus/.claude-plugin/marketplace.json",
+        ".nodus-global/marketplaces/claude/marketplace.json",
     );
-    assert_not_owned(&lockfile, repo.path(), ".agents/plugins/marketplace.json");
+    assert_not_owned(
+        &lockfile,
+        repo.path(),
+        ".nodus-global/marketplaces/codex/marketplace.json",
+    );
 }
 
 #[test]
@@ -1763,7 +1961,7 @@ model = "gpt-5"
     .unwrap();
 
     assert_eq!(fs::read_to_string(&codex_config).unwrap(), original);
-    assert!(!generated_codex_marketplace_path(repo.path()).exists());
+    assert!(generated_codex_marketplace_path(repo.path()).exists());
 }
 
 #[test]
@@ -1844,7 +2042,13 @@ version = "1.2.3"
 
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Claude]).unwrap();
 
-    let plugin_root = temp.path().join(".nodus/packages/shared/claude-plugin");
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let shared = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .unwrap();
+    let plugin_root = global_native_plugin_root(temp.path(), shared, Adapter::Claude);
     assert!(plugin_root.join("skills/review/SKILL.md").exists());
     assert!(plugin_root.join("agents/security.md").exists());
     assert!(plugin_root.join("commands/build.md").exists());
@@ -1853,7 +2057,7 @@ version = "1.2.3"
         &fs::read_to_string(plugin_root.join(".claude-plugin/plugin.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(plugin["name"].as_str(), Some("shared"));
+    assert_eq!(plugin["name"].as_str(), Some("shared-tools"));
     assert_eq!(plugin["version"].as_str(), Some("1.2.3"));
     assert_eq!(plugin["skills"].as_str(), Some("./skills/"));
     assert_eq!(plugin["agents"][0].as_str(), Some("./agents/security.md"));
@@ -1870,13 +2074,17 @@ version = "1.2.3"
         &fs::read_to_string(generated_claude_marketplace_path(temp.path())).unwrap(),
     )
     .unwrap();
-    assert_eq!(marketplace["plugins"][0]["name"].as_str(), Some("shared"));
     assert_eq!(
-        marketplace["plugins"][0]["source"].as_str(),
-        Some("./packages/shared/claude-plugin")
+        marketplace["plugins"][0]["name"].as_str(),
+        Some("shared-tools")
+    );
+    assert!(
+        marketplace["plugins"][0]["source"]
+            .as_str()
+            .is_some_and(|source| source.ends_with("/claude-plugin"))
     );
     let plugin_key = format!(
-        "shared@{}",
+        "shared-tools@{}",
         marketplace["name"].as_str().expect("marketplace name")
     );
     let marketplace_name = marketplace["name"].as_str().expect("marketplace name");
@@ -1884,9 +2092,10 @@ version = "1.2.3"
         settings["extraKnownMarketplaces"][marketplace_name]["source"]["source"].as_str(),
         Some("directory")
     );
-    assert_eq!(
-        settings["extraKnownMarketplaces"][marketplace_name]["source"]["path"].as_str(),
-        Some("./.nodus")
+    assert!(
+        settings["extraKnownMarketplaces"][marketplace_name]["source"]["path"]
+            .as_str()
+            .is_some_and(|source| source.ends_with(".nodus-global/marketplaces/claude"))
     );
     assert_eq!(
         settings["enabledPlugins"]
@@ -1896,11 +2105,8 @@ version = "1.2.3"
     );
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
-    assert_owned(
-        &lockfile,
-        temp.path(),
-        ".nodus/packages/shared/claude-plugin",
-    );
+    let plugin_root_relative = display_path(plugin_root.strip_prefix(temp.path()).unwrap());
+    assert_not_owned(&lockfile, temp.path(), &plugin_root_relative);
 }
 
 #[test]
@@ -1928,7 +2134,13 @@ shared = { path = "vendor/shared" }
 
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Claude]).unwrap();
 
-    let plugin_root = temp.path().join(".nodus/packages/shared/claude-plugin");
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let shared = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .unwrap();
+    let plugin_root = global_native_plugin_root(temp.path(), shared, Adapter::Claude);
     for relative in [
         ".lsp.json",
         "monitors/status.json",
@@ -1954,9 +2166,10 @@ shared = { path = "vendor/shared" }
     )
     .unwrap();
     assert_eq!(marketplace["plugins"][0]["name"].as_str(), Some("shared"));
-    assert_eq!(
-        marketplace["plugins"][0]["source"].as_str(),
-        Some("./packages/shared/claude-plugin")
+    assert!(
+        marketplace["plugins"][0]["source"]
+            .as_str()
+            .is_some_and(|source| source.ends_with("/claude-plugin"))
     );
 }
 
@@ -1995,22 +2208,25 @@ args = ["figma-developer-mcp"]
 
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
 
-    let plugin_root = temp.path().join(".nodus/packages/shared/codex-plugin");
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let shared = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .unwrap();
+    let plugin_root = global_native_plugin_root(temp.path(), shared, Adapter::Codex);
     assert!(plugin_root.join("skills/review/SKILL.md").exists());
-    // Codex runtime outputs are project-local; the virtual package root keeps
-    // a raw payload copy for Nodus lifecycle/debugging.
-    assert!(plugin_root.join("agents/security.toml").exists());
     assert!(temp.path().join(".codex/agents/security.toml").exists());
-    assert!(plugin_root.join("commands/build.md").exists());
+    assert!(plugin_root.join("skills/__cmd_build/SKILL.md").exists());
     assert!(
         temp.path()
             .join(".codex/skills/__cmd_build/SKILL.md")
             .exists()
     );
 
-    assert!(!plugin_root.join(".codex-plugin/plugin.json").exists());
-    assert!(!plugin_root.join(".mcp.json").exists());
-    assert!(!generated_codex_marketplace_path(temp.path()).exists());
+    assert!(plugin_root.join(".codex-plugin/plugin.json").exists());
+    assert!(plugin_root.join(".mcp.json").exists());
+    assert!(generated_codex_marketplace_path(temp.path()).exists());
     let codex_config = assert_no_codex_managed_marketplace_config(temp.path(), "shared-tools");
     assert_eq!(
         codex_config["mcp_servers"]["shared__figma"]["command"].as_str(),
@@ -2018,11 +2234,8 @@ args = ["figma-developer-mcp"]
     );
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
-    assert_owned(
-        &lockfile,
-        temp.path(),
-        ".nodus/packages/shared/codex-plugin",
-    );
+    let plugin_root_relative = display_path(plugin_root.strip_prefix(temp.path()).unwrap());
+    assert_not_owned(&lockfile, temp.path(), &plugin_root_relative);
 }
 
 #[test]
@@ -2040,7 +2253,13 @@ bundle = { path = "vendor/bundle", members = ["core"] }
 
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
 
-    let plugin_root = temp.path().join(".nodus/packages/ena_core/codex-plugin");
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let member = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "ena_core")
+        .unwrap();
+    let plugin_root = global_native_plugin_root(temp.path(), member, Adapter::Codex);
     assert!(plugin_root.join("skills/plan/SKILL.md").exists());
     assert!(
         !temp
@@ -2048,8 +2267,8 @@ bundle = { path = "vendor/bundle", members = ["core"] }
             .join(".nodus/packages/core/codex-plugin")
             .exists()
     );
-    assert!(!plugin_root.join(".codex-plugin/plugin.json").exists());
-    assert!(!generated_codex_marketplace_path(temp.path()).exists());
+    assert!(plugin_root.join(".codex-plugin/plugin.json").exists());
+    assert!(generated_codex_marketplace_path(temp.path()).exists());
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert!(
@@ -2116,7 +2335,13 @@ command = "./scripts/format.sh"
 
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
 
-    let plugin_root = temp.path().join(".nodus/packages/shared/codex-plugin");
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let shared = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .unwrap();
+    let plugin_root = global_native_plugin_root(temp.path(), shared, Adapter::Codex);
     let hooks: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(temp.path().join(".codex/hooks.json")).unwrap())
             .unwrap();
@@ -2133,7 +2358,7 @@ command = "./scripts/format.sh"
     );
     assert!(codex_hook_script_path(temp.path(), "format-after-write").exists());
     assert!(!plugin_root.join("hooks/hooks.json").exists());
-    assert!(!plugin_root.join(".codex-plugin/plugin.json").exists());
+    assert!(plugin_root.join(".codex-plugin/plugin.json").exists());
 
     let codex_config: toml::Value =
         toml::from_str(&fs::read_to_string(temp.path().join(".codex/config.toml")).unwrap())
@@ -2148,11 +2373,8 @@ command = "./scripts/format.sh"
     );
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
-    assert_owned(
-        &lockfile,
-        temp.path(),
-        ".nodus/packages/shared/codex-plugin",
-    );
+    let plugin_root_relative = display_path(plugin_root.strip_prefix(temp.path()).unwrap());
+    assert_not_owned(&lockfile, temp.path(), &plugin_root_relative);
 }
 
 #[test]
@@ -2236,14 +2458,25 @@ custom = "kept"
     .unwrap();
 
     assert_eq!(fs::read_to_string(&codex_config).unwrap(), original);
-    assert!(!generated_codex_marketplace_path(temp.path()).exists());
+    assert!(generated_codex_marketplace_path(temp.path()).exists());
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    for alias in ["grapha", "playbook_ios"] {
+        let package = resolution
+            .packages
+            .iter()
+            .find(|package| package.alias == alias)
+            .unwrap();
+        assert!(global_native_plugin_root(temp.path(), package, Adapter::Codex).exists());
+    }
     assert!(
-        temp.path()
+        !temp
+            .path()
             .join(".nodus/packages/grapha/codex-plugin")
             .exists()
     );
     assert!(
-        temp.path()
+        !temp
+            .path()
             .join(".nodus/packages/playbook_ios/codex-plugin")
             .exists()
     );
@@ -2300,30 +2533,26 @@ shared = { path = "vendor/shared" }
 
     assert!(!temp.path().join(".claude/skills/review/SKILL.md").exists());
     assert!(temp.path().join(".codex/skills/review/SKILL.md").exists());
-    assert!(
-        temp.path()
-            .join(".nodus/packages/shared/claude-plugin/skills/review/SKILL.md")
-            .exists()
-    );
-    assert!(
-        temp.path()
-            .join(".nodus/packages/shared/codex-plugin/skills/review/SKILL.md")
-            .exists()
-    );
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let shared = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .unwrap();
+    let claude_plugin_root = global_native_plugin_root(temp.path(), shared, Adapter::Claude);
+    let codex_plugin_root = global_native_plugin_root(temp.path(), shared, Adapter::Codex);
+    assert!(claude_plugin_root.join("skills/review/SKILL.md").exists());
+    assert!(codex_plugin_root.join("skills/review/SKILL.md").exists());
     assert!(generated_claude_marketplace_path(temp.path()).exists());
-    assert!(!generated_codex_marketplace_path(temp.path()).exists());
+    assert!(generated_codex_marketplace_path(temp.path()).exists());
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
-    assert_owned(
-        &lockfile,
-        temp.path(),
-        ".nodus/packages/shared/claude-plugin",
-    );
-    assert_owned(
-        &lockfile,
-        temp.path(),
-        ".nodus/packages/shared/codex-plugin",
-    );
+    let claude_plugin_root_relative =
+        display_path(claude_plugin_root.strip_prefix(temp.path()).unwrap());
+    let codex_plugin_root_relative =
+        display_path(codex_plugin_root.strip_prefix(temp.path()).unwrap());
+    assert_not_owned(&lockfile, temp.path(), &claude_plugin_root_relative);
+    assert_not_owned(&lockfile, temp.path(), &codex_plugin_root_relative);
     assert_not_owned(&lockfile, temp.path(), ".claude/skills/review");
     assert_owned(&lockfile, temp.path(), ".codex/skills/review");
 }
@@ -2381,7 +2610,7 @@ shared = { path = "vendor/shared" }
 }
 
 #[test]
-fn sync_blocks_native_plugin_migration_when_target_collides_with_unmanaged_file() {
+fn sync_leaves_unmanaged_files_in_legacy_project_native_plugin_target() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();
     write_manifest(
@@ -2404,12 +2633,8 @@ shared = { path = "vendor/shared" }
         "user-owned blocking file\n",
     );
 
-    let error = sync_in_dir(temp.path(), cache.path(), false, false)
-        .unwrap_err()
-        .to_string();
+    sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
 
-    assert!(error.contains("refusing to overwrite unmanaged file"));
-    assert!(error.contains(".nodus/packages/shared/codex-plugin/skills"));
     assert!(temp.path().join(".codex/skills/review/SKILL.md").exists());
     assert_eq!(
         fs::read_to_string(
@@ -2439,50 +2664,41 @@ fn sync_skips_invalid_workspace_members_in_claude_marketplace_files() {
         &fs::read_to_string(generated_claude_marketplace_path(repo.path())).unwrap(),
     )
     .unwrap();
-    let expected_marketplace_name = normalize_workspace_marketplace_name(&expected_owner_name);
-    assert_eq!(
-        claude["name"].as_str(),
-        Some(expected_marketplace_name.as_str())
-    );
+    assert_eq!(claude["name"].as_str(), Some("nodus"));
     assert_eq!(
         claude["owner"]["name"].as_str(),
         Some(expected_owner_name.as_str())
     );
     assert_eq!(claude["plugins"].as_array().unwrap().len(), 1);
-    assert_eq!(
-        claude["plugins"][0]["source"].as_str(),
-        Some("../plugins/axiom")
+    assert!(
+        claude["plugins"][0]["source"]
+            .as_str()
+            .is_some_and(|source| source.ends_with("/plugins/axiom"))
     );
 
-    assert!(!generated_codex_marketplace_path(repo.path()).exists());
+    assert!(generated_codex_marketplace_path(repo.path()).exists());
 }
 
 #[test]
-fn sync_omits_codex_marketplace_for_workspace_members_with_codex_metadata() {
+fn sync_writes_codex_marketplace_for_workspace_members_with_codex_metadata() {
     let repo = TempDir::new().unwrap();
     let cache = cache_dir();
     write_workspace_dependency_with_non_codex_member(repo.path());
-    let expected_owner_name = repo
-        .path()
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap()
-        .to_string();
-
     sync_in_dir_with_adapters(repo.path(), cache.path(), false, false, &Adapter::ALL).unwrap();
 
     let claude: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(generated_claude_marketplace_path(repo.path())).unwrap(),
     )
     .unwrap();
-    let expected_marketplace_name = normalize_workspace_marketplace_name(&expected_owner_name);
-    assert_eq!(
-        claude["name"].as_str(),
-        Some(expected_marketplace_name.as_str())
-    );
+    assert_eq!(claude["name"].as_str(), Some("nodus"));
     assert_eq!(claude["plugins"].as_array().unwrap().len(), 2);
 
-    assert!(!generated_codex_marketplace_path(repo.path()).exists());
+    let codex: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(generated_codex_marketplace_path(repo.path())).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(codex["name"].as_str(), Some("nodus"));
+    assert_eq!(codex["plugins"].as_array().unwrap().len(), 1);
 }
 
 #[test]
@@ -2515,13 +2731,14 @@ authentication = "ON_INSTALL"
         &fs::read_to_string(generated_claude_marketplace_path(repo.path())).unwrap(),
     )
     .unwrap();
-    assert_eq!(claude["name"].as_str(), Some("workspace-plugins"));
+    assert_eq!(claude["name"].as_str(), Some("nodus"));
     assert_eq!(claude["owner"]["name"].as_str(), Some("Workspace Plugins"));
     assert_eq!(claude["plugins"].as_array().unwrap().len(), 1);
     assert_eq!(claude["plugins"][0]["name"].as_str(), Some("Axiom"));
-    assert_eq!(
-        claude["plugins"][0]["source"].as_str(),
-        Some("../plugins/axiom")
+    assert!(
+        claude["plugins"][0]["source"]
+            .as_str()
+            .is_some_and(|source| source.ends_with("/plugins/axiom"))
     );
 }
 
@@ -2557,12 +2774,13 @@ authentication = "ON_INSTALL"
     )
     .unwrap();
     assert_eq!(claude["plugins"][0]["name"].as_str(), Some("ena-core"));
-    assert_eq!(
-        claude["plugins"][0]["source"].as_str(),
-        Some("../plugins/core")
+    assert!(
+        claude["plugins"][0]["source"]
+            .as_str()
+            .is_some_and(|source| source.ends_with("/plugins/core"))
     );
 
-    assert!(!generated_codex_marketplace_path(repo.path()).exists());
+    assert!(generated_codex_marketplace_path(repo.path()).exists());
 }
 
 #[test]
@@ -3030,9 +3248,14 @@ fn add_dependency_accepts_marketplace_plugin_that_points_at_root_claude_plugin_m
         !temp.path().join(".mcp.json").exists(),
         "Claude native plugin MCP should replace dependency project-level MCP output"
     );
-    let plugin_mcp_path = temp.path().join(format!(
-        ".nodus/packages/{wrapper_alias}/claude-plugin/.mcp.json"
-    ));
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let resolved_wrapper = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == wrapper_alias)
+        .unwrap();
+    let plugin_mcp_path =
+        global_native_plugin_root(temp.path(), resolved_wrapper, Adapter::Claude).join(".mcp.json");
     let json: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(plugin_mcp_path).unwrap()).unwrap();
     assert_eq!(
@@ -3041,9 +3264,10 @@ fn add_dependency_accepts_marketplace_plugin_that_points_at_root_claude_plugin_m
     );
     assert_eq!(json["mcpServers"]["atlan"]["type"].as_str(), Some("http"));
     let plugin: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(temp.path().join(format!(
-            ".nodus/packages/{wrapper_alias}/claude-plugin/.claude-plugin/plugin.json"
-        )))
+        &fs::read_to_string(
+            global_native_plugin_root(temp.path(), resolved_wrapper, Adapter::Claude)
+                .join(".claude-plugin/plugin.json"),
+        )
         .unwrap(),
     )
     .unwrap();
@@ -3422,19 +3646,20 @@ path = "vendor/hook-plugin"
     )
     .unwrap();
     assert!(wrapper_script.contains("CLAUDE_PLUGIN_ROOT"));
-    assert!(wrapper_script.contains(".nodus/packages/hook_plugin/claude-plugin"));
+    assert!(wrapper_script.contains(".nodus-global/packages/"));
+    assert!(wrapper_script.contains("/claude-plugin"));
     assert!(wrapper_script.contains("${CLAUDE_PLUGIN_ROOT}/scripts/format-code.sh"));
 
-    assert!(
-        temp.path()
-            .join(".nodus/packages/hook_plugin/claude-plugin/hooks/hooks.json")
-            .exists()
-    );
-    assert!(
-        temp.path()
-            .join(".nodus/packages/hook_plugin/claude-plugin/scripts/format-code.sh")
-            .exists()
-    );
+    assert!(global_plugin_file_exists(
+        temp.path(),
+        "claude-plugin",
+        "hooks/hooks.json"
+    ));
+    assert!(global_plugin_file_exists(
+        temp.path(),
+        "claude-plugin",
+        "scripts/format-code.sh"
+    ));
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     let hook_plugin = lockfile
@@ -3446,8 +3671,8 @@ path = "vendor/hook-plugin"
         hook_plugin
             .owned_subtrees
             .iter()
-            .any(|path| path == ".nodus/packages/hook_plugin/claude-plugin"),
-        "Claude hook-compat plugin roots should be package-owned subtrees; got {:?}",
+            .all(|path| !path.contains("claude-plugin")),
+        "Claude hook-compat plugin roots should not be project-owned subtrees; got {:?}",
         hook_plugin.owned_subtrees
     );
     let root = lockfile
@@ -3522,16 +3747,16 @@ claude_plugin_hooks = ["hooks/hooks.json"]
         .as_str()
         .unwrap();
     assert!(command.contains("./.claude/hooks/nodus-plugin-hook-"));
-    assert!(
-        temp.path()
-            .join(".nodus/packages/hook_plugin/claude-plugin/hooks/hooks.json")
-            .exists()
-    );
-    assert!(
-        temp.path()
-            .join(".nodus/packages/hook_plugin/claude-plugin/scripts/format-code.sh")
-            .exists()
-    );
+    assert!(global_plugin_file_exists(
+        temp.path(),
+        "claude-plugin",
+        "hooks/hooks.json"
+    ));
+    assert!(global_plugin_file_exists(
+        temp.path(),
+        "claude-plugin",
+        "scripts/format-code.sh"
+    ));
 }
 
 #[test]
@@ -3602,9 +3827,13 @@ command = "./scripts/format-code.sh"
     // The native `[[hooks]]` win over the plugin-hook compat surface: the
     // dependency's hook ends up inside its Claude plugin's `hooks.json` (not
     // the workspace settings, not the `nodus-plugin-hook-*` compat wrappers).
-    let plugin_root = temp
-        .path()
-        .join(".nodus/packages/hook_plugin/claude-plugin");
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let hook_plugin = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "hook_plugin")
+        .unwrap();
+    let plugin_root = global_native_plugin_root(temp.path(), hook_plugin, Adapter::Claude);
     assert!(
         plugin_root.exists(),
         "expected Claude plugin folder at {}",
@@ -3857,11 +4086,11 @@ path = "vendor/hook-plugin"
 
     assert_eq!(summary.status, DoctorStatus::Healthy);
     assert!(summary.findings.is_empty());
-    assert!(
-        temp.path()
-            .join(".nodus/packages/hook_plugin/claude-plugin/hooks/hooks.json")
-            .exists()
-    );
+    assert!(global_plugin_file_exists(
+        temp.path(),
+        "claude-plugin",
+        "hooks/hooks.json"
+    ));
 }
 
 #[test]
@@ -4071,26 +4300,19 @@ fn add_dependency_accepts_codex_marketplace_wrapper_and_syncs_plugin_contents() 
         !temp.path().join(".mcp.json").exists(),
         "Claude native plugin MCP should replace dependency project-level MCP output"
     );
-    let json: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(
-            temp.path()
-                .join(".nodus/packages/axiom/claude-plugin/.mcp.json"),
-        )
-        .unwrap(),
-    )
-    .unwrap();
+    let claude_plugin_root =
+        global_native_plugin_root(temp.path(), plugin_package, Adapter::Claude);
+    let json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(claude_plugin_root.join(".mcp.json")).unwrap())
+            .unwrap();
     assert_eq!(
         json["mcpServers"]["figma"]["url"].as_str(),
         Some("http://127.0.0.1:3845/mcp")
     );
-    let codex_mcp: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(
-            temp.path()
-                .join(".nodus/packages/axiom/codex-plugin/.mcp.json"),
-        )
-        .unwrap(),
-    )
-    .unwrap();
+    let codex_plugin_root = global_native_plugin_root(temp.path(), plugin_package, Adapter::Codex);
+    let codex_mcp: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(codex_plugin_root.join(".mcp.json")).unwrap())
+            .unwrap();
     assert_eq!(
         codex_mcp["mcpServers"]["figma"]["url"].as_str(),
         Some("http://127.0.0.1:3845/mcp")
@@ -4286,17 +4508,26 @@ command = "fuli integration claude hook session-end"
     let enabled_plugins = settings["enabledPlugins"]
         .as_object()
         .expect("enabledPlugins object");
+    let marketplace: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(generated_claude_marketplace_path(temp.path())).unwrap(),
+    )
+    .unwrap();
+    let plugin_name = marketplace["plugins"][0]["name"].as_str().unwrap();
     assert!(
         enabled_plugins
             .keys()
-            .any(|key| key.starts_with(&format!("{alias}@"))),
-        "enabledPlugins should reference `{alias}`: {enabled_plugins:?}",
+            .any(|key| key == &format!("{plugin_name}@nodus")),
+        "enabledPlugins should reference `{plugin_name}`: {enabled_plugins:?}",
     );
 
     // The plugin's own `hooks/hooks.json` carries every declared event.
-    let plugin_root = temp
-        .path()
-        .join(format!(".nodus/packages/{alias}/claude-plugin"));
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let package = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == alias)
+        .unwrap();
+    let plugin_root = global_native_plugin_root(temp.path(), package, Adapter::Claude);
     let plugin_hooks: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(plugin_root.join("hooks/hooks.json")).unwrap())
             .unwrap();
@@ -4701,11 +4932,12 @@ fn remove_dependency_updates_manifest_and_prunes_managed_files() {
 
     let manifest_after = load_root_from_dir(temp.path()).unwrap();
     assert!(manifest_after.manifest.dependencies.is_empty());
-    assert!(!runtime_skill_exists(
-        temp.path(),
-        Adapter::Claude,
-        &managed_skill_id
-    ));
+    assert!(
+        !temp
+            .path()
+            .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
+            .exists()
+    );
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert_eq!(lockfile.packages.len(), 1);
@@ -5284,11 +5516,9 @@ shared = { path = "vendor/shared", components = ["skills"] }
         shared.selected_components,
         Some(vec![DependencyComponent::Skills])
     );
-    assert_owned(
-        &lockfile,
-        temp.path(),
-        ".nodus/packages/shared/claude-plugin",
-    );
+    let plugin_root = global_native_plugin_root(temp.path(), dependency, Adapter::Claude);
+    let plugin_root_relative = display_path(plugin_root.strip_prefix(temp.path()).unwrap());
+    assert_not_owned(&lockfile, temp.path(), &plugin_root_relative);
     assert_not_owned(&lockfile, temp.path(), ".claude/agents/shared.md");
 }
 
@@ -5556,9 +5786,16 @@ shared = { path = "vendor/shared" }
 "#,
     );
     write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
-    let blocking_path = temp
-        .path()
-        .join(".nodus/packages/shared/codex-plugin/skills");
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let dependency = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .unwrap();
+    let blocking_path = managed_skill_file(temp.path(), Adapter::Codex, dependency, "review")
+        .parent()
+        .unwrap()
+        .to_path_buf();
     write_file(&blocking_path, "user-owned blocking file\n");
 
     let error =
@@ -5566,7 +5803,7 @@ shared = { path = "vendor/shared" }
             .unwrap_err()
             .to_string();
     assert!(error.contains("refusing to overwrite unmanaged file"));
-    assert!(error.contains(".nodus/packages/shared/codex-plugin/skills"));
+    assert!(error.contains(".codex/skills/review"));
 
     sync_in_dir_with_adapters_force(temp.path(), cache.path(), false, false, &[Adapter::Codex])
         .unwrap();
@@ -5631,11 +5868,7 @@ shared = { path = "vendor/shared" }
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert!(managed_skill_path.exists());
-    assert_owned(
-        &lockfile,
-        temp.path(),
-        ".nodus/packages/shared/codex-plugin",
-    );
+    assert_owned(&lockfile, temp.path(), ".codex/skills/review");
 }
 
 #[test]
@@ -5664,8 +5897,9 @@ shared = { path = "vendor/shared" }
         .iter()
         .find(|package| package.alias == "shared")
         .unwrap();
+    let plugin_root = global_native_plugin_root(temp.path(), dependency, Adapter::Claude);
     let managed_command_path = managed_artifact_file(
-        temp.path(),
+        &plugin_root,
         Adapter::Claude,
         ArtifactKind::Command,
         dependency,
@@ -5681,11 +5915,8 @@ shared = { path = "vendor/shared" }
         "cargo test\n"
     );
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
-    assert_owned(
-        &lockfile,
-        temp.path(),
-        ".nodus/packages/shared/claude-plugin",
-    );
+    let plugin_root_relative = display_path(plugin_root.strip_prefix(temp.path()).unwrap());
+    assert_not_owned(&lockfile, temp.path(), &plugin_root_relative);
 }
 
 #[test]
@@ -5714,8 +5945,9 @@ shared = { path = "vendor/shared" }
         .iter()
         .find(|package| package.alias == "shared")
         .unwrap();
+    let plugin_root = global_native_plugin_root(temp.path(), dependency, Adapter::Claude);
     let managed_command_path = managed_artifact_file(
-        temp.path(),
+        &plugin_root,
         Adapter::Claude,
         ArtifactKind::Command,
         dependency,
@@ -5944,17 +6176,16 @@ args = ["-y", "firebase-tools", "mcp", "--dir", "."]
         !temp.path().join(".mcp.json").exists(),
         "Claude native plugin MCP should replace the stale project-level MCP file"
     );
-    assert!(
-        temp.path()
-            .join(".nodus/packages/firebase/claude-plugin/.mcp.json")
-            .exists()
-    );
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let firebase = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "firebase")
+        .unwrap();
+    let claude_plugin_root = global_native_plugin_root(temp.path(), firebase, Adapter::Claude);
+    assert!(claude_plugin_root.join(".mcp.json").exists());
     let plugin: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(
-            temp.path()
-                .join(".nodus/packages/firebase/claude-plugin/.claude-plugin/plugin.json"),
-        )
-        .unwrap(),
+        &fs::read_to_string(claude_plugin_root.join(".claude-plugin/plugin.json")).unwrap(),
     )
     .unwrap();
     assert_eq!(plugin["mcpServers"].as_str(), Some("./.mcp.json"));
@@ -5964,6 +6195,8 @@ args = ["-y", "firebase-tools", "mcp", "--dir", "."]
             .join(".nodus/packages/firebase/codex-plugin/.mcp.json")
             .exists()
     );
+    let codex_plugin_root = global_native_plugin_root(temp.path(), firebase, Adapter::Codex);
+    assert!(codex_plugin_root.join(".mcp.json").exists());
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert_not_owned(&lockfile, temp.path(), ".mcp.json");
 }
@@ -6060,11 +6293,16 @@ X-Figma-Region = "us-east-1"
 
     assert_eq!(firebase_package.mcp_servers, vec!["figma", "firebase"]);
     assert_owned(&lockfile, temp.path(), ".codex/config.toml");
-    assert_owned(
-        &lockfile,
-        temp.path(),
-        ".nodus/packages/firebase/codex-plugin",
-    );
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let firebase = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "firebase")
+        .unwrap();
+    let plugin_root = global_native_plugin_root(temp.path(), firebase, Adapter::Codex);
+    assert!(plugin_root.join(".mcp.json").exists());
+    let plugin_root_relative = display_path(plugin_root.strip_prefix(temp.path()).unwrap());
+    assert_not_owned(&lockfile, temp.path(), &plugin_root_relative);
     assert_eq!(
         config["mcp_servers"]["firebase__firebase"]["command"].as_str(),
         Some("npx")
@@ -6125,13 +6363,15 @@ args = ["-y", "firebase-tools", "mcp", "--dir", "."]
 
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
 
-    assert!(
-        !temp
-            .path()
-            .join(".nodus/packages/firebase/codex-plugin/.mcp.json")
-            .exists()
-    );
-    assert!(!generated_codex_marketplace_path(temp.path()).exists());
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let firebase = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "firebase")
+        .unwrap();
+    let plugin_root = global_native_plugin_root(temp.path(), firebase, Adapter::Codex);
+    assert!(plugin_root.join(".mcp.json").exists());
+    assert!(generated_codex_marketplace_path(temp.path()).exists());
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert_owned(&lockfile, temp.path(), ".codex/config.toml");
     let codex_config = assert_no_codex_managed_marketplace_config(temp.path(), "yoki-ios");
@@ -6518,7 +6758,10 @@ shared = { path = "vendor/shared" }
         dependency,
         "security",
     );
-    let legacy_claude_agent = managed_claude_agent.with_file_name(&legacy_agent_file);
+    let legacy_claude_agent = temp
+        .path()
+        .join(format!(".claude/agents/{legacy_agent_file}"));
+    fs::create_dir_all(legacy_claude_agent.parent().unwrap()).unwrap();
     fs::rename(&managed_claude_agent, &legacy_claude_agent).unwrap();
     let managed_claude_command = managed_artifact_file(
         temp.path(),
@@ -6527,7 +6770,10 @@ shared = { path = "vendor/shared" }
         dependency,
         "build",
     );
-    let legacy_claude_command = managed_claude_command.with_file_name(&legacy_command_file);
+    let legacy_claude_command = temp
+        .path()
+        .join(format!(".claude/commands/{legacy_command_file}"));
+    fs::create_dir_all(legacy_claude_command.parent().unwrap()).unwrap();
     fs::rename(&managed_claude_command, &legacy_claude_command).unwrap();
     fs::rename(
         temp.path()
@@ -6742,15 +6988,19 @@ prefer_skills = ["review"]
     );
 
     sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let shared = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .unwrap();
+    let claude_plugin_root = global_native_plugin_root(temp.path(), shared, Adapter::Claude);
+    let codex_plugin_root = global_native_plugin_root(temp.path(), shared, Adapter::Codex);
 
     // Claude routes the dependency's activation context through the plugin's
     // `hooks/hooks.json` rather than the workspace settings file.
     let claude_plugin_hooks: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(
-            temp.path()
-                .join(".nodus/packages/shared/claude-plugin/hooks/hooks.json"),
-        )
-        .unwrap(),
+        &fs::read_to_string(claude_plugin_root.join("hooks/hooks.json")).unwrap(),
     )
     .unwrap();
     let claude_session_start = claude_plugin_hooks["hooks"]["SessionStart"]
@@ -6795,18 +7045,8 @@ prefer_skills = ["review"]
             .unwrap()
             .contains(".codex/hooks/nodus-hook-activation-")
     );
-    assert!(
-        !temp
-            .path()
-            .join(".nodus/packages/shared/codex-plugin/hooks/hooks.json")
-            .exists()
-    );
-    assert!(
-        !temp
-            .path()
-            .join(".nodus/packages/shared/codex-plugin/.codex-plugin/plugin.json")
-            .exists()
-    );
+    assert!(!codex_plugin_root.join("hooks/hooks.json").exists());
+    assert!(codex_plugin_root.join(".codex-plugin/plugin.json").exists());
     let codex_config: toml::Value =
         toml::from_str(&fs::read_to_string(temp.path().join(".codex/config.toml")).unwrap())
             .unwrap();
@@ -8217,16 +8457,19 @@ shared = { path = "vendor/shared" }
     sync_in_dir_with_adapters_no_fast_path(temp.path(), cache.path(), &[Adapter::OpenCode])
         .unwrap();
 
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let shared_package = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .unwrap();
+    let plugin_root = global_native_plugin_root(temp.path(), shared_package, Adapter::OpenCode);
     assert!(
         temp.path()
             .join(".opencode/skills/review/SKILL.md")
             .exists()
     );
-    assert!(
-        temp.path()
-            .join(".nodus/packages/shared/opencode-plugin/skills/review/SKILL.md")
-            .exists()
-    );
+    assert!(plugin_root.join("skills/review/SKILL.md").exists());
     assert!(opencode_virtual_plugin_wrappers(temp.path(), "shared", "plugin").is_empty());
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
@@ -8235,12 +8478,8 @@ shared = { path = "vendor/shared" }
         .iter()
         .find(|package| package.alias == "shared")
         .unwrap();
-    assert!(
-        shared
-            .owned_subtrees
-            .iter()
-            .any(|path| path == ".nodus/packages/shared/opencode-plugin")
-    );
+    let plugin_root_relative = display_path(plugin_root.strip_prefix(temp.path()).unwrap());
+    assert_not_owned(&lockfile, temp.path(), &plugin_root_relative);
     assert_eq!(shared.owned_runtime_adapters, vec![Adapter::OpenCode]);
     assert!(
         shared
@@ -8290,24 +8529,23 @@ opencode_plugin_hooks = ["hooks/old-plugin.ts"]
     sync_in_dir_with_adapters_no_fast_path(temp.path(), cache.path(), &[Adapter::OpenCode])
         .unwrap();
 
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let shared_package = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .unwrap();
+    let old_plugin_root = global_native_plugin_root(temp.path(), shared_package, Adapter::OpenCode);
     let old_wrapper = single_opencode_virtual_plugin_wrapper(temp.path(), "shared", "old-plugin");
-    assert!(
-        temp.path()
-            .join(".nodus/packages/shared/opencode-plugin/hooks/old-plugin.ts")
-            .exists()
-    );
+    assert!(old_plugin_root.join("hooks/old-plugin.ts").exists());
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     let shared = lockfile
         .packages
         .iter()
         .find(|package| package.alias == "shared")
         .unwrap();
-    assert!(
-        shared
-            .owned_subtrees
-            .iter()
-            .any(|path| path == ".nodus/packages/shared/opencode-plugin")
-    );
+    let old_plugin_root_relative = display_path(old_plugin_root.strip_prefix(temp.path()).unwrap());
+    assert_not_owned(&lockfile, temp.path(), &old_plugin_root_relative);
     assert!(
         shared
             .owned_prefixes
@@ -8329,6 +8567,13 @@ opencode_plugin_hooks = ["hooks/new-plugin.ts"]
     sync_in_dir_with_adapters_no_fast_path(temp.path(), cache.path(), &[Adapter::OpenCode])
         .unwrap();
 
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let shared_package = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .unwrap();
+    let new_plugin_root = global_native_plugin_root(temp.path(), shared_package, Adapter::OpenCode);
     assert!(!old_wrapper.exists());
     assert!(
         !temp
@@ -8336,11 +8581,7 @@ opencode_plugin_hooks = ["hooks/new-plugin.ts"]
             .join(".nodus/packages/shared/opencode-plugin/hooks/old-plugin.ts")
             .exists()
     );
-    assert!(
-        temp.path()
-            .join(".nodus/packages/shared/opencode-plugin/hooks/new-plugin.ts")
-            .exists()
-    );
+    assert!(new_plugin_root.join("hooks/new-plugin.ts").exists());
     assert!(single_opencode_virtual_plugin_wrapper(temp.path(), "shared", "new-plugin").exists());
 
     write_manifest(temp.path(), "");
@@ -8988,11 +9229,19 @@ shared = { path = "vendor/shared", components = ["skills"] }
         Adapter::Claude,
         &managed_skill_id
     ));
-    assert!(!runtime_file_exists(
-        temp.path(),
-        Adapter::Claude,
-        &managed_agent_file
-    ));
+    let narrowed_resolution =
+        resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let narrowed_dependency = narrowed_resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .unwrap();
+    let plugin_root = global_native_plugin_root(temp.path(), narrowed_dependency, Adapter::Claude);
+    let plugin: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(plugin_root.join(".claude-plugin/plugin.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(plugin.get("agents").is_none());
     assert!(
         !temp
             .path()
@@ -9021,11 +9270,15 @@ shared = { path = "vendor/shared" }
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
 
-    assert_owned(
-        &lockfile,
-        temp.path(),
-        ".nodus/packages/shared/claude-plugin",
-    );
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let shared = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .unwrap();
+    let plugin_root = global_native_plugin_root(temp.path(), shared, Adapter::Claude);
+    let plugin_root_relative = display_path(plugin_root.strip_prefix(temp.path()).unwrap());
+    assert_not_owned(&lockfile, temp.path(), &plugin_root_relative);
     assert_owned(&lockfile, temp.path(), ".github/skills/iframe-ad");
     assert_owned(&lockfile, temp.path(), ".opencode/skills/iframe-ad");
     // No per-package owned entry should mention the raw skill id `iframe-ad`
@@ -9279,6 +9532,14 @@ target = "opencode-plugin/.opencode/metrics"
         .unwrap(),
         "{\n  \"enabled\": true\n}\n"
     );
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let metrics_package = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "metrics_local")
+        .unwrap();
+    let plugin_root = global_native_plugin_root(temp.path(), metrics_package, Adapter::OpenCode);
+    assert!(plugin_root.join(".opencode/metrics/config.json").exists());
     assert!(
         !temp
             .path()
@@ -9297,16 +9558,18 @@ target = "opencode-plugin/.opencode/metrics"
         metrics
             .owned_subtrees
             .iter()
-            .any(|path| path == ".nodus/packages/metrics_local/opencode-plugin"),
-        "virtual plugin install root should be the package-owned subtree; got {:?}",
+            .any(|path| path == ".nodus/packages/metrics_local/opencode-plugin/.opencode/metrics"),
+        "package-managed export subtree should remain project-owned; got {:?}",
         metrics.owned_subtrees
     );
+    let plugin_root_relative = display_path(plugin_root.strip_prefix(temp.path()).unwrap());
+    assert_not_owned(&lockfile, temp.path(), &plugin_root_relative);
     assert!(
         metrics
             .owned_subtrees
             .iter()
-            .all(|path| path != ".nodus/packages/metrics_local/opencode-plugin/.opencode/metrics"),
-        "managed export subtree inside the virtual plugin root should be pruned as redundant; got {:?}",
+            .all(|path| path != ".nodus/packages/metrics_local/opencode-plugin"),
+        "global virtual plugin roots should not be project-owned; got {:?}",
         metrics.owned_subtrees
     );
 }
@@ -10072,7 +10335,7 @@ shared = { path = "vendor/shared", enabled = false }
 
     sync_all(temp.path(), cache.path());
 
-    assert!(!managed_skill_path.exists());
+    assert!(managed_skill_path.exists());
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert!(
         !lockfile
@@ -10340,21 +10603,20 @@ shared = { path = "vendor/shared" }
     fs::remove_dir(temp.path().join("vendor/shared/commands")).unwrap();
     sync_all(temp.path(), cache.path());
 
-    assert!(!runtime_file_exists(
-        temp.path(),
-        Adapter::Claude,
-        &managed_agent_file
-    ));
-    assert!(!runtime_file_exists(
-        temp.path(),
-        Adapter::Claude,
-        &managed_command_file
-    ));
-    assert!(!runtime_file_exists(
-        temp.path(),
-        Adapter::Claude,
-        &managed_rule_file
-    ));
+    let updated_resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let updated_dependency = updated_resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .unwrap();
+    let plugin_root = global_native_plugin_root(temp.path(), updated_dependency, Adapter::Claude);
+    let plugin: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(plugin_root.join(".claude-plugin/plugin.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(plugin.get("agents").is_none());
+    assert!(plugin.get("commands").is_none());
+    assert!(plugin.get("rules").is_none());
     assert!(
         !temp
             .path()
@@ -11128,7 +11390,13 @@ shared = { path = "vendor/shared" }
     write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
     sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
 
-    let plugin_root = temp.path().join(".nodus/packages/shared/codex-plugin");
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let shared = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .unwrap();
+    let plugin_root = global_native_plugin_root(temp.path(), shared, Adapter::Codex);
     fs::remove_dir_all(&plugin_root).unwrap();
 
     let check = doctor_in_dir_with_mode(
@@ -11141,9 +11409,7 @@ shared = { path = "vendor/shared" }
     assert_eq!(check.status, DoctorStatus::Blocked);
     assert!(check.findings.iter().any(|finding| {
         finding.kind == DoctorFindingKind::SafeAutoFix
-            && finding
-                .message
-                .contains(".nodus/packages/shared/codex-plugin")
+            && finding.message.contains(".nodus-global/packages/")
     }));
     assert!(!plugin_root.exists());
 
@@ -11404,7 +11670,7 @@ target = "learnings"
 }
 
 #[test]
-fn doctor_missing_lockfile_with_workspace_marketplace_collision_blocks_repair() {
+fn doctor_missing_lockfile_rewrites_global_workspace_marketplace() {
     let repo = create_workspace_dependency();
     let cache = cache_dir();
 
@@ -11423,13 +11689,9 @@ fn doctor_missing_lockfile_with_workspace_marketplace_collision_blocks_repair() 
     )
     .unwrap();
 
-    assert_eq!(summary.status, DoctorStatus::Blocked);
-    assert!(summary.findings.iter().any(|finding| {
-        finding.kind == DoctorFindingKind::RiskyFix
-            && finding.message.contains(".claude-plugin/marketplace.json")
-    }));
-    assert!(!repo.path().join(LOCKFILE_NAME).exists());
-    assert_eq!(
+    assert_eq!(summary.status, DoctorStatus::Fixed);
+    assert!(repo.path().join(LOCKFILE_NAME).exists());
+    assert_ne!(
         fs::read_to_string(generated_claude_marketplace_path(repo.path())).unwrap(),
         "user-authored marketplace\n"
     );
@@ -11798,9 +12060,16 @@ shared = { path = "vendor/shared" }
     write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
     fs::remove_file(temp.path().join(LOCKFILE_NAME)).unwrap();
-    let codex_plugin_skills = temp
-        .path()
-        .join(".nodus/packages/shared/codex-plugin/skills");
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let shared = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .unwrap();
+    let codex_plugin_skills = managed_skill_file(temp.path(), Adapter::Codex, shared, "review")
+        .parent()
+        .unwrap()
+        .to_path_buf();
     fs::remove_dir_all(&codex_plugin_skills).unwrap();
     write_file(&codex_plugin_skills, "user-owned file\n");
 
@@ -11836,9 +12105,16 @@ shared = { path = "vendor/shared" }
     write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
     fs::remove_file(temp.path().join(LOCKFILE_NAME)).unwrap();
-    let codex_plugin_skills = temp
-        .path()
-        .join(".nodus/packages/shared/codex-plugin/skills");
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let shared = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .unwrap();
+    let codex_plugin_skills = managed_skill_file(temp.path(), Adapter::Codex, shared, "review")
+        .parent()
+        .unwrap()
+        .to_path_buf();
     fs::remove_dir_all(&codex_plugin_skills).unwrap();
     write_file(&codex_plugin_skills, "user-owned file\n");
 
@@ -11857,7 +12133,7 @@ shared = { path = "vendor/shared" }
             .contains("removed conflicting managed subtree")
     }));
     assert!(!codex_plugin_skills.is_file());
-    assert!(codex_plugin_skills.join("review/SKILL.md").exists());
+    assert!(codex_plugin_skills.join("SKILL.md").exists());
     assert!(temp.path().join(LOCKFILE_NAME).exists());
 }
 
@@ -12078,8 +12354,8 @@ shared = { path = "vendor/shared" }
         shared
             .owned_subtrees
             .iter()
-            .any(|path| path == ".nodus/packages/shared/claude-plugin"),
-        "shared.owned_subtrees should cover the claude plugin folder; got {:?}",
+            .all(|path| path != ".nodus/packages/shared/claude-plugin"),
+        "shared.owned_subtrees should not claim the global claude plugin folder; got {:?}",
         shared.owned_subtrees
     );
     assert!(
@@ -12193,7 +12469,7 @@ shared = { path = "vendor/shared" }
     write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
 
     let (_, first_lockfile) =
-        slice3_resolve_for_lockfile(temp.path(), cache.path(), &[Adapter::Claude]);
+        slice3_resolve_for_lockfile(temp.path(), cache.path(), &[Adapter::Codex]);
     let first_shared_digest = first_lockfile
         .packages
         .iter()
@@ -12208,7 +12484,7 @@ shared = { path = "vendor/shared" }
     write_skill(&temp.path().join("vendor/shared/skills/review"), "Updated");
 
     let (_, second_lockfile) =
-        slice3_resolve_for_lockfile(temp.path(), cache.path(), &[Adapter::Claude]);
+        slice3_resolve_for_lockfile(temp.path(), cache.path(), &[Adapter::Codex]);
     let second_shared_digest = second_lockfile
         .packages
         .iter()
@@ -12760,19 +13036,11 @@ fn slice5_attribute_file_to_package_is_alphabetically_deterministic() {
     }
 }
 
-/// Regression guard for Copilot PR #14 review finding #2: in workspace mode
-/// (`[workspace]` in the root manifest) the marketplace JSON files
-/// (`.nodus/.claude-plugin/marketplace.json`, `.agents/plugins/...`)
-/// must be covered by the root package install digest. Before the fix they
-/// landed in the root package's `owned_files` but their bytes were missing
-/// from `install_digest`. On a second sync, `install_digest_from_disk` would
-/// walk them and produce a digest that always disagreed with the recorded
-/// value, missing the fast-path forever.
-///
-/// This test asserts the recorded install_digest equals what we re-compute
-/// from disk for a workspace-mode consumer.
+/// Workspace marketplace JSON now lives in the shared global Nodus home, so it
+/// must not be attributed to the project lockfile's root package. The project
+/// install digest should still match the project-owned files on disk.
 #[test]
-fn slice5_workspace_mode_install_digest_matches_disk_for_marketplace_files() {
+fn slice5_workspace_mode_install_digest_ignores_global_marketplace_files() {
     let repo = TempDir::new().unwrap();
     let cache = cache_dir();
     write_manifest(
@@ -12797,9 +13065,7 @@ authentication = "ON_INSTALL"
 
     sync_in_dir_with_adapters(repo.path(), cache.path(), false, false, &Adapter::ALL).unwrap();
 
-    // Marketplace JSONs must have been written on disk — proves the fixture
-    // actually exercises the workspace marketplace path.
-    let claude_marketplace = repo.path().join(".nodus/.claude-plugin/marketplace.json");
+    let claude_marketplace = generated_claude_marketplace_path(repo.path());
     assert!(
         claude_marketplace.exists(),
         "test fixture didn't write the claude workspace marketplace JSON; \
@@ -12813,14 +13079,12 @@ authentication = "ON_INSTALL"
         .find(|pkg| pkg.alias == "root")
         .expect("root package must appear in v10 lockfile");
 
-    // The root package's owned_files must include the marketplace JSON (proof
-    // that the per-package attribution wired it in).
     assert!(
         root_package
             .owned_files
             .iter()
-            .any(|f| f.contains("marketplace.json")),
-        "expected root package owned_files to include the workspace marketplace JSON; \
+            .all(|f| !f.contains("marketplace.json")),
+        "expected root package owned_files to omit global marketplace JSON; \
          got: {:?}",
         root_package.owned_files
     );

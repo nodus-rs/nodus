@@ -1023,6 +1023,7 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
             },
         )?;
         let planned_files = output_plan.files.clone();
+        let external_files = output_plan.external_files.clone();
         let desired_paths = resolution.managed_paths_with_options(
             &install_paths.runtime_root,
             selected_adapters,
@@ -1175,7 +1176,7 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
             &owned_paths,
             &desired_paths,
             &planned_files,
-            Vec::new(),
+            external_files,
             resolution
                 .warnings
                 .iter()

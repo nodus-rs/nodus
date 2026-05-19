@@ -1,9 +1,11 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::env;
 use std::path::{Path, PathBuf};
 
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
+use crate::hashing::blake3_hex;
 use crate::lockfile::LockedPackage;
 use crate::manifest::{DependencyComponent, HookEvent, HookSessionSource, HookSpec, HookTool};
 use crate::paths::{display_path, strip_path_prefix};
@@ -32,8 +34,7 @@ pub(crate) use profile::{
 pub(crate) use virtual_plugin::{
     VirtualPluginBackend, VirtualPluginEntry, emit_virtual_plugin_files,
     virtual_plugin_entries_for_manifest, virtual_plugin_entries_for_package,
-    virtual_plugin_install_root_for_package, virtual_plugin_install_root_relative,
-    virtual_plugin_install_root_relative_for_alias,
+    virtual_plugin_install_root_for_package, virtual_plugin_install_root_relative_for_alias,
 };
 
 #[derive(Debug, Clone)]
@@ -458,6 +459,370 @@ impl ManagedArtifactNames {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ManagedPackageIdentities {
+    by_alias: HashMap<String, PackageIdentityNames>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PackageIdentityNames {
+    plugin_name: String,
+    managed_package_id: String,
+    marketplace_plugin_name: String,
+}
+
+#[derive(Debug, Clone)]
+struct PackageIdentityParts {
+    alias: String,
+    plugin_name: String,
+    suffix: PackageIdentitySuffix,
+    source_collision_id: String,
+}
+
+#[derive(Debug, Clone)]
+enum PackageIdentitySuffix {
+    Stable(String),
+    Hash { short: String, long: String },
+}
+
+impl ManagedPackageIdentities {
+    pub(crate) fn from_resolved_packages<'a>(
+        packages: impl IntoIterator<Item = &'a ResolvedPackage>,
+    ) -> Self {
+        let parts = packages
+            .into_iter()
+            .map(package_identity_parts)
+            .collect::<Vec<_>>();
+        let managed_package_ids = managed_package_ids(&parts);
+        let marketplace_plugin_names = marketplace_plugin_names(&parts, &managed_package_ids);
+
+        let by_alias = parts
+            .into_iter()
+            .map(|part| {
+                let alias = part.alias;
+                (
+                    alias.clone(),
+                    PackageIdentityNames {
+                        plugin_name: part.plugin_name,
+                        managed_package_id: managed_package_ids
+                            .get(&alias)
+                            .expect("managed id must exist for every package")
+                            .clone(),
+                        marketplace_plugin_name: marketplace_plugin_names
+                            .get(&alias)
+                            .expect("marketplace name must exist for every package")
+                            .clone(),
+                    },
+                )
+            })
+            .collect();
+
+        Self { by_alias }
+    }
+
+    pub(crate) fn managed_package_id(&self, package: &ResolvedPackage) -> String {
+        self.by_alias
+            .get(&package.alias)
+            .map(|identity| identity.managed_package_id.clone())
+            .unwrap_or_else(|| managed_package_id_without_peer_collisions(package))
+    }
+
+    pub(crate) fn marketplace_plugin_name(&self, package: &ResolvedPackage) -> String {
+        self.by_alias
+            .get(&package.alias)
+            .map(|identity| identity.marketplace_plugin_name.clone())
+            .unwrap_or_else(|| normalized_package_plugin_name(package))
+    }
+}
+
+pub(crate) fn normalized_package_plugin_name(package: &ResolvedPackage) -> String {
+    normalize_package_name_segment(&package.manifest.effective_name(), "agentpack")
+}
+
+fn managed_package_id_without_peer_collisions(package: &ResolvedPackage) -> String {
+    let parts = package_identity_parts(package);
+    format!("{}+{}", parts.plugin_name, parts.suffix.preferred_segment())
+}
+
+fn package_identity_parts(package: &ResolvedPackage) -> PackageIdentityParts {
+    let plugin_name = normalized_package_plugin_name(package);
+    let source_collision_id = short_identity_hash(&package_source_key(package), 4);
+    let suffix = package_identity_suffix(package);
+
+    PackageIdentityParts {
+        alias: package.alias.clone(),
+        plugin_name,
+        suffix,
+        source_collision_id,
+    }
+}
+
+fn package_identity_suffix(package: &ResolvedPackage) -> PackageIdentitySuffix {
+    match &package.source {
+        PackageSource::Git {
+            tag, branch, rev, ..
+        } => {
+            if let Some(tag) = tag.as_deref().filter(|value| !value.trim().is_empty()) {
+                return PackageIdentitySuffix::Stable(normalize_package_source_segment(
+                    tag, "version",
+                ));
+            }
+            if let Some(version) = package.manifest.effective_version() {
+                return PackageIdentitySuffix::Stable(normalize_package_source_segment(
+                    &version.to_string(),
+                    "version",
+                ));
+            }
+            if let Some(branch) = branch.as_deref().filter(|value| !value.trim().is_empty()) {
+                return PackageIdentitySuffix::Stable(normalize_package_source_segment(
+                    branch, "branch",
+                ));
+            }
+            PackageIdentitySuffix::Hash {
+                short: short_source_id_with_len(rev, 4),
+                long: short_source_id_with_len(rev, 8),
+            }
+        }
+        PackageSource::Path { tag, .. } => {
+            if let Some(tag) = tag.as_deref().filter(|value| !value.trim().is_empty()) {
+                return PackageIdentitySuffix::Stable(normalize_package_source_segment(
+                    tag, "version",
+                ));
+            }
+            if let Some(version) = package.manifest.effective_version() {
+                return PackageIdentitySuffix::Stable(normalize_package_source_segment(
+                    &version.to_string(),
+                    "version",
+                ));
+            }
+            let digest = strip_digest_prefix(&package.digest);
+            PackageIdentitySuffix::Hash {
+                short: short_source_id_with_len(digest, 4),
+                long: short_source_id_with_len(digest, 8),
+            }
+        }
+        PackageSource::Root => {
+            if let Some(version) = package.manifest.effective_version() {
+                return PackageIdentitySuffix::Stable(normalize_package_source_segment(
+                    &version.to_string(),
+                    "version",
+                ));
+            }
+            let digest = strip_digest_prefix(&package.digest);
+            PackageIdentitySuffix::Hash {
+                short: short_source_id_with_len(digest, 4),
+                long: short_source_id_with_len(digest, 8),
+            }
+        }
+    }
+}
+
+fn managed_package_ids(parts: &[PackageIdentityParts]) -> HashMap<String, String> {
+    parts
+        .iter()
+        .map(|part| {
+            let preferred = format!("{}+{}", part.plugin_name, part.suffix.preferred_segment());
+            let collides_with_other_source = parts.iter().any(|other| {
+                other.alias != part.alias
+                    && format!("{}+{}", other.plugin_name, other.suffix.preferred_segment())
+                        == preferred
+            });
+            let managed_id = if collides_with_other_source {
+                collision_adjusted_managed_package_id(part, parts)
+            } else {
+                preferred
+            };
+            (part.alias.clone(), managed_id)
+        })
+        .collect()
+}
+
+fn collision_adjusted_managed_package_id(
+    part: &PackageIdentityParts,
+    parts: &[PackageIdentityParts],
+) -> String {
+    match &part.suffix {
+        PackageIdentitySuffix::Stable(segment) => {
+            format!(
+                "{}+{}+{}",
+                part.plugin_name, segment, part.source_collision_id
+            )
+        }
+        PackageIdentitySuffix::Hash { short, long } => {
+            let long_candidate = format!("{}+{}", part.plugin_name, long);
+            let long_collides = parts.iter().any(|other| {
+                other.alias != part.alias
+                    && matches!(
+                        &other.suffix,
+                        PackageIdentitySuffix::Hash { long: other_long, .. }
+                            if format!("{}+{}", other.plugin_name, other_long) == long_candidate
+                    )
+            });
+            if long_collides {
+                format!(
+                    "{}+{}+{}",
+                    part.plugin_name, short, part.source_collision_id
+                )
+            } else {
+                long_candidate
+            }
+        }
+    }
+}
+
+fn marketplace_plugin_names(
+    parts: &[PackageIdentityParts],
+    managed_package_ids: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    let mut by_plugin_name: BTreeMap<&str, Vec<&PackageIdentityParts>> = BTreeMap::new();
+    for part in parts {
+        by_plugin_name
+            .entry(part.plugin_name.as_str())
+            .or_default()
+            .push(part);
+    }
+
+    let mut names = HashMap::new();
+    for (plugin_name, mut group) in by_plugin_name {
+        if group.len() == 1 {
+            names.insert(group[0].alias.clone(), plugin_name.to_string());
+            continue;
+        }
+
+        group.sort_by(|left, right| {
+            managed_package_ids
+                .get(&left.alias)
+                .cmp(&managed_package_ids.get(&right.alias))
+                .then(left.alias.cmp(&right.alias))
+        });
+
+        for (index, part) in group.into_iter().enumerate() {
+            let name = if index == 0 {
+                plugin_name.to_string()
+            } else {
+                format!(
+                    "{}+{}",
+                    plugin_name,
+                    unique_marketplace_collision_suffix(part, parts)
+                )
+            };
+            names.insert(part.alias.clone(), name);
+        }
+    }
+    names
+}
+
+fn unique_marketplace_collision_suffix(
+    part: &PackageIdentityParts,
+    parts: &[PackageIdentityParts],
+) -> String {
+    let short = part.suffix.source_segment(4);
+    let candidate = format!("{}+{}", part.plugin_name, short);
+    let collides = parts.iter().any(|other| {
+        other.alias != part.alias
+            && other.plugin_name == part.plugin_name
+            && format!("{}+{}", other.plugin_name, other.suffix.source_segment(4)) == candidate
+    });
+    if !collides {
+        return short;
+    }
+
+    let long = part.suffix.source_segment(8);
+    let candidate = format!("{}+{}", part.plugin_name, long);
+    let collides = parts.iter().any(|other| {
+        other.alias != part.alias
+            && other.plugin_name == part.plugin_name
+            && format!("{}+{}", other.plugin_name, other.suffix.source_segment(8)) == candidate
+    });
+    if collides {
+        format!("{}+{}", short, part.source_collision_id)
+    } else {
+        long
+    }
+}
+
+impl PackageIdentitySuffix {
+    fn preferred_segment(&self) -> &str {
+        match self {
+            Self::Stable(segment) => segment,
+            Self::Hash { short, .. } => short,
+        }
+    }
+
+    fn source_segment(&self, len: usize) -> String {
+        match self {
+            Self::Stable(segment) => {
+                if segment.chars().count() <= len {
+                    segment.clone()
+                } else {
+                    segment.chars().take(len).collect()
+                }
+            }
+            Self::Hash { short, long } if len <= 4 => short.clone(),
+            Self::Hash { long, .. } => long.clone(),
+        }
+    }
+}
+
+fn package_source_key(package: &ResolvedPackage) -> String {
+    match &package.source {
+        PackageSource::Root => format!("root\0{}", package.digest),
+        PackageSource::Path { path, tag } => format!(
+            "path\0{}\0{}\0{}",
+            display_path(path),
+            tag.as_deref().unwrap_or_default(),
+            package.digest
+        ),
+        PackageSource::Git {
+            url,
+            subpath,
+            tag,
+            branch,
+            rev,
+        } => format!(
+            "git\0{}\0{}\0{}\0{}\0{}",
+            url,
+            subpath
+                .as_ref()
+                .map(|path| display_path(path))
+                .unwrap_or_default(),
+            tag.as_deref().unwrap_or_default(),
+            branch.as_deref().unwrap_or_default(),
+            rev
+        ),
+    }
+}
+
+fn short_identity_hash(value: &str, len: usize) -> String {
+    short_source_id_with_len(&blake3_hex(value.as_bytes()), len)
+}
+
+fn normalize_package_name_segment(value: &str, fallback: &str) -> String {
+    normalize_package_identity_segment(value, fallback, false)
+}
+
+fn normalize_package_source_segment(value: &str, fallback: &str) -> String {
+    normalize_package_identity_segment(value, fallback, true)
+}
+
+fn normalize_package_identity_segment(value: &str, fallback: &str, allow_dot: bool) -> String {
+    let mut normalized = String::new();
+    for character in value.chars() {
+        if character.is_ascii_alphanumeric() || (allow_dot && character == '.') {
+            normalized.push(character.to_ascii_lowercase());
+        } else if !normalized.ends_with('-') {
+            normalized.push('-');
+        }
+    }
+
+    let normalized = normalized.trim_matches(['-', '.']).to_string();
+    if normalized.is_empty() {
+        fallback.to_string()
+    } else {
+        normalized
+    }
+}
+
 impl ArtifactKind {
     pub fn supported_adapters(self) -> Adapters {
         profile::supported_adapters(self)
@@ -536,14 +901,48 @@ pub fn runtime_root(project_root: &Path, adapter: Adapter) -> PathBuf {
     project_root.join(profile::runtime_root_name(adapter))
 }
 
-const NATIVE_MARKETPLACE_ROOT: &str = ".nodus";
+pub(crate) const MANAGED_MARKETPLACE_NAME: &str = "nodus";
+const NODUS_HOME_ENV: &str = "NODUS_HOME";
 
-pub(crate) fn native_marketplace_root(project_root: &Path) -> PathBuf {
-    project_root.join(NATIVE_MARKETPLACE_ROOT)
+pub(crate) fn global_nodus_home(_project_root: &Path) -> PathBuf {
+    if let Some(path) = env::var_os(NODUS_HOME_ENV) {
+        return PathBuf::from(path);
+    }
+
+    #[cfg(test)]
+    {
+        _project_root.join(".nodus-global")
+    }
+
+    #[cfg(all(not(test), target_os = "windows"))]
+    {
+        if let Some(profile) = env::var_os("USERPROFILE") {
+            return PathBuf::from(profile).join(".nodus");
+        }
+        if let (Some(drive), Some(path)) = (env::var_os("HOMEDRIVE"), env::var_os("HOMEPATH")) {
+            return PathBuf::from(drive).join(path).join(".nodus");
+        }
+    }
+
+    #[cfg(all(not(test), not(target_os = "windows")))]
+    {
+        if let Some(home) = env::var_os("HOME") {
+            return PathBuf::from(home).join(".nodus");
+        }
+    }
+
+    #[cfg(not(test))]
+    PathBuf::from(".nodus")
 }
 
-pub(crate) fn native_marketplace_source_path() -> &'static str {
-    "./.nodus"
+pub(crate) fn native_marketplace_root(project_root: &Path, adapter: Adapter) -> PathBuf {
+    global_nodus_home(project_root)
+        .join("marketplaces")
+        .join(adapter.as_str())
+}
+
+pub(crate) fn native_marketplace_source_path(project_root: &Path, adapter: Adapter) -> String {
+    display_path(&native_marketplace_root(project_root, adapter))
 }
 
 pub(crate) fn native_marketplace_plugin_source_path(
@@ -553,16 +952,14 @@ pub(crate) fn native_marketplace_plugin_source_path(
 ) -> String {
     match adapter {
         Adapter::Claude => {
-            let marketplace_root = native_marketplace_root(project_root);
+            let marketplace_root = native_marketplace_root(project_root, adapter);
             if let Some(relative) = strip_path_prefix(plugin_root, &marketplace_root) {
                 return local_marketplace_path(relative);
             }
-            if let Some(relative) = strip_path_prefix(plugin_root, project_root) {
-                return format!("../{}", display_path(relative));
-            }
         }
         Adapter::Codex => {
-            if let Some(relative) = strip_path_prefix(plugin_root, project_root) {
+            let marketplace_root = native_marketplace_root(project_root, adapter);
+            if let Some(relative) = strip_path_prefix(plugin_root, &marketplace_root) {
                 return local_marketplace_path(relative);
             }
         }
@@ -581,14 +978,10 @@ fn local_marketplace_path(relative: &Path) -> String {
 }
 
 pub(crate) fn native_marketplace_path(project_root: &Path, adapter: Adapter) -> Option<PathBuf> {
-    let root = native_marketplace_root(project_root);
+    let root = native_marketplace_root(project_root, adapter);
     match adapter {
-        Adapter::Claude => Some(root.join(".claude-plugin").join("marketplace.json")),
-        Adapter::Agents
-        | Adapter::Codex
-        | Adapter::Copilot
-        | Adapter::Cursor
-        | Adapter::OpenCode => None,
+        Adapter::Claude | Adapter::Codex => Some(root.join("marketplace.json")),
+        Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => None,
     }
 }
 
@@ -596,17 +989,17 @@ pub(crate) fn native_package_plugin_root(
     project_root: &Path,
     adapter: Adapter,
     package: &ResolvedPackage,
+    package_identities: &ManagedPackageIdentities,
 ) -> PathBuf {
     if matches!(package.source, PackageSource::Root)
-        || project_root_is_native_package_plugin_root(project_root, adapter, package)
+        || project_root_is_native_package_plugin_root(project_root, adapter)
     {
         return project_root.to_path_buf();
     }
 
-    project_root
-        .join(".nodus")
+    global_nodus_home(project_root)
         .join("packages")
-        .join(&package.alias)
+        .join(package_identities.managed_package_id(package))
         .join(match adapter {
             Adapter::Claude => "claude-plugin",
             Adapter::Codex => "codex-plugin",
@@ -616,11 +1009,7 @@ pub(crate) fn native_package_plugin_root(
         })
 }
 
-fn project_root_is_native_package_plugin_root(
-    project_root: &Path,
-    adapter: Adapter,
-    package: &ResolvedPackage,
-) -> bool {
+fn project_root_is_native_package_plugin_root(project_root: &Path, adapter: Adapter) -> bool {
     let Some(plugin_dir) = project_root.file_name().and_then(|value| value.to_str()) else {
         return false;
     };
@@ -633,11 +1022,7 @@ fn project_root_is_native_package_plugin_root(
         return false;
     }
 
-    project_root
-        .parent()
-        .and_then(Path::file_name)
-        .and_then(|value| value.to_str())
-        == Some(package.alias.as_str())
+    project_root.parent().is_some()
 }
 
 pub(crate) fn managed_runtime_root(
@@ -645,12 +1030,14 @@ pub(crate) fn managed_runtime_root(
     adapter: Adapter,
     package: &ResolvedPackage,
 ) -> PathBuf {
-    if preferred_surface(adapter) == PreferredSurface::PackagePluginWorkspaceMarketplace {
-        let plugin_root = native_package_plugin_root(project_root, adapter, package);
-        if !matches!(package.source, PackageSource::Root) {
-            return plugin_root;
-        }
-        return runtime_root(&plugin_root, adapter);
+    if project_root_is_native_package_plugin_root(project_root, adapter) {
+        return project_root.to_path_buf();
+    }
+
+    if preferred_surface(adapter) == PreferredSurface::PackagePluginWorkspaceMarketplace
+        && matches!(package.source, PackageSource::Root)
+    {
+        return runtime_root(project_root, adapter);
     }
 
     runtime_root(project_root, adapter)
@@ -844,10 +1231,14 @@ pub fn package_short_id(package: &ResolvedPackage) -> String {
 }
 
 pub fn short_source_id(value: &str) -> String {
+    short_source_id_with_len(value, 6)
+}
+
+fn short_source_id_with_len(value: &str, len: usize) -> String {
     let short = value
         .chars()
         .filter(|character| character.is_ascii_alphanumeric())
-        .take(6)
+        .take(len)
         .collect::<String>()
         .to_ascii_lowercase();
 
@@ -876,4 +1267,69 @@ fn strip_digest_prefix(digest: &str) -> &str {
         .strip_prefix("sha256:")
         .or_else(|| digest.strip_prefix("blake3:"))
         .unwrap_or(digest)
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    fn hash_part(
+        alias: &str,
+        plugin_name: &str,
+        short: &str,
+        long: &str,
+        source_collision_id: &str,
+    ) -> PackageIdentityParts {
+        PackageIdentityParts {
+            alias: alias.to_string(),
+            plugin_name: plugin_name.to_string(),
+            suffix: PackageIdentitySuffix::Hash {
+                short: short.to_string(),
+                long: long.to_string(),
+            },
+            source_collision_id: source_collision_id.to_string(),
+        }
+    }
+
+    #[test]
+    fn managed_package_ids_extend_hash_collisions_before_source_hashing() {
+        let parts = vec![
+            hash_part("one", "playbook-ios", "ea51", "ea510001", "9a2f"),
+            hash_part("two", "playbook-ios", "ea51", "ea510002", "3b4c"),
+        ];
+
+        let ids = managed_package_ids(&parts);
+
+        assert_eq!(ids["one"], "playbook-ios+ea510001");
+        assert_eq!(ids["two"], "playbook-ios+ea510002");
+    }
+
+    #[test]
+    fn managed_package_ids_append_source_hash_after_long_hash_collision() {
+        let parts = vec![
+            hash_part("one", "playbook-ios", "ea51", "ea510001", "9a2f"),
+            hash_part("two", "playbook-ios", "ea51", "ea510001", "3b4c"),
+        ];
+
+        let ids = managed_package_ids(&parts);
+
+        assert_eq!(ids["one"], "playbook-ios+ea51+9a2f");
+        assert_eq!(ids["two"], "playbook-ios+ea51+3b4c");
+    }
+
+    #[test]
+    fn marketplace_plugin_names_keep_unique_names_friendly_and_suffix_collisions() {
+        let parts = vec![
+            hash_part("one", "playbook-ios", "ea51", "ea510001", "9a2f"),
+            hash_part("two", "playbook-ios", "fb72", "fb720001", "3b4c"),
+            hash_part("three", "docs-tools", "0011", "00112233", "abcd"),
+        ];
+        let ids = managed_package_ids(&parts);
+
+        let names = marketplace_plugin_names(&parts, &ids);
+
+        assert_eq!(names["one"], "playbook-ios");
+        assert_eq!(names["two"], "playbook-ios+fb72");
+        assert_eq!(names["three"], "docs-tools");
+    }
 }
