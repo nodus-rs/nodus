@@ -2348,7 +2348,7 @@ fn codex_plugin_marketplace_registration(
 }
 
 fn absolute_codex_marketplace_source(project_root: &Path) -> Result<String> {
-    let source = super::native_marketplace_root(project_root);
+    let source = project_root.to_path_buf();
     let absolute = if source.is_absolute() {
         source
     } else {

@@ -87,9 +87,9 @@ emit a sync warning.
 ## Codex local marketplace
 
 When the Codex adapter is enabled, Nodus writes a repo-local marketplace at
-`.nodus/.agents/plugins/marketplace.json`. Project sync registers that
+`.agents/plugins/marketplace.json`. Project sync registers that
 marketplace in `.codex/config.toml` with `source_type = "local"` and an absolute
-`source` path to `.nodus`, then enables the generated
+`source` path to the project root, then enables the generated
 `<plugin>@<marketplace>` keys in the same project config.
 
 Generated marketplace entries point at package plugins under

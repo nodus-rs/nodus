@@ -129,9 +129,9 @@ native marketplace plugins.
 ### Codex local marketplace
 
 When the Codex adapter is enabled, Nodus writes a repo-local Codex marketplace at
-`.nodus/.agents/plugins/marketplace.json`. Project sync also registers that
+`.agents/plugins/marketplace.json`. Project sync also registers that
 marketplace in `.codex/config.toml` with a local source pointing at the absolute
-`.nodus` path, and enables the generated `<plugin>@<marketplace>` keys there.
+project root, and enables the generated `<plugin>@<marketplace>` keys there.
 
 Generated marketplace entries point at package plugins under
 `.nodus/packages/<alias>/codex-plugin/`. Project sync does not edit

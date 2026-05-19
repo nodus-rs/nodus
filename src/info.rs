@@ -951,7 +951,11 @@ fn native_plugin_source_root(
     if path.is_absolute() {
         Some(path.to_path_buf())
     } else {
-        Some(project_root.join(".nodus").join(path))
+        match adapter {
+            Adapter::Claude => Some(project_root.join(".nodus").join(path)),
+            Adapter::Codex => Some(project_root.join(path)),
+            Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => None,
+        }
     }
 }
 
@@ -2176,7 +2180,7 @@ always_context = ["prompts/context.md"]
         assert!(output.contains("native-integration:"));
         assert!(output.contains("adapters = [claude, codex]"));
         assert!(output.contains(".nodus/.claude-plugin/marketplace.json (present"));
-        assert!(output.contains(".nodus/.agents/plugins/marketplace.json (present"));
+        assert!(output.contains(".agents/plugins/marketplace.json (present"));
         assert!(output.contains("claude shared@"));
         assert!(output.contains(".nodus/packages/shared/claude-plugin"));
         assert!(output.contains("codex shared@"));

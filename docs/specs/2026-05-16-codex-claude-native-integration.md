@@ -66,7 +66,7 @@ changes.
   `PostToolUseFailure`, `PreCompact`, `PostCompact`, `WorktreeCreate`, and
   `WorktreeRemove`.
 - Nodus writes the generated Codex marketplace under
-  `.nodus/.agents/plugins/marketplace.json` and registers the local `.nodus`
+  `.agents/plugins/marketplace.json` and registers the project root as a local
   source from project `.codex/config.toml`. Project sync does not edit
   `~/.codex/config.toml`; existing global Codex config entries are left
   untouched.
@@ -103,7 +103,7 @@ changes.
 ### Codex
 
 Nodus emits a local Codex marketplace at
-`.nodus/.agents/plugins/marketplace.json`, dependency plugins under
+`.agents/plugins/marketplace.json`, dependency plugins under
 `.nodus/packages/<alias>/codex-plugin/`, and project-local marketplace/plugin
 registration in `.codex/config.toml`.
 
@@ -306,7 +306,7 @@ Likely additions:
 - Optional raw hook matcher support for dynamic MCP tool matcher names.
 - Claude plugin extra-file tracking for native passthrough components.
 - Local Codex marketplace ownership and digest coverage for
-  `.nodus/.agents/plugins/marketplace.json` and project `.codex/config.toml`
+  `.agents/plugins/marketplace.json` and project `.codex/config.toml`
   registration.
 
 Any new public manifest fields must be documented in `examples/nodus.toml` and

@@ -234,7 +234,7 @@ Make it easy to inspect what Nodus generated for Codex and Claude.
       both.
 - [x] Report enabled adapters and selected surfaces.
 - [x] Report marketplace paths:
-      - `.nodus/.agents/plugins/marketplace.json`
+      - `.agents/plugins/marketplace.json`
       - `.nodus/.claude-plugin/marketplace.json`
 - [x] Report generated plugin keys and plugin roots.
 - [x] Report hook locations for root and dependency hooks.

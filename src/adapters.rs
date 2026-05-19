@@ -553,13 +553,18 @@ pub(crate) fn native_marketplace_plugin_source_path(
     plugin_root: &Path,
 ) -> String {
     match adapter {
-        Adapter::Claude | Adapter::Codex => {
+        Adapter::Claude => {
             let marketplace_root = native_marketplace_root(project_root);
             if let Some(relative) = strip_path_prefix(plugin_root, &marketplace_root) {
                 return local_marketplace_path(relative);
             }
             if let Some(relative) = strip_path_prefix(plugin_root, project_root) {
                 return format!("../{}", display_path(relative));
+            }
+        }
+        Adapter::Codex => {
+            if let Some(relative) = strip_path_prefix(plugin_root, project_root) {
+                return local_marketplace_path(relative);
             }
         }
         Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => {}
@@ -580,7 +585,7 @@ pub(crate) fn native_marketplace_path(project_root: &Path, adapter: Adapter) -> 
     let root = native_marketplace_root(project_root);
     match adapter {
         Adapter::Claude => Some(root.join(".claude-plugin").join("marketplace.json")),
-        Adapter::Codex => Some(root.join(".agents/plugins/marketplace.json")),
+        Adapter::Codex => Some(project_root.join(".agents/plugins/marketplace.json")),
         Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => None,
     }
 }
