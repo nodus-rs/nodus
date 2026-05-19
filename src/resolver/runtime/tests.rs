@@ -1934,10 +1934,11 @@ fn sync_generates_claude_workspace_marketplace_files() {
         Some(expected_owner_name.as_str())
     );
     assert_eq!(claude["plugins"].as_array().unwrap().len(), 2);
+    let workspace_plugin_source = claude["plugins"][0]["source"].as_str().unwrap();
+    assert!(workspace_plugin_source.ends_with("/plugins/axiom"));
     assert!(
-        claude["plugins"][0]["source"]
-            .as_str()
-            .is_some_and(|source| source.ends_with("/plugins/axiom"))
+        !Path::new(workspace_plugin_source).is_absolute(),
+        "Claude marketplace sources must be relative local paths: {workspace_plugin_source}"
     );
 
     assert!(generated_codex_marketplace_path(repo.path()).exists());
@@ -2113,10 +2114,11 @@ version = "1.2.3"
         marketplace["plugins"][0]["name"].as_str(),
         Some("shared-tools")
     );
+    let marketplace_source = marketplace["plugins"][0]["source"].as_str().unwrap();
+    assert!(marketplace_source.ends_with("/claude-plugin"));
     assert!(
-        marketplace["plugins"][0]["source"]
-            .as_str()
-            .is_some_and(|source| source.ends_with("/claude-plugin"))
+        marketplace_source.starts_with("../../packages/"),
+        "Claude global marketplace should point at shared payloads with a relative source: {marketplace_source}"
     );
     let plugin_key = format!(
         "shared-tools@{}",
@@ -2201,10 +2203,11 @@ shared = { path = "vendor/shared" }
     )
     .unwrap();
     assert_eq!(marketplace["plugins"][0]["name"].as_str(), Some("shared"));
+    let marketplace_source = marketplace["plugins"][0]["source"].as_str().unwrap();
+    assert!(marketplace_source.ends_with("/claude-plugin"));
     assert!(
-        marketplace["plugins"][0]["source"]
-            .as_str()
-            .is_some_and(|source| source.ends_with("/claude-plugin"))
+        marketplace_source.starts_with("../../packages/"),
+        "Claude global marketplace should point at shared payloads with a relative source: {marketplace_source}"
     );
 }
 

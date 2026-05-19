@@ -989,6 +989,9 @@ pub(crate) fn native_marketplace_plugin_source_path(
             if let Some(relative) = strip_path_prefix(plugin_root, &marketplace_root) {
                 return local_marketplace_path(relative);
             }
+            if let Some(relative) = relative_path_from(&marketplace_root, plugin_root) {
+                return local_marketplace_path(&relative);
+            }
         }
         Adapter::Codex => {
             let marketplace_root = native_marketplace_root(project_root, adapter);
@@ -999,6 +1002,47 @@ pub(crate) fn native_marketplace_plugin_source_path(
         Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => {}
     }
     display_path(plugin_root)
+}
+
+fn relative_path_from(base: &Path, target: &Path) -> Option<PathBuf> {
+    let base = dunce::simplified(base).to_path_buf();
+    let target = dunce::simplified(target).to_path_buf();
+    if !base.is_absolute() || !target.is_absolute() {
+        return None;
+    }
+
+    let base_components = base.components().collect::<Vec<_>>();
+    let target_components = target.components().collect::<Vec<_>>();
+    let common_len = base_components
+        .iter()
+        .zip(&target_components)
+        .take_while(|(left, right)| left == right)
+        .count();
+    if common_len == 0 {
+        return None;
+    }
+
+    let mut relative = PathBuf::new();
+    for component in &base_components[common_len..] {
+        match component {
+            std::path::Component::Normal(_) => relative.push(".."),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => return None,
+        }
+    }
+    for component in &target_components[common_len..] {
+        match component {
+            std::path::Component::Normal(segment) => relative.push(segment),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => return None,
+        }
+    }
+
+    Some(relative)
 }
 
 fn local_marketplace_path(relative: &Path) -> String {
