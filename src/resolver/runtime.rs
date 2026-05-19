@@ -901,7 +901,14 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
         let lockfile = existing_lockfile
             .as_ref()
             .expect("attempt_fast_path implies existing_lockfile is Some");
-        match evaluate_fast_path(lockfile, &install_paths.runtime_root, sync_mode, cache_root)? {
+        let selected_adapters = Adapters::from_slice(&selection.adapters);
+        match evaluate_fast_path(
+            lockfile,
+            &install_paths.runtime_root,
+            sync_mode,
+            cache_root,
+            selected_adapters,
+        )? {
             FastPathOutcome::Hit => {
                 reporter.note(format!("{LOCKFILE_NAME} is in sync; no work to do"))?;
                 let summary = SyncSummary {
@@ -1610,6 +1617,7 @@ fn evaluate_fast_path(
     project_root: &Path,
     sync_mode: SyncMode,
     cache_root: &Path,
+    selected_adapters: Adapters,
 ) -> Result<FastPathOutcome> {
     let bypass_freshness_gate = sync_mode.installs_from_lockfile();
     let lockfile_mtime = if bypass_freshness_gate {
@@ -1619,6 +1627,14 @@ fn evaluate_fast_path(
             .and_then(|metadata| metadata.modified())
             .ok()
     };
+    if !bypass_freshness_gate
+        && selected_adapters_have_global_payloads(selected_adapters)
+        && lockfile.packages.iter().any(locked_package_is_dependency)
+    {
+        return Ok(FastPathOutcome::Miss(
+            "selected adapters use global package payloads outside the lockfile digest".into(),
+        ));
+    }
     for package in &lockfile.packages {
         if !bypass_freshness_gate {
             // Source-pin freshness gate. Float-y deps (branch tracking) can
@@ -1715,6 +1731,16 @@ fn evaluate_fast_path(
     }
 
     Ok(FastPathOutcome::Hit)
+}
+
+fn selected_adapters_have_global_payloads(selected_adapters: Adapters) -> bool {
+    selected_adapters.contains(Adapter::Claude)
+        || selected_adapters.contains(Adapter::Codex)
+        || selected_adapters.contains(Adapter::OpenCode)
+}
+
+fn locked_package_is_dependency(package: &LockedPackage) -> bool {
+    package.source.kind != "path" || package.source.path.as_deref() != Some(".")
 }
 
 /// Cheap freshness probe for path-dep sources.

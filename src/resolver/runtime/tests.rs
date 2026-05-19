@@ -12768,6 +12768,57 @@ fn slice4_fast_path_skipped_for_path_dependencies() {
 }
 
 #[test]
+fn slice4_fast_path_skipped_for_global_plugin_payload_adapters() {
+    let package = LockedPackage {
+        alias: "shared".into(),
+        name: "shared".into(),
+        version_tag: Some("v0.1.0".into()),
+        source: LockedSource {
+            kind: "git".into(),
+            path: None,
+            url: Some("https://example.invalid/shared".into()),
+            tag: Some("v0.1.0".into()),
+            branch: None,
+            rev: Some("abc123".into()),
+        },
+        digest: "blake3:abc".into(),
+        selected_components: None,
+        skills: vec!["review".into()],
+        agents: vec![],
+        rules: vec![],
+        commands: vec![],
+        mcp_servers: vec![],
+        dependencies: vec![],
+        capabilities: vec![],
+        owned_subtrees: vec![],
+        owned_prefixes: vec![],
+        owned_runtime_adapters: vec![],
+        owned_files: vec![],
+        install_digest: Some(crate::hashing::content_digest(&[])),
+    };
+    let lockfile = Lockfile::new(vec![package]);
+    let temp = TempDir::new().unwrap();
+
+    let outcome = super::evaluate_fast_path(
+        &lockfile,
+        temp.path(),
+        super::SyncMode::Normal,
+        temp.path(),
+        Adapters::CLAUDE,
+    )
+    .unwrap();
+    match outcome {
+        super::FastPathOutcome::Miss(reason) => {
+            assert!(
+                reason.contains("global package payloads"),
+                "expected miss reason to mention global payloads; got: {reason}"
+            );
+        }
+        super::FastPathOutcome::Hit => panic!("expected Miss for global plugin payload adapter"),
+    }
+}
+
+#[test]
 fn slice4_fast_path_skipped_when_install_digest_is_none() {
     // Construct a synthetic v10 lockfile where one package's
     // install_digest is None (a hand-edit could produce this).
@@ -12803,9 +12854,14 @@ fn slice4_fast_path_skipped_when_install_digest_is_none() {
     let lockfile = Lockfile::new(vec![package]);
 
     let temp = TempDir::new().unwrap();
-    let outcome =
-        super::evaluate_fast_path(&lockfile, temp.path(), super::SyncMode::Normal, temp.path())
-            .unwrap();
+    let outcome = super::evaluate_fast_path(
+        &lockfile,
+        temp.path(),
+        super::SyncMode::Normal,
+        temp.path(),
+        Adapters::NONE,
+    )
+    .unwrap();
     match outcome {
         super::FastPathOutcome::Miss(reason) => {
             assert!(
@@ -12851,9 +12907,14 @@ fn slice4_fast_path_skipped_for_branch_pinned_deps_in_normal_mode() {
     let lockfile = Lockfile::new(vec![package]);
 
     let temp = TempDir::new().unwrap();
-    let outcome =
-        super::evaluate_fast_path(&lockfile, temp.path(), super::SyncMode::Normal, temp.path())
-            .unwrap();
+    let outcome = super::evaluate_fast_path(
+        &lockfile,
+        temp.path(),
+        super::SyncMode::Normal,
+        temp.path(),
+        Adapters::NONE,
+    )
+    .unwrap();
     match outcome {
         super::FastPathOutcome::Miss(reason) => {
             assert!(
@@ -12905,9 +12966,14 @@ fn slice4_fast_path_allows_branch_pinned_deps_under_frozen() {
     // so it doesn't masquerade as a freshness/integrity miss here.
     let snapshot_path = crate::store::snapshot_path(temp.path(), "blake3:abc").unwrap();
     fs::create_dir_all(&snapshot_path).unwrap();
-    let outcome =
-        super::evaluate_fast_path(&lockfile, temp.path(), super::SyncMode::Frozen, temp.path())
-            .unwrap();
+    let outcome = super::evaluate_fast_path(
+        &lockfile,
+        temp.path(),
+        super::SyncMode::Frozen,
+        temp.path(),
+        Adapters::NONE,
+    )
+    .unwrap();
     assert!(
         matches!(outcome, super::FastPathOutcome::Hit),
         "frozen mode must bypass the freshness gate and accept branch-tracked deps"
@@ -12965,6 +13031,7 @@ fn slice4_fast_path_miss_on_drift_under_frozen_reports_lockfile_out_of_date() {
         temp.path(),
         super::SyncMode::Frozen,
         temp.path(),
+        Adapters::NONE,
     )
     .unwrap();
     match outcome {
