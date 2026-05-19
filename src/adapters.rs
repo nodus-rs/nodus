@@ -536,7 +536,40 @@ impl ManagedPackageIdentities {
 }
 
 pub(crate) fn normalized_package_plugin_name(package: &ResolvedPackage) -> String {
-    normalize_package_name_segment(&package.manifest.effective_name(), "agentpack")
+    if let Some(name) = package.manifest.manifest.name.as_deref() {
+        return normalize_package_name_segment(name, "agentpack");
+    }
+
+    let fallback = source_package_name(package).unwrap_or_else(|| package.alias.clone());
+    normalize_package_name_segment(&fallback, "agentpack")
+}
+
+fn source_package_name(package: &ResolvedPackage) -> Option<String> {
+    match &package.source {
+        PackageSource::Root => Some(package.manifest.effective_name()),
+        PackageSource::Path { path, .. } => path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map(ToOwned::to_owned),
+        PackageSource::Git { url, subpath, .. } => subpath
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .and_then(|value| value.to_str())
+            .map(ToOwned::to_owned)
+            .or_else(|| source_url_tail(url)),
+    }
+}
+
+fn source_url_tail(url: &str) -> Option<String> {
+    let trimmed = url
+        .trim()
+        .trim_end_matches(['/', '\\'])
+        .trim_end_matches(".git");
+    trimmed
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn managed_package_id_without_peer_collisions(package: &ResolvedPackage) -> String {

@@ -1445,6 +1445,41 @@ version = "0.6.1"
         "playbook-ios+0.6.1"
     );
 
+    let unnamed_version_project = TempDir::new().unwrap();
+    let unnamed_version_cache = cache_dir();
+    let unnamed_version_repo_parent = TempDir::new().unwrap();
+    let unnamed_version_repo = unnamed_version_repo_parent.path().join("playbook-ios");
+    write_manifest(&unnamed_version_repo, r#"version = "0.6.1""#);
+    write_skill(&unnamed_version_repo.join("skills/review"), "Review");
+    init_git_repo(&unnamed_version_repo);
+
+    add_dependency_in_dir_with_adapters(
+        unnamed_version_project.path(),
+        unnamed_version_cache.path(),
+        &unnamed_version_repo.to_string_lossy(),
+        None,
+        &[Adapter::Claude],
+        &[],
+    )
+    .unwrap();
+    let (resolution, _) = resolve_project_from_existing_lockfile_in_dir(
+        unnamed_version_project.path(),
+        unnamed_version_cache.path(),
+        &[Adapter::Claude],
+    )
+    .unwrap();
+    assert_eq!(
+        dependency_managed_package_id(&resolution),
+        "playbook-ios+0.6.1"
+    );
+    let package_dirs = fs::read_dir(generated_global_packages_root(
+        unnamed_version_project.path(),
+    ))
+    .unwrap()
+    .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+    .collect::<Vec<_>>();
+    assert_eq!(package_dirs, vec!["playbook-ios+0.6.1"]);
+
     let branch_project = TempDir::new().unwrap();
     let branch_cache = cache_dir();
     let branch_repo = TempDir::new().unwrap();
