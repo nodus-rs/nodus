@@ -2246,13 +2246,18 @@ fn codex_mcp_config_file(
         codex_managed_marketplace_name(project_root, packages, selected_adapters);
     let plugin_registration =
         codex_plugin_marketplace_registration(project_root, packages, selected_adapters)?;
+    let needs_config_for_outputs = !desired_servers.is_empty()
+        || !previously_managed.is_empty()
+        || feature_requirements.hooks
+        || feature_requirements.plugin_hooks
+        || plugin_registration.is_some();
+    let needs_marketplace_cleanup = if needs_config_for_outputs {
+        false
+    } else {
+        codex_project_config_has_marketplace_entries(&path, managed_marketplace.as_deref())?
+    };
 
-    if desired_servers.is_empty()
-        && previously_managed.is_empty()
-        && !feature_requirements.hooks
-        && !feature_requirements.plugin_hooks
-        && plugin_registration.is_none()
-    {
+    if !needs_config_for_outputs && !needs_marketplace_cleanup {
         return Ok(None);
     }
 
@@ -2319,9 +2324,28 @@ fn codex_managed_marketplace_name(
     packages: &[(ResolvedPackage, PathBuf)],
     selected_adapters: Adapters,
 ) -> Option<String> {
-    (selected_adapters.contains(Adapter::Codex)
-        && preferred_surface(Adapter::Codex) == PreferredSurface::PackagePluginWorkspaceMarketplace)
+    selected_adapters
+        .contains(Adapter::Codex)
         .then(|| native_marketplace_names(project_root, packages).0)
+}
+
+fn codex_project_config_has_marketplace_entries(
+    path: &Path,
+    marketplace: Option<&str>,
+) -> Result<bool> {
+    let Some(marketplace) = marketplace else {
+        return Ok(false);
+    };
+    if !path.exists() {
+        return Ok(false);
+    }
+
+    let Ok(config) = read_project_codex_config(path) else {
+        return Ok(false);
+    };
+    let suffix = format!("@{marketplace}");
+    Ok(config.marketplaces.contains_key(marketplace)
+        || config.plugins.keys().any(|key| key.ends_with(&suffix)))
 }
 
 fn codex_plugin_marketplace_registration(

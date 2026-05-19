@@ -1038,7 +1038,7 @@ fn inspect_codex_native_state(
         hooks,
         plugin_hooks,
         plugin_hooks_required,
-        registration: "local-marketplace".into(),
+        registration: "project-runtime".into(),
     }
 }
 
@@ -2180,28 +2180,28 @@ always_context = ["prompts/context.md"]
         assert!(output.contains("native-integration:"));
         assert!(output.contains("adapters = [claude, codex]"));
         assert!(output.contains(".nodus/.claude-plugin/marketplace.json (present"));
-        assert!(output.contains(".agents/plugins/marketplace.json (present"));
+        assert!(!output.contains(".agents/plugins/marketplace.json"));
         assert!(output.contains("claude shared@"));
         assert!(output.contains(".nodus/packages/shared/claude-plugin"));
-        assert!(output.contains("codex shared@"));
+        assert!(output.contains("virtual-plugins:"));
+        assert!(output.contains("managed plugin -> .nodus/packages/shared/codex-plugin"));
         assert!(output.contains(".nodus/packages/shared/codex-plugin"));
-        assert!(output.contains("plugin_hooks=true plugin_hooks_required=true"));
-        assert!(output.contains("registration=local-marketplace"));
+        assert!(output.contains("plugin_hooks=unknown plugin_hooks_required=false"));
+        assert!(output.contains("registration=project-runtime"));
 
         let info =
             describe_package_json_in_dir(project.path(), cache.path(), ".", None, None).unwrap();
+        assert!(info.virtual_plugins.iter().any(|plugin| {
+            plugin.adapter == Adapter::Codex
+                && plugin.package_alias == "shared"
+                && plugin.status == VirtualPluginStatus::Present
+        }));
         let native = info.native_integration.unwrap();
         assert_eq!(native.adapters, vec![Adapter::Claude, Adapter::Codex]);
         assert_eq!(native.codex.hooks, Some(true));
-        assert_eq!(native.codex.plugin_hooks, Some(true));
-        assert!(native.codex.plugin_hooks_required);
-        assert_eq!(native.codex.registration, "local-marketplace");
-        assert!(
-            native
-                .plugins
-                .iter()
-                .any(|plugin| plugin.adapter == Adapter::Codex && plugin.hooks.is_some())
-        );
+        assert_eq!(native.codex.plugin_hooks, None);
+        assert!(!native.codex.plugin_hooks_required);
+        assert_eq!(native.codex.registration, "project-runtime");
         assert!(
             native
                 .claude
@@ -2284,7 +2284,7 @@ name = "skills"
 
         let info =
             describe_package_json_in_dir(project.path(), cache.path(), ".", None, None).unwrap();
-        assert_eq!(info.virtual_plugins.len(), 2);
+        assert_eq!(info.virtual_plugins.len(), 3);
         let plugin = info
             .virtual_plugins
             .iter()
@@ -2312,7 +2312,7 @@ name = "skills"
         let managed = info
             .virtual_plugins
             .iter()
-            .find(|plugin| plugin.package_alias == "skills")
+            .find(|plugin| plugin.package_alias == "skills" && plugin.adapter == Adapter::OpenCode)
             .unwrap();
         assert_eq!(managed.kind, VirtualPluginKind::ManagedPlugin);
         assert_eq!(managed.adapter, Adapter::OpenCode);
@@ -2323,6 +2323,20 @@ name = "skills"
         assert_eq!(managed.source_entry_path, None);
         assert_eq!(managed.loader_path, None);
         assert_eq!(managed.status, VirtualPluginStatus::Present);
+
+        let codex_managed = info
+            .virtual_plugins
+            .iter()
+            .find(|plugin| plugin.package_alias == "skills" && plugin.adapter == Adapter::Codex)
+            .unwrap();
+        assert_eq!(codex_managed.kind, VirtualPluginKind::ManagedPlugin);
+        assert_eq!(
+            codex_managed.install_root,
+            ".nodus/packages/skills/codex-plugin"
+        );
+        assert_eq!(codex_managed.source_entry_path, None);
+        assert_eq!(codex_managed.loader_path, None);
+        assert_eq!(codex_managed.status, VirtualPluginStatus::Missing);
     }
 
     #[test]

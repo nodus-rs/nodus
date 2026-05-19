@@ -41,13 +41,14 @@ changes.
 
 - Nodus has six adapters today: `agents`, `claude`, `codex`, `copilot`,
   `cursor`, and `opencode`.
-- Claude and Codex currently prefer `PackagePluginWorkspaceMarketplace` in
+- Claude currently prefers `PackagePluginWorkspaceMarketplace` in
   `AdapterProfile`, so dependency packages are normally emitted as local native
-  plugins rather than direct runtime folders.
+  plugins rather than direct runtime folders. Codex uses direct project runtime
+  files plus a virtual package payload root.
 - Nodus already emits Claude dependency hooks and activation context inside
   generated Claude plugins.
-- Root Codex hooks remain in workspace `.codex/hooks.json`; dependency Codex
-  hooks and activation context are emitted inside generated Codex plugins.
+- Codex hooks and activation context are emitted through project
+  `.codex/hooks.json` and `.codex/hooks/nodus-hook-*.sh` files.
 - Codex now documents plugin-bundled hooks. They are opt-in with
   `[features].plugin_hooks = true`, and can be loaded from the default
   `hooks/hooks.json` path or from a `.codex-plugin/plugin.json` `hooks` entry.
@@ -65,11 +66,10 @@ changes.
   surfaces such as `Setup`, `PermissionRequest`, `PermissionDenied`,
   `PostToolUseFailure`, `PreCompact`, `PostCompact`, `WorktreeCreate`, and
   `WorktreeRemove`.
-- Nodus writes the generated Codex marketplace under
-  `.agents/plugins/marketplace.json` and registers the project root as a local
-  source from project `.codex/config.toml`. Project sync does not edit
-  `~/.codex/config.toml`; existing global Codex config entries are left
-  untouched.
+- Nodus does not write a Codex project marketplace for sync output. Current
+  Codex plugin activation is effectively user-home scoped, so Nodus keeps Codex
+  runtime files project-local and uses `.nodus/packages/<alias>/codex-plugin/`
+  only as a virtual package payload root.
 
 ## Goals
 
@@ -102,16 +102,11 @@ changes.
 
 ### Codex
 
-Nodus emits a local Codex marketplace at
-`.agents/plugins/marketplace.json`, dependency plugins under
-`.nodus/packages/<alias>/codex-plugin/`, and project-local marketplace/plugin
-registration in `.codex/config.toml`.
-
-Plugin metadata includes:
-
-- `.codex-plugin/plugin.json`
-- `skills` when a package has skills or synthetic command skills
-- `mcpServers` when a package has MCP servers
+Nodus emits Codex runtime files directly under `.codex/` and copies full
+dependency package payloads under `.nodus/packages/<alias>/codex-plugin/` as a
+virtual marketplace install root. It does not emit
+`.agents/plugins/marketplace.json` for project syncs and does not add
+`[marketplaces]` or `[plugins]` entries to `.codex/config.toml`.
 
 Codex commands do not have a native Nodus command artifact. They are bridged as
 synthetic skills named with the reserved `__cmd_` prefix.
@@ -121,14 +116,9 @@ Codex root hooks land in:
 - `.codex/hooks.json`
 - `.codex/hooks/nodus-hook-*.sh`
 
-Dependency hooks and activation context land in:
-
-- `.nodus/packages/<alias>/codex-plugin/hooks/hooks.json`
-- `.nodus/packages/<alias>/codex-plugin/hooks/scripts/nodus-hook-*.sh`
-
-Project `.codex/config.toml` is used for local marketplace registration, MCP
-config, and enabling `[features].hooks` and `[features].plugin_hooks` when hook
-output requires those Codex features.
+Dependency hooks and activation context also land in the project hook files.
+Project `.codex/config.toml` is used for MCP config and enabling
+`[features].hooks` when hook output requires it.
 
 ### Claude
 
@@ -228,18 +218,18 @@ they are dynamic names such as `mcp__filesystem__read_file`. Add one of:
 
 Prefer the smallest extension that does not pollute portable adapter semantics.
 
-### 3. Codex local marketplace registration
+### 3. Codex virtual marketplace registration
 
 Nodus should make Codex auto-discovery smoother without silent global writes.
 
 Chosen direction:
 
-- Register project plugins through `.codex/config.toml` entries pointing at the
-  generated `.nodus` marketplace.
+- Do not register project plugins through `.codex/config.toml`; current Codex
+  plugin activation is not project-local.
 - Leave existing global Codex config entries untouched.
-- Keep an explicit opt-out while provenance is incomplete.
-- Keep generated marketplace payloads under `.nodus` so Nodus-owned local
-  marketplace files share the same root as generated package plugins.
+- Keep package payloads under `.nodus/packages/<alias>/codex-plugin/` so Nodus
+  can inspect, prune, and repair package installs without leaking plugin
+  enablement across projects.
 
 Acceptance for this slice is explicit about the remaining cleanup tradeoff:
 
@@ -305,9 +295,9 @@ Likely additions:
   output-plan boolean calculated from emitted Codex plugin hook files.
 - Optional raw hook matcher support for dynamic MCP tool matcher names.
 - Claude plugin extra-file tracking for native passthrough components.
-- Local Codex marketplace ownership and digest coverage for
-  `.agents/plugins/marketplace.json` and project `.codex/config.toml`
-  registration.
+- Codex virtual payload ownership and digest coverage for
+  `.nodus/packages/<alias>/codex-plugin/` and project `.codex/config.toml`
+  feature/MCP settings.
 
 Any new public manifest fields must be documented in `examples/nodus.toml` and
 `docs/hooks.md`.

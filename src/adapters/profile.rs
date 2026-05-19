@@ -176,8 +176,12 @@ const CLAUDE_PROFILE: AdapterProfile = AdapterProfile {
 const CODEX_PROFILE: AdapterProfile = AdapterProfile {
     adapter: Adapter::Codex,
     runtime_root: ".codex",
-    preferred_surface: PreferredSurface::PackagePluginWorkspaceMarketplace,
-    virtual_plugin_surface: None,
+    preferred_surface: PreferredSurface::DirectManagedOutput,
+    virtual_plugin_surface: Some(VirtualPluginSurface {
+        install_root_name: "codex-plugin",
+        loader_dir: ".codex/plugins",
+        loader_file_prefix: "nodus-",
+    }),
     artifacts: CODEX_ARTIFACTS,
     hooks: HookSupport {
         events: CODEX_HOOK_EVENTS,
@@ -318,14 +322,14 @@ mod tests {
     }
 
     #[test]
-    fn native_plugin_adapters_prefer_package_plugin_surface() {
+    fn adapter_preferred_surfaces_match_runtime_boundaries() {
         assert_eq!(
             preferred_surface(Adapter::Claude),
             PreferredSurface::PackagePluginWorkspaceMarketplace
         );
         assert_eq!(
             preferred_surface(Adapter::Codex),
-            PreferredSurface::PackagePluginWorkspaceMarketplace
+            PreferredSurface::DirectManagedOutput
         );
 
         for adapter in [
@@ -338,6 +342,35 @@ mod tests {
                 preferred_surface(adapter),
                 PreferredSurface::DirectManagedOutput
             );
+        }
+    }
+
+    #[test]
+    fn virtual_plugin_surfaces_match_payload_roots() {
+        assert_eq!(
+            virtual_plugin_surface(Adapter::Codex),
+            Some(VirtualPluginSurface {
+                install_root_name: "codex-plugin",
+                loader_dir: ".codex/plugins",
+                loader_file_prefix: "nodus-",
+            })
+        );
+        assert_eq!(
+            virtual_plugin_surface(Adapter::OpenCode),
+            Some(VirtualPluginSurface {
+                install_root_name: "opencode-plugin",
+                loader_dir: ".opencode/plugins",
+                loader_file_prefix: "nodus-",
+            })
+        );
+
+        for adapter in [
+            Adapter::Agents,
+            Adapter::Claude,
+            Adapter::Copilot,
+            Adapter::Cursor,
+        ] {
+            assert_eq!(virtual_plugin_surface(adapter), None);
         }
     }
 

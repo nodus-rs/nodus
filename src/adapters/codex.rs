@@ -1,12 +1,13 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 
 use crate::adapters::{
     ArtifactKind, ManagedActivationHook, ManagedArtifactNames, ManagedFile, ManagedHookSpec,
-    hook_tool_matchers_for_adapter, managed_artifact_id, managed_artifact_path, managed_skill_root,
+    VirtualPluginBackend, hook_supported_by_adapter, hook_tool_matchers_for_adapter,
+    managed_artifact_id, managed_artifact_path, managed_skill_root,
 };
 use crate::agent_format::{
     default_codex_agent_description, emitted_codex_agent_toml,
@@ -14,13 +15,47 @@ use crate::agent_format::{
 };
 use crate::hashing::blake3_hex;
 use crate::lockfile::LockedPackage;
-use crate::manifest::{AgentEntry, FileEntry, SkillEntry};
+use crate::manifest::{AgentEntry, DependencyComponent, FileEntry, LoadedManifest, SkillEntry};
 use crate::manifest::{HookEvent, HookHandlerType, HookSessionSource};
 use crate::paths::strip_path_prefix;
 use crate::resolver::ResolvedPackage;
 
 pub const SYNTHETIC_COMMAND_SKILL_PREFIX: &str = "__cmd_";
 const SYNTHETIC_COMMAND_BODY_MARKER: &str = "<!-- nodus:command-body -->";
+
+pub(crate) static VIRTUAL_PLUGIN_BACKEND: CodexVirtualPluginBackend = CodexVirtualPluginBackend;
+
+pub(crate) struct CodexVirtualPluginBackend;
+
+impl VirtualPluginBackend for CodexVirtualPluginBackend {
+    fn adapter(&self) -> crate::adapters::Adapter {
+        crate::adapters::Adapter::Codex
+    }
+
+    fn entry_paths_from_manifest(&self, _manifest: &LoadedManifest) -> Result<Vec<PathBuf>> {
+        Ok(Vec::new())
+    }
+
+    fn manifest_has_installable_content(&self, manifest: &LoadedManifest) -> Result<bool> {
+        Ok(manifest_has_codex_plugin_content(manifest))
+    }
+
+    fn package_has_installable_content(&self, package: &ResolvedPackage) -> Result<bool> {
+        Ok(package_has_codex_plugin_content(package))
+    }
+
+    fn loader_path_for_alias(&self, package_alias: &str, _entry_path: &Path) -> PathBuf {
+        PathBuf::from(format!(".codex/plugins/nodus-{package_alias}.json"))
+    }
+
+    fn loader_contents(
+        &self,
+        _package: &ResolvedPackage,
+        _entry: &crate::adapters::VirtualPluginEntry,
+    ) -> Vec<u8> {
+        Vec::new()
+    }
+}
 
 pub fn skill_files(
     names: &ManagedArtifactNames,
@@ -39,6 +74,44 @@ pub fn skill_files(
         ),
         snapshot_root.join(&skill.path),
     )
+}
+
+fn manifest_has_codex_plugin_content(manifest: &LoadedManifest) -> bool {
+    !manifest.discovered.skills.is_empty()
+        || !manifest
+            .discovered
+            .selected_agents(crate::adapters::Adapter::Codex)
+            .is_empty()
+        || !manifest.discovered.commands.is_empty()
+        || !manifest.manifest.mcp_servers.is_empty()
+        || manifest.manifest.activation_enabled()
+        || manifest.manifest.hooks.iter().any(|hook| {
+            hook_targets_codex(hook)
+                && hook_supported_by_adapter(hook, crate::adapters::Adapter::Codex)
+        })
+}
+
+fn package_has_codex_plugin_content(package: &ResolvedPackage) -> bool {
+    let manifest = &package.manifest;
+    (package.selects_component(DependencyComponent::Skills)
+        && !manifest.discovered.skills.is_empty())
+        || (package.selects_component(DependencyComponent::Agents)
+            && !manifest
+                .discovered
+                .selected_agents(crate::adapters::Adapter::Codex)
+                .is_empty())
+        || (package.selects_component(DependencyComponent::Commands)
+            && !manifest.discovered.commands.is_empty())
+        || !manifest.manifest.mcp_servers.is_empty()
+        || manifest.manifest.activation_enabled()
+        || manifest.manifest.hooks.iter().any(|hook| {
+            hook_targets_codex(hook)
+                && hook_supported_by_adapter(hook, crate::adapters::Adapter::Codex)
+        })
+}
+
+fn hook_targets_codex(hook: &crate::manifest::HookSpec) -> bool {
+    hook.adapters.is_empty() || hook.adapters.contains(&crate::adapters::Adapter::Codex)
 }
 
 pub fn agent_file(

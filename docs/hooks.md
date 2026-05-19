@@ -84,18 +84,19 @@ but are not a replacement for command hooks that need to run arbitrary logic.
 Adapters without supported session-start context injection skip activation and
 emit a sync warning.
 
-## Codex local marketplace
+## Codex virtual marketplace
 
-When the Codex adapter is enabled, Nodus writes a repo-local marketplace at
-`.agents/plugins/marketplace.json`. Project sync registers that
-marketplace in `.codex/config.toml` with `source_type = "local"` and an absolute
-`source` path to the project root, then enables the generated
-`<plugin>@<marketplace>` keys in the same project config.
+When the Codex adapter is enabled, Nodus keeps runtime-visible files
+project-local under `.codex/`. Package skills, agents, synthetic command
+skills, hooks, MCP config, and feature flags are emitted directly into the
+current project.
 
-Generated marketplace entries point at package plugins under
-`.nodus/packages/<alias>/codex-plugin/`. Project sync does not edit
-`~/.codex/config.toml` or `$CODEX_HOME/config.toml`; existing global entries are
-left untouched.
+Full dependency package payloads are copied under
+`.nodus/packages/<alias>/codex-plugin/` as a virtual marketplace install root
+for Nodus lifecycle, inspection, and pruning. Project sync does not write
+`.agents/plugins/marketplace.json`, does not enable `<plugin>@<marketplace>`
+entries in project config, and does not edit `~/.codex/config.toml` or
+`$CODEX_HOME/config.toml`.
 
 ## Event catalog
 

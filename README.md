@@ -34,7 +34,7 @@ If a package publishes content such as `skills/`, `agents/`, `rules/`, or `comma
 - record what you asked for in `nodus.toml`
 - lock the exact resolved revision in `nodus.lock`
 - write managed files into adapter roots such as `.codex/`, `.claude/`, `.cursor/`, `.github/`, `.agents/`, or `.opencode/`
-- keep generated native plugin marketplaces under `.nodus/` while pointing Claude and Codex at that local marketplace root
+- keep generated Claude plugin marketplaces under `.nodus/` and virtual package payloads under `.nodus/packages/`
 - compose managed MCP server config for supported runtimes, including `.mcp.json`, `.codex/config.toml`, and `opencode.json`
 - prune stale generated files without touching unmanaged ones
 
@@ -126,17 +126,18 @@ Nodus's virtual plugin marketplace layer. OpenCode v1 uses
 `.opencode/plugins/`. `nodus info .` reports these as `virtual-plugins`, not
 native marketplace plugins.
 
-### Codex local marketplace
+### Codex virtual marketplace
 
-When the Codex adapter is enabled, Nodus writes a repo-local Codex marketplace at
-`.agents/plugins/marketplace.json`. Project sync also registers that
-marketplace in `.codex/config.toml` with a local source pointing at the absolute
-project root, and enables the generated `<plugin>@<marketplace>` keys there.
+When the Codex adapter is enabled, Nodus keeps runtime-visible files
+project-local under `.codex/`. Skills, agents, synthetic command skills, hooks,
+MCP config, and feature flags are emitted directly into the current project.
 
-Generated marketplace entries point at package plugins under
-`.nodus/packages/<alias>/codex-plugin/`. Project sync does not edit
-`~/.codex/config.toml` or `$CODEX_HOME/config.toml`; existing global Codex config
-entries are left untouched.
+Full dependency package payloads are copied under
+`.nodus/packages/<alias>/codex-plugin/` as a virtual marketplace install root
+for Nodus lifecycle, inspection, and pruning. Project sync does not write
+`.agents/plugins/marketplace.json`, does not enable `<plugin>@<marketplace>`
+entries in project config, and does not edit `~/.codex/config.toml` or
+`$CODEX_HOME/config.toml`.
 
 Packages can also declare activation context that is injected at session start
 for adapters with native support:

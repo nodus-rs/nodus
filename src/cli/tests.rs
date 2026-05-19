@@ -3821,12 +3821,10 @@ shared = { path = "vendor/shared" }
         temp.path().join(".codex/agents/dep-agent.toml").exists(),
         "dependency Codex agent should also land in .codex/agents/"
     );
-    let dep_plugin_agents = temp
-        .path()
-        .join(".nodus/packages/shared/codex-plugin/agents");
     assert!(
-        !dep_plugin_agents.exists(),
-        "Codex agents should not be written inside the plugin folder: {}",
-        dep_plugin_agents.display()
+        temp.path()
+            .join(".nodus/packages/shared/codex-plugin/agents/dep-agent.md")
+            .exists(),
+        "the Codex virtual package root should keep a raw dependency payload copy"
     );
 }

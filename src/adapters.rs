@@ -158,10 +158,9 @@ pub(crate) fn virtual_plugin_backend(
     adapter: Adapter,
 ) -> Option<&'static dyn VirtualPluginBackend> {
     match adapter {
+        Adapter::Codex => Some(&codex::VIRTUAL_PLUGIN_BACKEND),
         Adapter::OpenCode => Some(&opencode::VIRTUAL_PLUGIN_BACKEND),
-        Adapter::Agents | Adapter::Claude | Adapter::Codex | Adapter::Copilot | Adapter::Cursor => {
-            None
-        }
+        Adapter::Agents | Adapter::Claude | Adapter::Copilot | Adapter::Cursor => None,
     }
 }
 
@@ -585,8 +584,11 @@ pub(crate) fn native_marketplace_path(project_root: &Path, adapter: Adapter) -> 
     let root = native_marketplace_root(project_root);
     match adapter {
         Adapter::Claude => Some(root.join(".claude-plugin").join("marketplace.json")),
-        Adapter::Codex => Some(project_root.join(".agents/plugins/marketplace.json")),
-        Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => None,
+        Adapter::Agents
+        | Adapter::Codex
+        | Adapter::Copilot
+        | Adapter::Cursor
+        | Adapter::OpenCode => None,
     }
 }
 
