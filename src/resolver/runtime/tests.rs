@@ -113,7 +113,7 @@ fn write_codex_marketplace(path: &Path, contents: &str) {
 }
 
 fn generated_claude_marketplace_path(path: &Path) -> PathBuf {
-    path.join(".nodus-global/marketplaces/claude/marketplace.json")
+    path.join(".nodus-global/marketplaces/claude/.claude-plugin/marketplace.json")
 }
 
 fn generated_codex_marketplace_path(path: &Path) -> PathBuf {
@@ -1956,7 +1956,7 @@ fn sync_generates_claude_workspace_marketplace_files() {
     assert_not_owned(
         &lockfile,
         repo.path(),
-        ".nodus-global/marketplaces/claude/marketplace.json",
+        ".nodus-global/marketplaces/claude/.claude-plugin/marketplace.json",
     );
     assert_not_owned(
         &lockfile,
