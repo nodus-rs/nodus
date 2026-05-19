@@ -2342,9 +2342,7 @@ always_context = ["prompts/context.md"]
 
         assert!(output.contains("native-integration:"));
         assert!(output.contains("adapters = [claude, codex]"));
-        assert!(output.contains(
-            ".nodus-global/marketplaces/claude/.claude-plugin/marketplace.json (present"
-        ));
+        assert!(output.contains(".nodus-global/.claude-plugin/marketplace.json (present"));
         assert!(!output.contains(".agents/plugins/marketplace.json"));
         assert!(output.contains("claude shared-tools@"));
         assert!(output.contains(".nodus-global/packages/shared-tools+"));

@@ -969,9 +969,14 @@ pub(crate) fn global_nodus_home(_project_root: &Path) -> PathBuf {
 }
 
 pub(crate) fn native_marketplace_root(project_root: &Path, adapter: Adapter) -> PathBuf {
-    global_nodus_home(project_root)
-        .join("marketplaces")
-        .join(adapter.as_str())
+    let global_home = global_nodus_home(project_root);
+    match adapter {
+        Adapter::Claude => global_home,
+        Adapter::Codex => global_home.join("marketplaces").join(adapter.as_str()),
+        Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => {
+            global_home.join("marketplaces").join(adapter.as_str())
+        }
+    }
 }
 
 pub(crate) fn native_marketplace_source_path(project_root: &Path, adapter: Adapter) -> String {

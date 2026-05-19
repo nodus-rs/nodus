@@ -113,7 +113,7 @@ fn write_codex_marketplace(path: &Path, contents: &str) {
 }
 
 fn generated_claude_marketplace_path(path: &Path) -> PathBuf {
-    path.join(".nodus-global/marketplaces/claude/.claude-plugin/marketplace.json")
+    path.join(".nodus-global/.claude-plugin/marketplace.json")
 }
 
 fn generated_codex_marketplace_path(path: &Path) -> PathBuf {
@@ -1949,7 +1949,7 @@ fn sync_generates_claude_workspace_marketplace_files() {
     assert!(
         settings["extraKnownMarketplaces"][expected_marketplace_name]["source"]["path"]
             .as_str()
-            .is_some_and(|source| source.ends_with(".nodus-global/marketplaces/claude"))
+            .is_some_and(|source| source.ends_with(".nodus-global"))
     );
     assert!(settings.get("enabledPlugins").is_none());
 
@@ -1957,7 +1957,7 @@ fn sync_generates_claude_workspace_marketplace_files() {
     assert_not_owned(
         &lockfile,
         repo.path(),
-        ".nodus-global/marketplaces/claude/.claude-plugin/marketplace.json",
+        ".nodus-global/.claude-plugin/marketplace.json",
     );
     assert_not_owned(
         &lockfile,
@@ -2117,7 +2117,7 @@ version = "1.2.3"
     let marketplace_source = marketplace["plugins"][0]["source"].as_str().unwrap();
     assert!(marketplace_source.ends_with("/claude-plugin"));
     assert!(
-        marketplace_source.starts_with("../../packages/"),
+        marketplace_source.starts_with("./packages/"),
         "Claude global marketplace should point at shared payloads with a relative source: {marketplace_source}"
     );
     let plugin_key = format!(
@@ -2132,7 +2132,7 @@ version = "1.2.3"
     assert!(
         settings["extraKnownMarketplaces"][marketplace_name]["source"]["path"]
             .as_str()
-            .is_some_and(|source| source.ends_with(".nodus-global/marketplaces/claude"))
+            .is_some_and(|source| source.ends_with(".nodus-global"))
     );
     assert_eq!(
         settings["enabledPlugins"]
@@ -2206,7 +2206,7 @@ shared = { path = "vendor/shared" }
     let marketplace_source = marketplace["plugins"][0]["source"].as_str().unwrap();
     assert!(marketplace_source.ends_with("/claude-plugin"));
     assert!(
-        marketplace_source.starts_with("../../packages/"),
+        marketplace_source.starts_with("./packages/"),
         "Claude global marketplace should point at shared payloads with a relative source: {marketplace_source}"
     );
 }
