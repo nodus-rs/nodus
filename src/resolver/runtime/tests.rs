@@ -2933,6 +2933,47 @@ fn add_dependency_accepts_repo_with_symlinked_submodule_skills() {
 }
 
 #[test]
+fn sync_uses_snapshot_roots_when_skill_directory_is_placeholder_file() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[dependencies]
+shared = { path = "vendor/package" }
+"#,
+    );
+    let package_root = temp.path().join("vendor/package");
+    write_skill(&package_root.join("vendor/shared/skills/review"), "Review");
+    write_file(
+        &package_root.join("skills/review"),
+        "../vendor/shared/skills/review\n",
+    );
+
+    sync_all(temp.path(), cache.path());
+
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    let package = lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .unwrap();
+    assert_eq!(package.skills, vec!["review"]);
+
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let shared = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .unwrap();
+    assert!(
+        global_native_plugin_root(temp.path(), shared, Adapter::Claude)
+            .join("skills/review/SKILL.md")
+            .exists()
+    );
+}
+
+#[test]
 fn add_dependency_accepts_repo_with_nested_skill_directories() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();
@@ -11409,7 +11450,10 @@ shared = { path = "vendor/shared" }
     assert_eq!(check.status, DoctorStatus::Blocked);
     assert!(check.findings.iter().any(|finding| {
         finding.kind == DoctorFindingKind::SafeAutoFix
-            && finding.message.contains(".nodus-global/packages/")
+            && finding
+                .message
+                .replace('\\', "/")
+                .contains(".nodus-global/packages/")
     }));
     assert!(!plugin_root.exists());
 

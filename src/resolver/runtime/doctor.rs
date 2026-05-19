@@ -113,10 +113,9 @@ struct DoctorInspection {
 struct LockfileInspection<'a> {
     cwd: &'a Path,
     resolution: &'a Resolution,
-    selected_adapters: Adapters,
-    codex_native_plugins_auto_enabled: bool,
     lockfile_path: &'a Path,
     existing_lockfile: Option<&'a Lockfile>,
+    expected_lockfile: &'a Lockfile,
     owned_paths: &'a OwnedSet,
     planned_files: &'a [ManagedFile],
     external_files: &'a [ManagedFile],
@@ -216,11 +215,6 @@ fn inspect_doctor_state(
     let mut owned_paths = load_owned_paths(cwd, existing_lockfile.as_ref())?;
     let mut invalid_owned_outputs = Vec::new();
     let codex_native_plugins_auto_enabled = selected_adapters.contains(Adapter::Codex);
-    let desired_paths = resolution.managed_paths_with_options(
-        cwd,
-        selected_adapters,
-        codex_native_plugins_auto_enabled,
-    )?;
     let output_plan = match build_output_plan_with_options(
         cwd,
         &package_roots,
@@ -249,6 +243,18 @@ fn inspect_doctor_state(
             )?
         }
     };
+    let ownership_output_plan = build_output_plan_with_options(
+        cwd,
+        &package_roots,
+        selected_adapters,
+        None,
+        OutputPlanOptions {
+            merge_existing_mcp: false,
+            codex_native_plugins_auto_enabled,
+        },
+    )?;
+    let desired_paths = resolution.managed_paths_from_output_plan(cwd, &ownership_output_plan)?;
+    let expected_lockfile = resolution.to_lockfile_from_output_plan(cwd, &ownership_output_plan)?;
     let external_files = output_plan.external_files;
     let planned_files = output_plan.files;
     let managed_file_count = planned_files.len();
@@ -273,10 +279,9 @@ fn inspect_doctor_state(
     let lockfile_inspection = LockfileInspection {
         cwd,
         resolution: &resolution,
-        selected_adapters,
-        codex_native_plugins_auto_enabled,
         lockfile_path: &lockfile_path,
         existing_lockfile: existing_lockfile.as_ref(),
+        expected_lockfile: &expected_lockfile,
         owned_paths: &owned_paths,
         planned_files: &planned_files,
         external_files: &external_files,
@@ -291,11 +296,7 @@ fn inspect_doctor_state(
         original_root: root.clone(),
         working_root: root,
         lockfile_path,
-        expected_lockfile: resolution.to_lockfile_with_options(
-            selected_adapters,
-            cwd,
-            codex_native_plugins_auto_enabled,
-        )?,
+        expected_lockfile,
         runtime_root: cwd.to_path_buf(),
         owned_paths,
         desired_paths,
@@ -324,12 +325,7 @@ impl LockfileInspection<'_> {
         let mut has_missing_managed_files = false;
 
         if let Some(existing_lockfile) = self.existing_lockfile {
-            let expected_lockfile = self.resolution.to_lockfile_with_options(
-                self.selected_adapters,
-                self.cwd,
-                self.codex_native_plugins_auto_enabled,
-            )?;
-            if *existing_lockfile != expected_lockfile {
+            if existing_lockfile != self.expected_lockfile {
                 findings.push(DoctorFinding {
                     kind: DoctorFindingKind::SafeAutoFix,
                     message: lockfile_out_of_date_message(),

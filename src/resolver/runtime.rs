@@ -1022,18 +1022,22 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
                 codex_native_plugins_auto_enabled,
             },
         )?;
+        let ownership_output_plan = build_output_plan_with_options(
+            &install_paths.runtime_root,
+            &package_snapshots,
+            selected_adapters,
+            None,
+            OutputPlanOptions {
+                merge_existing_mcp: false,
+                codex_native_plugins_auto_enabled,
+            },
+        )?;
         let planned_files = output_plan.files.clone();
         let external_files = output_plan.external_files.clone();
-        let desired_paths = resolution.managed_paths_with_options(
-            &install_paths.runtime_root,
-            selected_adapters,
-            codex_native_plugins_auto_enabled,
-        )?;
-        let lockfile = resolution.to_lockfile_with_options(
-            selected_adapters,
-            &install_paths.runtime_root,
-            codex_native_plugins_auto_enabled,
-        )?;
+        let desired_paths = resolution
+            .managed_paths_from_output_plan(&install_paths.runtime_root, &ownership_output_plan)?;
+        let lockfile = resolution
+            .to_lockfile_from_output_plan(&install_paths.runtime_root, &ownership_output_plan)?;
         let mut owned_paths =
             load_owned_paths(&install_paths.runtime_root, existing_lockfile.as_ref())?;
         if existing_lockfile.is_none() {
@@ -1340,6 +1344,14 @@ impl Resolution {
             },
         )?;
 
+        self.to_lockfile_from_output_plan(runtime_root, &output_plan)
+    }
+
+    fn to_lockfile_from_output_plan(
+        &self,
+        runtime_root: &Path,
+        output_plan: &OutputPlan,
+    ) -> Result<Lockfile> {
         // BTreeMap (not HashMap) so attribute_file_to_package iterates aliases
         // in deterministic alphabetical order. With a HashMap, two packages
         // with overlapping ownership claims would attribute differently across
@@ -1353,7 +1365,7 @@ impl Resolution {
             .collect();
 
         let per_package_install_digests =
-            install_digests_by_package(runtime_root, &output_plan, &per_package_owned, &[])?;
+            install_digests_by_package(runtime_root, output_plan, &per_package_owned, &[])?;
 
         let mut packages = Vec::new();
 
@@ -1497,17 +1509,36 @@ impl Resolution {
         selected_adapters: Adapters,
         codex_native_plugins_auto_enabled: bool,
     ) -> Result<HashSet<PathBuf>> {
+        let package_roots = self
+            .packages
+            .iter()
+            .map(|package| (package.clone(), package.root.clone()))
+            .collect::<Vec<_>>();
+        let output_plan = build_output_plan_with_options(
+            runtime_root,
+            &package_roots,
+            selected_adapters,
+            None,
+            OutputPlanOptions {
+                merge_existing_mcp: false,
+                codex_native_plugins_auto_enabled,
+            },
+        )?;
+        self.managed_paths_from_output_plan(runtime_root, &output_plan)
+    }
+
+    fn managed_paths_from_output_plan(
+        &self,
+        runtime_root: &Path,
+        output_plan: &OutputPlan,
+    ) -> Result<HashSet<PathBuf>> {
         // v10 lockfiles no longer populate `legacy_managed_files`, so
         // `Lockfile::managed_paths` returns an empty set on v10 input. Derive
         // the owned root paths directly from the per-package ownership view:
         // subtree roots, exact files, prefix dirs. Doctor and sync consume
         // this list to decide which on-disk paths they may inspect / write /
         // adopt.
-        let lockfile = self.to_lockfile_with_options(
-            selected_adapters,
-            runtime_root,
-            codex_native_plugins_auto_enabled,
-        )?;
+        let lockfile = self.to_lockfile_from_output_plan(runtime_root, output_plan)?;
         let owned = lockfile.owned_set(runtime_root)?;
         let mut paths: HashSet<PathBuf> = owned.exact;
         paths.extend(owned.subtrees.iter().cloned());
@@ -1524,21 +1555,6 @@ impl Resolution {
         // recording any direct child of a subtree that the output plan plans
         // to populate, so the on-disk adoption logic keeps working through
         // the schema bump.
-        let package_roots = self
-            .packages
-            .iter()
-            .map(|package| (package.clone(), package.root.clone()))
-            .collect::<Vec<_>>();
-        let output_plan = build_output_plan_with_options(
-            runtime_root,
-            &package_roots,
-            selected_adapters,
-            None,
-            OutputPlanOptions {
-                merge_existing_mcp: false,
-                codex_native_plugins_auto_enabled,
-            },
-        )?;
         for owned_subtree in &owned.subtrees {
             for file in &output_plan.files {
                 let Some(rest) = file.path.strip_prefix(owned_subtree).ok() else {
