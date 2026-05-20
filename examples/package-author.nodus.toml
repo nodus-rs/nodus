@@ -7,8 +7,18 @@
 # Typical source layout under the package root:
 # - `skills/<id>/SKILL.md`
 # - `agents/<id>.md`
+# - `agents/<id>.codex.toml` for optional Codex-specific metadata
 # - `rules/<id>.*`
 # - `commands/<id>.*`
+#
+# Recommended agent shape:
+# - keep shared instructions in `agents/security.md`
+# - add `agents/security.codex.toml` only for Codex metadata such as `name`,
+#   `description`, `model`, `model_reasoning_effort`, or `sandbox_mode`
+# - omit `developer_instructions` from `agents/security.codex.toml` when the
+#   paired Markdown file should provide the runtime Codex instructions
+# - if `developer_instructions` is present in the Codex TOML, that TOML remains
+#   the complete Codex source of truth
 
 # Optional manifest version string.
 api_version = "1"

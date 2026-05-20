@@ -190,6 +190,16 @@ layer. Dependency Codex hooks and activation context are emitted inside
 generated Codex plugins and enable `features.plugin_hooks` in
 `.codex/config.toml` when needed.
 
+## Package Agent Sources
+
+Package authors can keep shared agent instructions in `agents/<id>.md`. When
+Codex needs metadata of its own, add `agents/<id>.codex.toml` with fields such
+as `name`, `description`, `model`, `model_reasoning_effort`, or `sandbox_mode`.
+If that TOML omits `developer_instructions`, Nodus generates the runtime
+`.codex/agents/<id>.toml` from the Markdown body after any YAML frontmatter.
+Codex TOML files that include `developer_instructions` are still treated as the
+complete Codex source of truth.
+
 ## CLI Help
 
 `nodus --help` is the main command guide.
