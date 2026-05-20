@@ -1063,7 +1063,7 @@ pub(crate) fn native_marketplace_path(project_root: &Path, adapter: Adapter) -> 
     let root = native_marketplace_root(project_root, adapter);
     match adapter {
         Adapter::Claude => Some(root.join(".claude-plugin/marketplace.json")),
-        Adapter::Codex => Some(root.join("marketplace.json")),
+        Adapter::Codex => Some(root.join(".agents/plugins/marketplace.json")),
         Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => None,
     }
 }
@@ -1080,19 +1080,25 @@ pub(crate) fn native_package_plugin_root(
         return project_root.to_path_buf();
     }
 
-    global_nodus_home(project_root)
-        .join("packages")
-        .join(package_identities.managed_package_id(package))
-        .join(match adapter {
-            Adapter::Claude => "claude-plugin",
-            Adapter::Codex => "codex-plugin",
-            Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => {
-                unreachable!("only native plugin adapters have package plugin roots")
-            }
-        })
+    match adapter {
+        Adapter::Claude => global_nodus_home(project_root)
+            .join("packages")
+            .join(package_identities.managed_package_id(package))
+            .join("claude-plugin"),
+        Adapter::Codex => native_marketplace_root(project_root, adapter)
+            .join("plugins")
+            .join(package_identities.managed_package_id(package)),
+        Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => {
+            unreachable!("only native plugin adapters have package plugin roots")
+        }
+    }
 }
 
 fn project_root_is_native_package_plugin_root(project_root: &Path, adapter: Adapter) -> bool {
+    if adapter == Adapter::Codex && project_root_is_codex_marketplace_plugin_root(project_root) {
+        return true;
+    }
+
     let Some(plugin_dir) = project_root.file_name().and_then(|value| value.to_str()) else {
         return false;
     };
@@ -1106,6 +1112,27 @@ fn project_root_is_native_package_plugin_root(project_root: &Path, adapter: Adap
     }
 
     project_root.parent().is_some()
+}
+
+fn project_root_is_codex_marketplace_plugin_root(project_root: &Path) -> bool {
+    let Some(plugins_dir) = project_root.parent() else {
+        return false;
+    };
+    if plugins_dir.file_name().and_then(|value| value.to_str()) != Some("plugins") {
+        return false;
+    }
+    let Some(codex_marketplace_dir) = plugins_dir.parent() else {
+        return false;
+    };
+    codex_marketplace_dir
+        .file_name()
+        .and_then(|value| value.to_str())
+        == Some("codex")
+        && codex_marketplace_dir
+            .parent()
+            .and_then(|path| path.file_name())
+            .and_then(|value| value.to_str())
+            == Some("marketplaces")
 }
 
 pub(crate) fn managed_runtime_root(

@@ -1027,6 +1027,7 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
             OutputPlanOptions {
                 merge_existing_mcp: true,
                 codex_native_plugins_auto_enabled,
+                codex_user_config: install_paths.codex_user_config.clone(),
             },
         )?;
         let ownership_output_plan = build_output_plan_with_options(
@@ -1037,6 +1038,7 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
             OutputPlanOptions {
                 merge_existing_mcp: false,
                 codex_native_plugins_auto_enabled,
+                codex_user_config: install_paths.codex_user_config.clone(),
             },
         )?;
         let planned_files = output_plan.files.clone();
@@ -1348,6 +1350,7 @@ impl Resolution {
             OutputPlanOptions {
                 merge_existing_mcp: false,
                 codex_native_plugins_auto_enabled,
+                codex_user_config: None,
             },
         )?;
 
@@ -1529,6 +1532,7 @@ impl Resolution {
             OutputPlanOptions {
                 merge_existing_mcp: false,
                 codex_native_plugins_auto_enabled,
+                codex_user_config: None,
             },
         )?;
         self.managed_paths_from_output_plan(runtime_root, &output_plan)

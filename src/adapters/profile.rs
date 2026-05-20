@@ -176,7 +176,7 @@ const CLAUDE_PROFILE: AdapterProfile = AdapterProfile {
 const CODEX_PROFILE: AdapterProfile = AdapterProfile {
     adapter: Adapter::Codex,
     runtime_root: ".codex",
-    preferred_surface: PreferredSurface::DirectManagedOutput,
+    preferred_surface: PreferredSurface::PackagePluginWorkspaceMarketplace,
     virtual_plugin_surface: Some(VirtualPluginSurface {
         install_root_name: "codex-plugin",
         loader_dir: ".codex/plugins",
@@ -329,7 +329,7 @@ mod tests {
         );
         assert_eq!(
             preferred_surface(Adapter::Codex),
-            PreferredSurface::DirectManagedOutput
+            PreferredSurface::PackagePluginWorkspaceMarketplace
         );
 
         for adapter in [

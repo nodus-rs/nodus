@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -138,10 +139,13 @@ struct NativeHookLocation {
 #[derive(Debug, Clone, Serialize)]
 struct CodexNativeState {
     project_config: String,
+    user_config: String,
+    marketplace: String,
     hooks: Option<bool>,
     plugin_hooks: Option<bool>,
     plugin_hooks_required: bool,
     registration: String,
+    enabled_plugins: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -990,7 +994,11 @@ fn build_native_integration_info(
             adapters.insert(marketplace.adapter);
         }
     }
-    if codex.hooks.is_some() || codex.plugin_hooks.is_some() {
+    if codex.hooks.is_some()
+        || codex.plugin_hooks.is_some()
+        || !codex.enabled_plugins.is_empty()
+        || codex.registration == "global-snapshot-marketplace"
+    {
         adapters.insert(Adapter::Codex);
     }
     if !claude.extra_known_marketplaces.is_empty() || !claude.enabled_plugins.is_empty() {
@@ -1003,6 +1011,8 @@ fn build_native_integration_info(
         || !hooks.is_empty()
         || codex.hooks.is_some()
         || codex.plugin_hooks.is_some()
+        || !codex.enabled_plugins.is_empty()
+        || codex.registration == "global-snapshot-marketplace"
         || !claude.extra_known_marketplaces.is_empty()
         || !claude.enabled_plugins.is_empty();
     has_state.then(|| PackageNativeIntegration {
@@ -1116,7 +1126,9 @@ fn native_plugin_source_root(
     } else {
         match adapter {
             Adapter::Claude => Some(project_root.join(".nodus").join(path)),
-            Adapter::Codex => Some(project_root.join(path)),
+            Adapter::Codex => {
+                Some(crate::adapters::native_marketplace_root(project_root, adapter).join(path))
+            }
             Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => None,
         }
     }
@@ -1164,6 +1176,10 @@ fn inspect_codex_native_state(
     warnings: &mut Vec<String>,
 ) -> CodexNativeState {
     let path = project_root.join(".codex").join("config.toml");
+    let user_config_path = codex_user_config_path(project_root);
+    let marketplace_path = crate::adapters::native_marketplace_root(project_root, Adapter::Codex);
+    let (marketplace_registered, mut enabled_plugins) =
+        inspect_codex_user_config(&user_config_path, warnings);
     let (hooks, plugin_hooks) = if path.exists() {
         match fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))
@@ -1191,6 +1207,13 @@ fn inspect_codex_native_state(
     } else {
         (None, None)
     };
+    enabled_plugins.sort();
+
+    let registration = if marketplace_registered || !enabled_plugins.is_empty() {
+        "global-snapshot-marketplace"
+    } else {
+        "project-runtime"
+    };
 
     CodexNativeState {
         project_config: if path.exists() {
@@ -1198,11 +1221,103 @@ fn inspect_codex_native_state(
         } else {
             format!("{} (missing)", display_project_path(project_root, &path))
         },
+        user_config: if user_config_path.exists() {
+            format!(
+                "{} (present)",
+                display_project_path(project_root, &user_config_path)
+            )
+        } else {
+            format!(
+                "{} (missing)",
+                display_project_path(project_root, &user_config_path)
+            )
+        },
+        marketplace: display_project_path(project_root, &marketplace_path),
         hooks,
         plugin_hooks,
         plugin_hooks_required,
-        registration: "project-runtime".into(),
+        registration: registration.into(),
+        enabled_plugins,
     }
+}
+
+fn inspect_codex_user_config(path: &Path, warnings: &mut Vec<String>) -> (bool, Vec<String>) {
+    if !path.exists() {
+        return (false, Vec::new());
+    }
+    let document = match fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))
+        .and_then(|contents| {
+            contents
+                .parse::<toml_edit::DocumentMut>()
+                .with_context(|| format!("failed to parse TOML in {}", path.display()))
+        }) {
+        Ok(document) => document,
+        Err(error) => {
+            warnings.push(error.to_string());
+            return (false, Vec::new());
+        }
+    };
+    let marketplace_registered = document
+        .get("marketplaces")
+        .and_then(toml_edit::Item::as_table)
+        .is_some_and(|marketplaces| {
+            marketplaces.contains_key(crate::adapters::MANAGED_MARKETPLACE_NAME)
+        });
+    let enabled_plugins = document
+        .get("plugins")
+        .and_then(toml_edit::Item::as_table)
+        .map(|plugins| {
+            let suffix = format!("@{}", crate::adapters::MANAGED_MARKETPLACE_NAME);
+            plugins
+                .iter()
+                .filter_map(|(key, value)| {
+                    if key.ends_with(&suffix)
+                        && value
+                            .get("enabled")
+                            .and_then(toml_edit::Item::as_bool)
+                            .unwrap_or(false)
+                    {
+                        Some(key.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    (marketplace_registered, enabled_plugins)
+}
+
+fn codex_user_config_path(project_root: &Path) -> PathBuf {
+    if let Some(codex_home) = env::var_os("CODEX_HOME") {
+        return PathBuf::from(codex_home).join("config.toml");
+    }
+
+    #[cfg(test)]
+    {
+        project_root.join(".codex-user/config.toml")
+    }
+
+    #[cfg(all(not(test), target_os = "windows"))]
+    {
+        if let Some(profile) = env::var_os("USERPROFILE") {
+            return PathBuf::from(profile).join(".codex/config.toml");
+        }
+        if let (Some(drive), Some(path)) = (env::var_os("HOMEDRIVE"), env::var_os("HOMEPATH")) {
+            return PathBuf::from(drive).join(path).join(".codex/config.toml");
+        }
+    }
+
+    #[cfg(all(not(test), not(target_os = "windows")))]
+    {
+        if let Some(home) = env::var_os("HOME") {
+            return PathBuf::from(home).join(".codex/config.toml");
+        }
+    }
+
+    #[cfg(not(test))]
+    project_root.join(".codex-user/config.toml")
 }
 
 fn inspect_claude_native_state(
@@ -1736,12 +1851,15 @@ fn render_native_integration_lines(
     }
 
     lines.push(format!(
-        "  codex = project-config:{} hooks={} plugin_hooks={} plugin_hooks_required={} registration={}",
+        "  codex = project-config:{} user-config:{} marketplace:{} hooks={} plugin_hooks={} plugin_hooks_required={} registration={} enabled=[{}]",
         native.codex.project_config,
+        native.codex.user_config,
+        native.codex.marketplace,
         render_optional_bool(native.codex.hooks),
         render_optional_bool(native.codex.plugin_hooks),
         native.codex.plugin_hooks_required,
-        native.codex.registration
+        native.codex.registration,
+        native.codex.enabled_plugins.join(", ")
     ));
     lines.push(format!(
         "  claude = settings:{} marketplaces=[{}] enabled=[{}]",
@@ -2343,20 +2461,24 @@ always_context = ["prompts/context.md"]
         assert!(output.contains("native-integration:"));
         assert!(output.contains("adapters = [claude, codex]"));
         assert!(output.contains(".nodus-global/.claude-plugin/marketplace.json (present"));
-        assert!(!output.contains(".agents/plugins/marketplace.json"));
+        assert!(
+            output.contains(".nodus-global/marketplaces/codex/.agents/plugins/marketplace.json")
+        );
         assert!(output.contains("claude shared-tools@"));
-        assert!(output.contains(".nodus-global/packages/shared-tools+"));
-        assert!(output.contains("plugin_hooks=unknown plugin_hooks_required=false"));
-        assert!(output.contains("registration=project-runtime"));
+        assert!(output.contains(".nodus-global/marketplaces/codex/plugins/shared-tools+"));
+        assert!(output.contains("plugin_hooks=true plugin_hooks_required=true"));
+        assert!(output.contains("registration=global-snapshot-marketplace"));
+        assert!(output.contains("enabled=[shared-tools@nodus]"));
 
         let info =
             describe_package_json_in_dir(project.path(), cache.path(), ".", None, None).unwrap();
         let native = info.native_integration.unwrap();
         assert_eq!(native.adapters, vec![Adapter::Claude, Adapter::Codex]);
-        assert_eq!(native.codex.hooks, Some(true));
-        assert_eq!(native.codex.plugin_hooks, None);
-        assert!(!native.codex.plugin_hooks_required);
-        assert_eq!(native.codex.registration, "project-runtime");
+        assert_eq!(native.codex.hooks, None);
+        assert_eq!(native.codex.plugin_hooks, Some(true));
+        assert!(native.codex.plugin_hooks_required);
+        assert_eq!(native.codex.registration, "global-snapshot-marketplace");
+        assert_eq!(native.codex.enabled_plugins, vec!["shared-tools@nodus"]);
         assert!(
             native
                 .claude

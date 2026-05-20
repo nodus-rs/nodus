@@ -54,10 +54,11 @@ pub(crate) struct PackageOwnedPaths {
     pub files: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct OutputPlanOptions {
     pub merge_existing_mcp: bool,
     pub codex_native_plugins_auto_enabled: bool,
+    pub codex_user_config: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -224,6 +225,7 @@ pub(crate) fn build_output_plan(
         OutputPlanOptions {
             merge_existing_mcp,
             codex_native_plugins_auto_enabled: false,
+            codex_user_config: None,
         },
     )
 }
@@ -268,7 +270,6 @@ pub(crate) fn build_output_plan_with_options(
             package.manifest.manifest.activation_enabled()
                 && !codex_plugin_hook_packages.contains(&package.alias)
         }));
-    let emit_codex_hooks = emit_codex_workspace_hooks || emit_codex_plugin_hooks;
     warn_if_activation_unsupported(&mut plan.warnings, selected_adapters, has_activation);
 
     for (package, snapshot_root) in packages {
@@ -749,24 +750,31 @@ pub(crate) fn build_output_plan_with_options(
             .insert(display_relative(project_root, &file.path));
         merge_file(&mut plan.files, file)?;
     }
-    if selected_adapters.contains(Adapter::Codex)
-        && let Some(file) = codex_mcp_config_file(
-            project_root,
-            packages,
-            selected_adapters,
-            options.codex_native_plugins_auto_enabled,
-            existing_lockfile,
-            options.merge_existing_mcp,
-            CodexFeatureRequirements {
-                hooks: emit_codex_hooks,
-                plugin_hooks: emit_codex_plugin_hooks,
-            },
-        )?
-    {
+    if let Some(file) = codex_mcp_config_file(
+        project_root,
+        packages,
+        selected_adapters,
+        options.codex_native_plugins_auto_enabled,
+        existing_lockfile,
+        options.merge_existing_mcp,
+        CodexFeatureRequirements {
+            hooks: emit_codex_workspace_hooks,
+            plugin_hooks: emit_codex_plugin_hooks,
+        },
+    )? {
         track_owned_file(&mut plan, project_root, &workspace_alias, &file.path);
         plan.managed_files
             .insert(display_relative(project_root, &file.path));
         merge_file(&mut plan.files, file)?;
+    }
+    if let Some(file) = codex_user_config_file(
+        project_root,
+        packages,
+        selected_adapters,
+        options.merge_existing_mcp,
+        options.codex_user_config.as_deref(),
+    )? {
+        merge_file(&mut plan.external_files, file)?;
     }
     if selected_adapters.contains(Adapter::OpenCode)
         && let Some(file) = opencode_mcp_config_file(
@@ -1219,16 +1227,6 @@ fn native_marketplace_plugin_entry(
     Some(JsonValue::Object(entry))
 }
 
-fn native_marketplace_names(
-    project_root: &Path,
-    packages: &[(ResolvedPackage, PathBuf)],
-) -> (String, String) {
-    (
-        MANAGED_MARKETPLACE_NAME.to_string(),
-        native_marketplace_owner_name(project_root, packages),
-    )
-}
-
 fn native_marketplace_owner_name(
     project_root: &Path,
     packages: &[(ResolvedPackage, PathBuf)],
@@ -1505,7 +1503,8 @@ fn native_package_plugin_has_content(adapter: Adapter, package: &ResolvedPackage
     (package.selects_component(DependencyComponent::Skills)
         && artifact_supported(adapter, ArtifactKind::Skill)
         && !manifest.discovered.skills.is_empty())
-        || (package.selects_component(DependencyComponent::Agents)
+        || (adapter != Adapter::Codex
+            && package.selects_component(DependencyComponent::Agents)
             && artifact_supported(adapter, ArtifactKind::Agent)
             && !manifest.discovered.selected_agents(adapter).is_empty())
         || (package.selects_component(DependencyComponent::Commands)
@@ -2272,30 +2271,36 @@ fn codex_mcp_config_file(
         previously_managed_mcp_servers(existing_lockfile, ".codex/config.toml");
     let mut desired_servers = BTreeMap::new();
     let mut has_direct_mcp_package = false;
-    for (package, _) in packages {
-        let has_direct_mcp_signal = if codex_native_plugins_auto_enabled {
-            package_has_mcp_servers(package)
-        } else {
-            package_selects_mcp(package)
-        };
-        if !has_direct_mcp_signal {
-            continue;
-        }
-        if codex_native_plugins_auto_enabled
-            && mcp_servers_are_emitted_by_native_plugin(Adapter::Codex, package, selected_adapters)
-        {
-            continue;
-        }
-        has_direct_mcp_package = true;
-
-        for (server_id, server) in &package.manifest.manifest.mcp_servers {
-            if !server.enabled {
+    if selected_adapters.contains(Adapter::Codex) {
+        for (package, _) in packages {
+            let has_direct_mcp_signal = if codex_native_plugins_auto_enabled {
+                package_has_mcp_servers(package)
+            } else {
+                package_selects_mcp(package)
+            };
+            if !has_direct_mcp_signal {
                 continue;
             }
-            desired_servers.insert(
-                managed_mcp_server_name(&package.alias, server_id),
-                emitted_codex_mcp_server(server),
-            );
+            if codex_native_plugins_auto_enabled
+                && mcp_servers_are_emitted_by_native_plugin(
+                    Adapter::Codex,
+                    package,
+                    selected_adapters,
+                )
+            {
+                continue;
+            }
+            has_direct_mcp_package = true;
+
+            for (server_id, server) in &package.manifest.manifest.mcp_servers {
+                if !server.enabled {
+                    continue;
+                }
+                desired_servers.insert(
+                    managed_mcp_server_name(&package.alias, server_id),
+                    emitted_codex_mcp_server(server),
+                );
+            }
         }
     }
 
@@ -2315,16 +2320,12 @@ fn codex_mcp_config_file(
         desired_servers.insert("nodus".to_string(), TomlValue::Table(table));
     }
 
-    let managed_marketplace =
-        codex_managed_marketplace_name(project_root, packages, selected_adapters);
+    let managed_marketplace = Some(MANAGED_MARKETPLACE_NAME.to_string());
     let legacy_marketplace = legacy_project_marketplace_name(project_root, packages);
-    let plugin_registration =
-        codex_plugin_marketplace_registration(project_root, packages, selected_adapters)?;
     let needs_config_for_outputs = !desired_servers.is_empty()
         || !previously_managed.is_empty()
         || feature_requirements.hooks
-        || feature_requirements.plugin_hooks
-        || plugin_registration.is_some();
+        || feature_requirements.plugin_hooks;
     let needs_marketplace_cleanup = if needs_config_for_outputs {
         false
     } else {
@@ -2348,16 +2349,6 @@ fn codex_mcp_config_file(
     }
     if managed_marketplace.as_deref() != Some(legacy_marketplace.as_str()) {
         remove_codex_marketplace_config(&mut config, &legacy_marketplace);
-    }
-    if let Some(registration) = plugin_registration {
-        let source = absolute_codex_marketplace_source(project_root)?;
-        config.marketplaces.insert(
-            registration.marketplace.clone(),
-            codex_local_marketplace_config(source),
-        );
-        for plugin in registration.enabled_plugins {
-            config.plugins.insert(plugin, codex_enabled_plugin_config());
-        }
     }
 
     config.mcp_servers.retain(|server_name, _| {
@@ -2385,6 +2376,7 @@ fn codex_mcp_config_file(
         && config.marketplaces.is_empty()
         && config.plugins.is_empty()
         && config.extra.is_empty()
+        && !needs_marketplace_cleanup
     {
         return Ok(None);
     }
@@ -2396,14 +2388,68 @@ fn codex_mcp_config_file(
     Ok(Some(ManagedFile { path, contents }))
 }
 
-fn codex_managed_marketplace_name(
+fn codex_user_config_file(
     project_root: &Path,
     packages: &[(ResolvedPackage, PathBuf)],
     selected_adapters: Adapters,
-) -> Option<String> {
-    selected_adapters
-        .contains(Adapter::Codex)
-        .then(|| native_marketplace_names(project_root, packages).0)
+    merge_existing_mcp: bool,
+    codex_user_config: Option<&Path>,
+) -> Result<Option<ManagedFile>> {
+    let path = codex_user_config
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| default_codex_user_config_path(project_root));
+    let plugin_registration =
+        codex_plugin_marketplace_registration(project_root, packages, selected_adapters)?;
+    let legacy_marketplace = legacy_project_marketplace_name(project_root, packages);
+    let needs_registration = plugin_registration.is_some();
+    let needs_cleanup = if needs_registration {
+        false
+    } else {
+        codex_project_config_has_marketplace_entries(&path, Some(MANAGED_MARKETPLACE_NAME))?
+            || (legacy_marketplace != MANAGED_MARKETPLACE_NAME
+                && codex_project_config_has_marketplace_entries(&path, Some(&legacy_marketplace))?)
+    };
+
+    if !needs_registration && !needs_cleanup {
+        return Ok(None);
+    }
+
+    let mut config = if merge_existing_mcp && path.exists() {
+        read_project_codex_config(&path)?
+    } else {
+        ProjectCodexConfig::default()
+    };
+    remove_codex_marketplace_config(&mut config, MANAGED_MARKETPLACE_NAME);
+    if legacy_marketplace != MANAGED_MARKETPLACE_NAME {
+        remove_codex_marketplace_config(&mut config, &legacy_marketplace);
+    }
+
+    if let Some(registration) = plugin_registration {
+        let source = absolute_codex_marketplace_source(project_root)?;
+        config.marketplaces.insert(
+            registration.marketplace.clone(),
+            codex_local_marketplace_config(source),
+        );
+        for plugin in registration.enabled_plugins {
+            config.plugins.insert(plugin, codex_enabled_plugin_config());
+        }
+    }
+
+    if config.mcp_servers.is_empty()
+        && config.features.is_empty()
+        && config.marketplaces.is_empty()
+        && config.plugins.is_empty()
+        && config.extra.is_empty()
+        && !needs_cleanup
+    {
+        return Ok(None);
+    }
+
+    let mut contents = toml::to_string_pretty(&config)
+        .context("failed to serialize managed Codex user configuration")?
+        .into_bytes();
+    contents.push(b'\n');
+    Ok(Some(ManagedFile { path, contents }))
 }
 
 fn legacy_project_marketplace_name(
@@ -2468,7 +2514,7 @@ fn codex_plugin_marketplace_registration(
 }
 
 fn absolute_codex_marketplace_source(project_root: &Path) -> Result<String> {
-    let source = project_root.to_path_buf();
+    let source = super::native_marketplace_root(project_root, Adapter::Codex);
     let absolute = if source.is_absolute() {
         source
     } else {
@@ -2478,6 +2524,37 @@ fn absolute_codex_marketplace_source(project_root: &Path) -> Result<String> {
     };
     let simplified = dunce::simplified(&absolute);
     Ok(display_path(simplified))
+}
+
+fn default_codex_user_config_path(project_root: &Path) -> PathBuf {
+    if let Some(codex_home) = env::var_os("CODEX_HOME") {
+        return PathBuf::from(codex_home).join("config.toml");
+    }
+
+    #[cfg(test)]
+    {
+        project_root.join(".codex-user/config.toml")
+    }
+
+    #[cfg(all(not(test), target_os = "windows"))]
+    {
+        if let Some(profile) = env::var_os("USERPROFILE") {
+            return PathBuf::from(profile).join(".codex/config.toml");
+        }
+        if let (Some(drive), Some(path)) = (env::var_os("HOMEDRIVE"), env::var_os("HOMEPATH")) {
+            return PathBuf::from(drive).join(path).join(".codex/config.toml");
+        }
+    }
+
+    #[cfg(all(not(test), not(target_os = "windows")))]
+    {
+        if let Some(home) = env::var_os("HOME") {
+            return PathBuf::from(home).join(".codex/config.toml");
+        }
+    }
+
+    #[cfg(not(test))]
+    project_root.join(".codex-user/config.toml")
 }
 
 fn codex_local_marketplace_config(source: String) -> TomlValue {
@@ -2908,8 +2985,9 @@ fn emitted_mcp_server(server: &McpServerConfig) -> EmittedMcpServerConfig {
 }
 
 fn gitignore_entry(project_root: &Path, path: &Path) -> Result<Option<(PathBuf, String)>> {
-    let relative = strip_path_prefix(path, project_root)
-        .with_context(|| format!("failed to make {} relative", path.display()))?;
+    let Some(relative) = strip_path_prefix(path, project_root) else {
+        return Ok(None);
+    };
     let components = relative
         .iter()
         .map(|component| component.to_string_lossy().into_owned())
@@ -2941,8 +3019,9 @@ fn gitignore_entry(project_root: &Path, path: &Path) -> Result<Option<(PathBuf, 
 }
 
 fn runtime_root_gitignore(project_root: &Path, path: &Path) -> Result<Option<PathBuf>> {
-    let relative = strip_path_prefix(path, project_root)
-        .with_context(|| format!("failed to make {} relative", path.display()))?;
+    let Some(relative) = strip_path_prefix(path, project_root) else {
+        return Ok(None);
+    };
     let components = relative
         .iter()
         .map(|component| component.to_string_lossy().into_owned())

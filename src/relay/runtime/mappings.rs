@@ -462,7 +462,12 @@ fn build_missing_mappings_for_adapter(
                     })
             })
             .collect::<std::collections::BTreeSet<_>>();
-        let agents_root = managed_runtime_root.join("agents");
+        let agents_runtime_root = if adapter == Adapter::Codex {
+            crate::adapters::runtime_root(project_root, adapter)
+        } else {
+            managed_runtime_root.clone()
+        };
+        let agents_root = agents_runtime_root.join("agents");
         if agents_root.is_dir() {
             for entry in fs::read_dir(&agents_root)
                 .with_context(|| format!("failed to read {}", agents_root.display()))?
@@ -525,6 +530,10 @@ fn relay_managed_artifact_path(
     artifact_id: &str,
     identities: &ManagedPackageIdentities,
 ) -> Option<PathBuf> {
+    if adapter == Adapter::Codex && kind == ArtifactKind::Agent {
+        return managed_artifact_path(names, project_root, adapter, kind, package, artifact_id);
+    }
+
     let runtime_root = relay_runtime_root(project_root, adapter, package, identities);
     managed_artifact_path(names, &runtime_root, adapter, kind, package, artifact_id)
 }
@@ -535,15 +544,20 @@ fn relay_runtime_root(
     package: &ResolvedPackage,
     identities: &ManagedPackageIdentities,
 ) -> PathBuf {
-    if adapter == Adapter::Claude && !matches!(package.source, crate::resolver::PackageSource::Root)
-    {
-        crate::adapters::global_nodus_home(project_root)
-            .join("packages")
-            .join(identities.managed_package_id(package))
-            .join("claude-plugin")
-    } else {
-        project_root.to_path_buf()
+    if !matches!(package.source, crate::resolver::PackageSource::Root) {
+        match adapter {
+            Adapter::Claude | Adapter::Codex => {
+                return crate::adapters::native_package_plugin_root(
+                    project_root,
+                    adapter,
+                    package,
+                    identities,
+                );
+            }
+            Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => {}
+        }
     }
+    project_root.to_path_buf()
 }
 
 fn agent_transform(

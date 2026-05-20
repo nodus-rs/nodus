@@ -488,11 +488,21 @@ impl Lockfile {
         project_root: &Path,
     ) -> Result<&'a Path> {
         let relative_path = Path::new(relative);
-        if relative_path.is_absolute()
-            || relative_path
-                .components()
-                .any(|component| matches!(component, Component::ParentDir))
-        {
+        let contains_parent = relative_path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir));
+        if relative_path.is_absolute() {
+            let global_home = crate::adapters::global_nodus_home(project_root);
+            if !contains_parent && relative_path.starts_with(&global_home) {
+                return Ok(relative_path);
+            }
+            bail!(
+                "managed path {} escapes project root {}",
+                relative,
+                project_root.display()
+            );
+        }
+        if contains_parent {
             bail!(
                 "managed path {} escapes project root {}",
                 relative,

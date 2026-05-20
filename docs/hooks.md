@@ -40,10 +40,10 @@ The Codex adapter uses the same root/dependency split:
 
 - **Root manifest hooks** land in workspace `.codex/hooks.json` with scripts
   under `.codex/hooks/`.
-- **Dependency package hooks** land inside the generated Codex plugin at
-  `.nodus/packages/<alias>/codex-plugin/hooks/hooks.json`, with scripts under
-  `hooks/scripts/`. When a plugin has hook output, Nodus adds
-  `"hooks": "./hooks/hooks.json"` to `.codex-plugin/plugin.json`.
+- **Dependency package hooks** land inside the generated Codex plugin snapshot
+  at `~/.nodus/marketplaces/codex/plugins/<managed-package-id>/hooks/hooks.json`,
+  with scripts under `hooks/scripts/`. When a plugin has hook output, Nodus
+  adds `"hooks": "./hooks/hooks.json"` to `.codex-plugin/plugin.json`.
 
 Codex requires project feature flags for generated hook surfaces. When Nodus
 emits Codex hooks it writes `[features].hooks = true` to `.codex/config.toml`;
@@ -84,19 +84,27 @@ but are not a replacement for command hooks that need to run arbitrary logic.
 Adapters without supported session-start context injection skip activation and
 emit a sync warning.
 
-## Codex virtual marketplace
+## Codex global snapshot marketplace
 
-When the Codex adapter is enabled, Nodus keeps runtime-visible files
-project-local under `.codex/`. Package skills, agents, synthetic command
-skills, hooks, MCP config, and feature flags are emitted directly into the
-current project.
+When the Codex adapter is enabled, dependency package content is rendered as
+pinned plugin snapshots below the global Nodus marketplace root:
 
-Full dependency package payloads are copied under
-`.nodus/packages/<alias>/codex-plugin/` as a virtual marketplace install root
-for Nodus lifecycle, inspection, and pruning. Project sync does not write
-`.agents/plugins/marketplace.json`, does not enable `<plugin>@<marketplace>`
-entries in project config, and does not edit `~/.codex/config.toml` or
-`$CODEX_HOME/config.toml`.
+```text
+~/.nodus/marketplaces/codex/
+  .agents/plugins/marketplace.json
+  plugins/<managed-package-id>/
+```
+
+Nodus writes user-level Codex config in `$CODEX_HOME/config.toml` or
+`~/.codex/config.toml` to register a single local marketplace named `nodus`
+and enable the selected `<plugin>@nodus` entries. Current Codex requires this
+user-level registration for marketplace and plugin discovery.
+
+Dependency skills, synthetic command skills, plugin hooks, and plugin MCP
+config live inside those snapshots rather than being duplicated into project
+`.codex/skills`. Codex agents stay project-local under `.codex/agents` until
+Codex plugin metadata supports declaring agents. Project `.codex/config.toml`
+is still used for project-scoped feature flags and root-level hooks.
 
 ## Event catalog
 

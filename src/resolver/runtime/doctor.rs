@@ -223,6 +223,7 @@ fn inspect_doctor_state(
         OutputPlanOptions {
             merge_existing_mcp: true,
             codex_native_plugins_auto_enabled,
+            codex_user_config: None,
         },
     ) {
         Ok(plan) => plan,
@@ -239,6 +240,7 @@ fn inspect_doctor_state(
                 OutputPlanOptions {
                     merge_existing_mcp: false,
                     codex_native_plugins_auto_enabled,
+                    codex_user_config: None,
                 },
             )?
         }
@@ -251,6 +253,7 @@ fn inspect_doctor_state(
         OutputPlanOptions {
             merge_existing_mcp: false,
             codex_native_plugins_auto_enabled,
+            codex_user_config: None,
         },
     )?;
     let desired_paths = resolution.managed_paths_from_output_plan(cwd, &ownership_output_plan)?;

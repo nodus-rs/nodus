@@ -117,7 +117,15 @@ fn generated_claude_marketplace_path(path: &Path) -> PathBuf {
 }
 
 fn generated_codex_marketplace_path(path: &Path) -> PathBuf {
-    path.join(".nodus-global/marketplaces/codex/marketplace.json")
+    path.join(".nodus-global/marketplaces/codex/.agents/plugins/marketplace.json")
+}
+
+fn generated_codex_marketplace_root(path: &Path) -> PathBuf {
+    path.join(".nodus-global/marketplaces/codex")
+}
+
+fn generated_codex_user_config_path(path: &Path) -> PathBuf {
+    path.join(".codex-user/config.toml")
 }
 
 fn generated_global_packages_root(path: &Path) -> PathBuf {
@@ -130,16 +138,20 @@ fn global_native_plugin_root(
     adapter: Adapter,
 ) -> PathBuf {
     let identities = ManagedPackageIdentities::from_resolved_packages([package]);
-    generated_global_packages_root(project_root)
-        .join(identities.managed_package_id(package))
-        .join(match adapter {
-            Adapter::Claude => "claude-plugin",
-            Adapter::Codex => "codex-plugin",
-            Adapter::OpenCode => "opencode-plugin",
-            Adapter::Agents | Adapter::Copilot | Adapter::Cursor => {
-                panic!("adapter {adapter} does not have a native plugin root")
-            }
-        })
+    match adapter {
+        Adapter::Claude => generated_global_packages_root(project_root)
+            .join(identities.managed_package_id(package))
+            .join("claude-plugin"),
+        Adapter::Codex => generated_codex_marketplace_root(project_root)
+            .join("plugins")
+            .join(identities.managed_package_id(package)),
+        Adapter::OpenCode => generated_global_packages_root(project_root)
+            .join(identities.managed_package_id(package))
+            .join("opencode-plugin"),
+        Adapter::Agents | Adapter::Copilot | Adapter::Cursor => {
+            panic!("adapter {adapter} does not have a native plugin root")
+        }
+    }
 }
 
 fn dependency_managed_package_id(resolution: &Resolution) -> String {
@@ -154,6 +166,43 @@ fn dependency_managed_package_id(resolution: &Resolution) -> String {
 
 fn read_codex_project_config(path: &Path) -> toml::Value {
     toml::from_str(&fs::read_to_string(path.join(".codex/config.toml")).unwrap()).unwrap()
+}
+
+fn read_codex_user_config(path: &Path) -> toml::Value {
+    toml::from_str(&fs::read_to_string(generated_codex_user_config_path(path)).unwrap()).unwrap()
+}
+
+fn assert_codex_user_config_registers_plugins(project_root: &Path, plugin_keys: &[&str]) {
+    let config = read_codex_user_config(project_root);
+    assert_codex_config_registers_plugins(project_root, &config, plugin_keys);
+}
+
+fn assert_codex_config_registers_plugins(
+    project_root: &Path,
+    config: &toml::Value,
+    plugin_keys: &[&str],
+) {
+    assert_eq!(
+        config["marketplaces"]["nodus"]["source_type"].as_str(),
+        Some("local")
+    );
+    assert_eq!(
+        config["marketplaces"]["nodus"]["source"].as_str(),
+        Some(display_path(&generated_codex_marketplace_root(project_root)).as_str())
+    );
+    for plugin_key in plugin_keys {
+        let enabled = config
+            .get("plugins")
+            .and_then(toml::Value::as_table)
+            .and_then(|plugins| plugins.get(*plugin_key))
+            .and_then(|plugin| plugin.get("enabled"))
+            .and_then(toml::Value::as_bool);
+        assert_eq!(
+            enabled,
+            Some(true),
+            "expected Codex user config to enable `{plugin_key}`; config was {config:?}"
+        );
+    }
 }
 
 fn assert_no_codex_managed_marketplace_config(
@@ -203,29 +252,6 @@ fn write_codex_mcp_config(path: &Path) {
 }
 "#,
     );
-}
-
-fn normalize_workspace_marketplace_name(value: &str) -> String {
-    let mut normalized = String::new();
-
-    for character in value.chars() {
-        if character.is_ascii_alphanumeric() {
-            normalized.push(character.to_ascii_lowercase());
-        } else if !normalized.ends_with('-') {
-            normalized.push('-');
-        }
-    }
-
-    let normalized = normalized.trim_matches('-').to_string();
-    if normalized.is_empty() {
-        String::from("agentpack")
-    } else {
-        normalized
-    }
-}
-
-fn normalized_project_marketplace_name(path: &Path) -> String {
-    normalize_workspace_marketplace_name(path.file_name().and_then(|value| value.to_str()).unwrap())
 }
 
 fn namespaced_skill_id(package: &ResolvedPackage, skill_id: &str) -> String {
@@ -290,11 +316,12 @@ fn path_contains_adapter_runtime(path: &Path, adapter: Adapter) -> bool {
 
     let plugin_root = match adapter {
         Adapter::Claude => "claude-plugin",
-        Adapter::Agents
-        | Adapter::Codex
-        | Adapter::Copilot
-        | Adapter::Cursor
-        | Adapter::OpenCode => {
+        Adapter::Codex => {
+            let rendered = display_path(path);
+            return rendered.contains("/marketplaces/codex/plugins/")
+                || rendered.contains("\\marketplaces\\codex\\plugins\\");
+        }
+        Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => {
             return false;
         }
     };
@@ -402,31 +429,6 @@ fn global_plugin_file_exists(
         })
 }
 
-fn codex_hook_script_path(project_root: &Path, name_fragment: &str) -> PathBuf {
-    let scripts_dir = project_root.join(".codex/hooks");
-    let matches = fs::read_dir(&scripts_dir)
-        .unwrap_or_else(|err| {
-            panic!(
-                "expected Codex hook scripts dir at {}: {err}",
-                scripts_dir.display()
-            )
-        })
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.contains(name_fragment))
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        matches.len(),
-        1,
-        "expected one Codex hook script containing `{name_fragment}` in {}",
-        scripts_dir.display()
-    );
-    matches.into_iter().next().unwrap()
-}
-
 fn activation_context_from_script(script: &str) -> String {
     let json_line = script
         .lines()
@@ -446,9 +448,10 @@ fn managed_skill_file(
     skill_id: &str,
 ) -> PathBuf {
     let names = ManagedArtifactNames::from_resolved_packages([package]);
-    let runtime_root = if adapter == Adapter::Claude
+    let runtime_root = if matches!(adapter, Adapter::Claude | Adapter::Codex)
         && !matches!(package.source, PackageSource::Root)
         && project_root.file_name().and_then(|name| name.to_str()) != Some("claude-plugin")
+        && !display_path(project_root).contains("/marketplaces/codex/plugins/")
     {
         global_native_plugin_root(project_root, package, adapter)
     } else {
@@ -534,11 +537,11 @@ fn resolution_file_name(
 }
 
 fn resolution_codex_command_skill_id(
-    resolution: &Resolution,
+    _resolution: &Resolution,
     package: &ResolvedPackage,
     command_id: &str,
 ) -> String {
-    let names = ManagedArtifactNames::from_resolved_packages(resolution.packages.iter());
+    let names = ManagedArtifactNames::from_resolved_packages([package]);
     crate::adapters::codex::synthetic_command_skill_id(&names, package, command_id)
 }
 
@@ -1962,7 +1965,7 @@ fn sync_generates_claude_workspace_marketplace_files() {
     assert_not_owned(
         &lockfile,
         repo.path(),
-        ".nodus-global/marketplaces/codex/marketplace.json",
+        ".nodus-global/marketplaces/codex/.agents/plugins/marketplace.json",
     );
 }
 
@@ -1996,12 +1999,19 @@ model = "gpt-5"
     )
     .unwrap();
 
-    assert_eq!(fs::read_to_string(&codex_config).unwrap(), original);
+    let user_config: toml::Value =
+        toml::from_str(&fs::read_to_string(&codex_config).unwrap()).unwrap();
+    assert_eq!(user_config["model"].as_str(), Some("gpt-5"));
+    assert_codex_config_registers_plugins(
+        repo.path(),
+        &user_config,
+        &["Axiom@nodus", "Firebase@nodus"],
+    );
     assert!(generated_codex_marketplace_path(repo.path()).exists());
 }
 
 #[test]
-fn sync_does_not_recreate_codex_user_config() {
+fn sync_creates_codex_user_config_for_workspace_plugins() {
     let repo = create_workspace_dependency();
     let cache = cache_dir();
     let codex_home = TempDir::new().unwrap();
@@ -2044,8 +2054,12 @@ fn sync_does_not_recreate_codex_user_config() {
     )
     .unwrap();
 
-    let _output = buffer.contents();
-    assert!(!codex_config.exists());
+    let output = buffer.contents();
+    assert!(codex_config.exists());
+    assert!(
+        !output.contains("failed"),
+        "second sync should keep Codex user config idempotent, got {output}"
+    );
 }
 
 #[test]
@@ -2319,23 +2333,21 @@ args = ["figma-developer-mcp"]
     assert!(temp.path().join(".codex/agents/security.toml").exists());
     assert!(plugin_root.join("skills/__cmd_build/SKILL.md").exists());
     assert!(
-        temp.path()
+        !temp
+            .path()
             .join(".codex/skills/__cmd_build/SKILL.md")
-            .exists()
+            .exists(),
+        "dependency commands should be emitted only inside the Codex plugin snapshot"
     );
 
     assert!(plugin_root.join(".codex-plugin/plugin.json").exists());
     assert!(plugin_root.join(".mcp.json").exists());
     assert!(generated_codex_marketplace_path(temp.path()).exists());
-    let codex_config = assert_no_codex_managed_marketplace_config(temp.path(), "shared-tools");
-    assert_eq!(
-        codex_config["mcp_servers"]["shared__figma"]["command"].as_str(),
-        Some("npx")
-    );
+    assert!(!temp.path().join(".codex/config.toml").exists());
+    assert_codex_user_config_registers_plugins(temp.path(), &["shared-tools@nodus"]);
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
-    let plugin_root_relative = display_path(plugin_root.strip_prefix(temp.path()).unwrap());
-    assert_not_owned(&lockfile, temp.path(), &plugin_root_relative);
+    assert_owned(&lockfile, temp.path(), &display_path(&plugin_root));
 }
 
 #[test]
@@ -2443,7 +2455,7 @@ command = "./scripts/format.sh"
         .unwrap();
     let plugin_root = global_native_plugin_root(temp.path(), shared, Adapter::Codex);
     let hooks: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(temp.path().join(".codex/hooks.json")).unwrap())
+        serde_json::from_str(&fs::read_to_string(plugin_root.join("hooks/hooks.json")).unwrap())
             .unwrap();
     assert_eq!(
         hooks["hooks"]["PostToolUse"][0]["matcher"].as_str(),
@@ -2453,28 +2465,38 @@ command = "./scripts/format.sh"
         .as_str()
         .unwrap();
     assert!(
-        command.contains(".codex/hooks/nodus-hook-shared-format-after-write-"),
-        "expected project Codex hook command, got `{command}`",
+        command.contains("${PLUGIN_ROOT}/hooks/scripts/nodus-hook-format-after-write-"),
+        "expected plugin Codex hook command, got `{command}`",
     );
-    assert!(codex_hook_script_path(temp.path(), "format-after-write").exists());
-    assert!(!plugin_root.join("hooks/hooks.json").exists());
+    assert!(
+        fs::read_dir(plugin_root.join("hooks/scripts"))
+            .unwrap()
+            .any(|entry| entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("nodus-hook-format-after-write-"))
+    );
+    assert!(!temp.path().join(".codex/hooks.json").exists());
     assert!(plugin_root.join(".codex-plugin/plugin.json").exists());
 
     let codex_config: toml::Value =
         toml::from_str(&fs::read_to_string(temp.path().join(".codex/config.toml")).unwrap())
             .unwrap();
-    assert_eq!(codex_config["features"]["hooks"].as_bool(), Some(true));
     assert_eq!(
         codex_config
             .get("features")
             .and_then(toml::Value::as_table)
-            .and_then(|features| features.get("plugin_hooks")),
+            .and_then(|features| features.get("hooks")),
         None
+    );
+    assert_eq!(
+        codex_config["features"]["plugin_hooks"].as_bool(),
+        Some(true)
     );
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
-    let plugin_root_relative = display_path(plugin_root.strip_prefix(temp.path()).unwrap());
-    assert_not_owned(&lockfile, temp.path(), &plugin_root_relative);
+    assert_owned(&lockfile, temp.path(), &display_path(&plugin_root));
 }
 
 #[test]
@@ -2557,7 +2579,24 @@ custom = "kept"
     )
     .unwrap();
 
-    assert_eq!(fs::read_to_string(&codex_config).unwrap(), original);
+    let user_config: toml::Value =
+        toml::from_str(&fs::read_to_string(&codex_config).unwrap()).unwrap();
+    assert_eq!(user_config["model"].as_str(), Some("gpt-5"));
+    assert_eq!(
+        user_config["plugins"]["manual@other"]["enabled"].as_bool(),
+        Some(false)
+    );
+    assert!(
+        user_config
+            .get("marketplaces")
+            .and_then(toml::Value::as_table)
+            .is_none_or(|marketplaces| !marketplaces.contains_key("yoki-ios"))
+    );
+    assert_codex_config_registers_plugins(
+        temp.path(),
+        &user_config,
+        &["grapha@nodus", "playbook-ios@nodus"],
+    );
     assert!(generated_codex_marketplace_path(temp.path()).exists());
     let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
     for alias in ["grapha", "playbook_ios"] {
@@ -2605,11 +2644,11 @@ custom = "kept"
         "codex user config {codex_config_relative} should not appear in any package's ownership view",
     );
     assert_not_owned(&lockfile, temp.path(), ".agents/plugins/marketplace.json");
-    assert_not_owned(&lockfile, temp.path(), ".codex/config.toml");
+    assert_owned(&lockfile, temp.path(), ".codex/config.toml");
 }
 
 #[test]
-fn sync_migrates_claude_outputs_and_keeps_codex_project_runtime() {
+fn sync_migrates_claude_and_codex_outputs_to_native_plugins() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();
     write_manifest(
@@ -2632,7 +2671,7 @@ shared = { path = "vendor/shared" }
     sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
 
     assert!(!temp.path().join(".claude/skills/review/SKILL.md").exists());
-    assert!(temp.path().join(".codex/skills/review/SKILL.md").exists());
+    assert!(!temp.path().join(".codex/skills/review/SKILL.md").exists());
     let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
     let shared = resolution
         .packages
@@ -2649,12 +2688,10 @@ shared = { path = "vendor/shared" }
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     let claude_plugin_root_relative =
         display_path(claude_plugin_root.strip_prefix(temp.path()).unwrap());
-    let codex_plugin_root_relative =
-        display_path(codex_plugin_root.strip_prefix(temp.path()).unwrap());
     assert_not_owned(&lockfile, temp.path(), &claude_plugin_root_relative);
-    assert_not_owned(&lockfile, temp.path(), &codex_plugin_root_relative);
+    assert_owned(&lockfile, temp.path(), &display_path(&codex_plugin_root));
     assert_not_owned(&lockfile, temp.path(), ".claude/skills/review");
-    assert_owned(&lockfile, temp.path(), ".codex/skills/review");
+    assert_not_owned(&lockfile, temp.path(), ".codex/skills/review");
 }
 
 #[test]
@@ -2735,7 +2772,17 @@ shared = { path = "vendor/shared" }
 
     sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
 
-    assert!(temp.path().join(".codex/skills/review/SKILL.md").exists());
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let shared = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .unwrap();
+    assert!(
+        global_native_plugin_root(temp.path(), shared, Adapter::Codex)
+            .join("skills/review/SKILL.md")
+            .exists()
+    );
     assert_eq!(
         fs::read_to_string(
             temp.path()
@@ -4431,11 +4478,18 @@ fn add_dependency_accepts_codex_marketplace_wrapper_and_syncs_plugin_contents() 
         .find(|package| package.alias == "axiom")
         .unwrap();
     let managed_skill_id = namespaced_skill_id(plugin_package, "review");
-    assert!(runtime_skill_exists(
-        temp.path(),
-        Adapter::Codex,
-        &managed_skill_id
-    ));
+    let codex_plugin_root = global_native_plugin_root(temp.path(), plugin_package, Adapter::Codex);
+    assert!(
+        codex_plugin_root
+            .join(format!("skills/{managed_skill_id}/SKILL.md"))
+            .exists()
+    );
+    assert!(
+        !temp
+            .path()
+            .join(format!(".codex/skills/{managed_skill_id}/SKILL.md"))
+            .exists()
+    );
 
     assert!(
         !temp.path().join(".mcp.json").exists(),
@@ -4450,7 +4504,6 @@ fn add_dependency_accepts_codex_marketplace_wrapper_and_syncs_plugin_contents() 
         json["mcpServers"]["figma"]["url"].as_str(),
         Some("http://127.0.0.1:3845/mcp")
     );
-    let codex_plugin_root = global_native_plugin_root(temp.path(), plugin_package, Adapter::Codex);
     let codex_mcp: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(codex_plugin_root.join(".mcp.json")).unwrap())
             .unwrap();
@@ -4458,14 +4511,8 @@ fn add_dependency_accepts_codex_marketplace_wrapper_and_syncs_plugin_contents() 
         codex_mcp["mcpServers"]["figma"]["url"].as_str(),
         Some("http://127.0.0.1:3845/mcp")
     );
-    let codex_config = assert_no_codex_managed_marketplace_config(
-        temp.path(),
-        &normalized_project_marketplace_name(temp.path()),
-    );
-    assert_eq!(
-        codex_config["mcp_servers"]["axiom__figma"]["url"].as_str(),
-        Some("http://127.0.0.1:3845/mcp")
-    );
+    assert!(!temp.path().join(".codex/config.toml").exists());
+    assert_codex_user_config_registers_plugins(temp.path(), &["axiom@nodus"]);
 }
 
 #[test]
@@ -5799,11 +5846,16 @@ publish_root = true
         .find(|package| package.alias == "root")
         .unwrap();
     assert!(
-        root.owned_files
+        root.owned_subtrees
             .iter()
-            .any(|path| path == ".codex/agents/security.toml"),
-        "root package should own its project-local Codex agent file; got {:?}",
-        root.owned_files
+            .any(|path| path == ".codex/agents")
+            || root
+                .owned_files
+                .iter()
+                .any(|path| path == ".codex/agents/security.toml"),
+        "root package should own its project-local Codex agent output; files={:?} subtrees={:?}",
+        root.owned_files,
+        root.owned_subtrees
     );
     assert_owned(&lockfile, temp.path(), ".codex/agents/security.toml");
 }
@@ -5840,16 +5892,21 @@ shared = { path = "vendor/shared" }
     let managed_skill_id = namespaced_skill_id(dependency, "review");
     let managed_command_file = namespaced_file_name(dependency, "build", "md");
     let agents_gitignore = fs::read_to_string(temp.path().join(".agents/.gitignore")).unwrap();
-    let codex_gitignore = fs::read_to_string(temp.path().join(".codex/.gitignore")).unwrap();
     let cursor_gitignore = fs::read_to_string(temp.path().join(".cursor/.gitignore")).unwrap();
 
     assert!(agents_gitignore.contains("# Managed by nodus"));
     assert!(agents_gitignore.contains(".gitignore"));
     assert!(agents_gitignore.contains(&format!("skills/{managed_skill_id}")));
     assert!(agents_gitignore.contains(&format!("commands/{managed_command_file}")));
-    assert!(codex_gitignore.contains("# Managed by nodus"));
-    assert!(codex_gitignore.contains(".gitignore"));
-    assert!(codex_gitignore.contains(&format!("skills/{managed_skill_id}")));
+    assert!(
+        !temp.path().join(".codex/.gitignore").exists(),
+        "Codex dependency skills now live in the global snapshot marketplace"
+    );
+    assert!(runtime_skill_exists(
+        temp.path(),
+        Adapter::Codex,
+        &managed_skill_id
+    ));
     assert!(cursor_gitignore.contains("# Managed by nodus"));
     assert!(cursor_gitignore.contains(".gitignore"));
     assert!(cursor_gitignore.contains(&format!("skills/{managed_skill_id}")));
@@ -5885,12 +5942,21 @@ shared = { path = "vendor/shared", components = ["commands"] }
         .unwrap();
     let managed_codex_command_skill =
         resolution_codex_command_skill_id(&resolution, dependency, "build");
+    let plugin_root = global_native_plugin_root(temp.path(), dependency, Adapter::Codex);
 
-    assert!(runtime_skill_exists(
-        temp.path(),
-        Adapter::Codex,
-        &managed_codex_command_skill
-    ));
+    assert!(
+        plugin_root
+            .join(format!("skills/{managed_codex_command_skill}/SKILL.md"))
+            .exists()
+    );
+    assert!(
+        !temp
+            .path()
+            .join(format!(
+                ".codex/skills/{managed_codex_command_skill}/SKILL.md"
+            ))
+            .exists()
+    );
     assert_eq!(summary.managed_file_count, 2);
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
@@ -5904,11 +5970,7 @@ shared = { path = "vendor/shared", components = ["commands"] }
         Some(vec![DependencyComponent::Commands])
     );
     assert_eq!(shared.commands, vec!["build"]);
-    assert_not_owned(
-        &lockfile,
-        temp.path(),
-        ".nodus/packages/shared/codex-plugin",
-    );
+    assert_owned(&lockfile, temp.path(), &display_path(&plugin_root));
     assert_not_owned(&lockfile, temp.path(), ".codex/config.toml");
 }
 
@@ -5944,7 +6006,7 @@ shared = { path = "vendor/shared" }
             .unwrap_err()
             .to_string();
     assert!(error.contains("refusing to overwrite unmanaged file"));
-    assert!(error.contains(".codex/skills/review"));
+    assert!(error.contains("marketplaces/codex/plugins"));
 
     sync_in_dir_with_adapters_force(temp.path(), cache.path(), false, false, &[Adapter::Codex])
         .unwrap();
@@ -6009,7 +6071,11 @@ shared = { path = "vendor/shared" }
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert!(managed_skill_path.exists());
-    assert_owned(&lockfile, temp.path(), ".codex/skills/review");
+    assert_owned(
+        &lockfile,
+        temp.path(),
+        &display_path(managed_skill_path.parent().unwrap()),
+    );
 }
 
 #[test]
@@ -6421,10 +6487,6 @@ X-Figma-Region = "us-east-1"
 
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
 
-    let config = assert_no_codex_managed_marketplace_config(
-        temp.path(),
-        &normalized_project_marketplace_name(temp.path()),
-    );
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     let firebase_package = lockfile
         .packages
@@ -6433,7 +6495,8 @@ X-Figma-Region = "us-east-1"
         .unwrap();
 
     assert_eq!(firebase_package.mcp_servers, vec!["figma", "firebase"]);
-    assert_owned(&lockfile, temp.path(), ".codex/config.toml");
+    assert_not_owned(&lockfile, temp.path(), ".codex/config.toml");
+    assert!(!temp.path().join(".codex/config.toml").exists());
     let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
     let firebase = resolution
         .packages
@@ -6442,40 +6505,29 @@ X-Figma-Region = "us-east-1"
         .unwrap();
     let plugin_root = global_native_plugin_root(temp.path(), firebase, Adapter::Codex);
     assert!(plugin_root.join(".mcp.json").exists());
-    let plugin_root_relative = display_path(plugin_root.strip_prefix(temp.path()).unwrap());
-    assert_not_owned(&lockfile, temp.path(), &plugin_root_relative);
+    assert_owned(&lockfile, temp.path(), &display_path(&plugin_root));
+    assert_codex_user_config_registers_plugins(temp.path(), &["firebase@nodus"]);
+    let config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(plugin_root.join(".mcp.json")).unwrap()).unwrap();
     assert_eq!(
-        config["mcp_servers"]["firebase__firebase"]["command"].as_str(),
+        config["mcpServers"]["firebase"]["command"].as_str(),
         Some("npx")
     );
     assert_eq!(
-        config["mcp_servers"]["firebase__firebase"]["args"].as_array(),
-        Some(&vec![
-            toml::Value::String("-y".into()),
-            toml::Value::String("firebase-tools".into()),
-            toml::Value::String("mcp".into()),
-            toml::Value::String("--dir".into()),
-            toml::Value::String(".".into()),
-        ])
+        config["mcpServers"]["firebase"]["args"][0].as_str(),
+        Some("-y")
     );
+    assert_eq!(config["mcpServers"]["firebase"]["cwd"].as_str(), Some("."));
     assert_eq!(
-        config["mcp_servers"]["firebase__firebase"]["cwd"].as_str(),
-        Some(".")
-    );
-    assert_eq!(
-        config["mcp_servers"]["firebase__firebase"]["env"]["IS_FIREBASE_MCP"].as_str(),
+        config["mcpServers"]["firebase"]["env"]["IS_FIREBASE_MCP"].as_str(),
         Some("true")
     );
     assert_eq!(
-        config["mcp_servers"]["firebase__figma"]["url"].as_str(),
+        config["mcpServers"]["figma"]["url"].as_str(),
         Some("https://mcp.figma.com/mcp")
     );
     assert_eq!(
-        config["mcp_servers"]["firebase__figma"]["bearer_token_env_var"].as_str(),
-        Some("FIGMA_TOKEN")
-    );
-    assert_eq!(
-        config["mcp_servers"]["firebase__figma"]["http_headers"]["X-Figma-Region"].as_str(),
+        config["mcpServers"]["figma"]["headers"]["X-Figma-Region"].as_str(),
         Some("us-east-1")
     );
 }
@@ -6514,10 +6566,14 @@ args = ["-y", "firebase-tools", "mcp", "--dir", "."]
     assert!(plugin_root.join(".mcp.json").exists());
     assert!(generated_codex_marketplace_path(temp.path()).exists());
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
-    assert_owned(&lockfile, temp.path(), ".codex/config.toml");
-    let codex_config = assert_no_codex_managed_marketplace_config(temp.path(), "yoki-ios");
+    assert_not_owned(&lockfile, temp.path(), ".codex/config.toml");
+    assert!(!temp.path().join(".codex/config.toml").exists());
+    assert_owned(&lockfile, temp.path(), &display_path(&plugin_root));
+    assert_codex_user_config_registers_plugins(temp.path(), &["firebase@nodus"]);
+    let codex_config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(plugin_root.join(".mcp.json")).unwrap()).unwrap();
     assert_eq!(
-        codex_config["mcp_servers"]["firebase__firebase"]["command"].as_str(),
+        codex_config["mcpServers"]["firebase"]["command"].as_str(),
         Some("npx")
     );
 }
@@ -7173,9 +7229,10 @@ prefer_skills = ["review"]
         claude_settings["hooks"]["SessionStart"],
     );
 
-    let codex_hooks: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(temp.path().join(".codex/hooks.json")).unwrap())
-            .unwrap();
+    let codex_hooks: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(codex_plugin_root.join("hooks/hooks.json")).unwrap(),
+    )
+    .unwrap();
     assert_eq!(
         codex_hooks["hooks"]["SessionStart"][0]["matcher"].as_str(),
         Some("startup|resume")
@@ -7184,26 +7241,37 @@ prefer_skills = ["review"]
         codex_hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"]
             .as_str()
             .unwrap()
-            .contains(".codex/hooks/nodus-hook-activation-")
+            .contains("${PLUGIN_ROOT}/hooks/scripts/nodus-hook-activation-")
     );
-    assert!(!codex_plugin_root.join("hooks/hooks.json").exists());
+    assert!(!temp.path().join(".codex/hooks.json").exists());
     assert!(codex_plugin_root.join(".codex-plugin/plugin.json").exists());
     let codex_config: toml::Value =
         toml::from_str(&fs::read_to_string(temp.path().join(".codex/config.toml")).unwrap())
             .unwrap();
-    assert_eq!(codex_config["features"]["hooks"].as_bool(), Some(true));
     assert_eq!(
         codex_config
             .get("features")
             .and_then(toml::Value::as_table)
-            .and_then(|features| features.get("plugin_hooks")),
+            .and_then(|features| features.get("hooks")),
         None
+    );
+    assert_eq!(
+        codex_config["features"]["plugin_hooks"].as_bool(),
+        Some(true)
     );
 
     let claude_script =
         fs::read_to_string(plugin_hook_script_path(temp.path(), "shared", "activation")).unwrap();
-    let codex_script =
-        fs::read_to_string(codex_hook_script_path(temp.path(), "activation")).unwrap();
+    let codex_script_path = fs::read_dir(codex_plugin_root.join("hooks/scripts"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("nodus-hook-activation-"))
+        })
+        .unwrap();
+    let codex_script = fs::read_to_string(codex_script_path).unwrap();
     for context in [
         activation_context_from_script(&claude_script),
         activation_context_from_script(&codex_script),
@@ -7250,13 +7318,26 @@ always_context = ["prompts/bootstrap.md"]
     );
 
     sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
-    let script = codex_hook_script_path(temp.path(), "activation");
-    let plugin_hooks_json = temp
-        .path()
-        .join(".nodus/packages/shared/codex-plugin/hooks/hooks.json");
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let shared = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "shared")
+        .unwrap();
+    let plugin_root = global_native_plugin_root(temp.path(), shared, Adapter::Codex);
+    let plugin_hooks_json = plugin_root.join("hooks/hooks.json");
+    let script = fs::read_dir(plugin_root.join("hooks/scripts"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("nodus-hook-activation-"))
+        })
+        .unwrap();
     assert!(script.exists());
-    assert!(!plugin_hooks_json.exists());
-    assert!(temp.path().join(".codex/hooks.json").exists());
+    assert!(plugin_hooks_json.exists());
+    assert!(!temp.path().join(".codex/hooks.json").exists());
     assert!(temp.path().join(".codex/config.toml").exists());
     let first_lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert_owned(&first_lockfile, temp.path(), ".codex/config.toml");
@@ -9305,11 +9386,12 @@ shared = { path = "vendor/shared" }
         Adapter::Claude,
         &managed_skill_id
     ));
-    assert!(!runtime_skill_exists(
-        temp.path(),
-        Adapter::Codex,
-        &managed_skill_id
-    ));
+    assert!(
+        !temp
+            .path()
+            .join(format!(".codex/skills/{managed_skill_id}/SKILL.md"))
+            .exists()
+    );
     assert!(!temp.path().join(".opencode/skills").exists());
     assert!(!temp.path().join(".opencode/.gitignore").exists());
 }
@@ -11341,7 +11423,10 @@ other = { path = "vendor/other" }
     assert_ne!(shared_agent_file, other_agent_file);
     assert_ne!(shared_copilot_agent_file, other_copilot_agent_file);
     assert_ne!(shared_command_file, other_command_file);
-    assert_ne!(shared_codex_command_skill, other_codex_command_skill);
+    assert_eq!(
+        shared_codex_command_skill, other_codex_command_skill,
+        "Codex command skill ids are local to each global plugin snapshot"
+    );
     assert_ne!(shared_claude_rule_file, other_claude_rule_file);
 
     assert_eq!(
@@ -11401,11 +11486,10 @@ other = { path = "vendor/other" }
         Adapter::Codex,
         &shared_codex_command_skill
     ));
-    assert!(runtime_skill_exists(
-        temp.path(),
-        Adapter::Codex,
-        &other_codex_command_skill
-    ));
+    assert_eq!(
+        runtime_skill_paths(temp.path(), Adapter::Codex, &other_codex_command_skill).len(),
+        2
+    );
 }
 
 #[test]
@@ -11635,7 +11719,7 @@ shared = { path = "vendor/shared" }
             && finding
                 .message
                 .replace('\\', "/")
-                .contains(".nodus-global/packages/")
+                .contains(".nodus-global/marketplaces/codex/plugins/")
     }));
     assert!(!plugin_root.exists());
 

@@ -19,24 +19,33 @@ Virtual marketplaces do not fetch remote plugins, install npm packages, or add
 another package manager. The package source remains the `nodus.toml`
 dependency graph.
 
-## Codex v1
+## Codex global snapshots
 
-Codex has a plugin marketplace file format, but current Codex runtime
-activation is not project-local: effective plugin enablement is read from the
-user config/cache layer. Nodus therefore treats Codex as a virtual marketplace
-backend so one project cannot leak plugin registrations into another.
+Codex has a plugin marketplace file format, and current Codex reads
+`marketplaces` / `plugins` from user config. Nodus therefore treats Codex as a
+native global snapshot marketplace rather than a project-local virtual
+marketplace.
 
 When the Codex adapter is selected, full packages with Codex-supported runtime
-content are copied to:
+content are copied to pinned snapshot roots below the registered marketplace:
 
 ```text
-.nodus/packages/<alias>/codex-plugin/
+~/.nodus/marketplaces/codex/plugins/<managed-package-id>/
 ```
 
-Codex still reads skills, agents, synthetic command skills, hooks, MCP config,
-and feature flags from direct project files under `.codex/`. Nodus does not
-emit `.agents/plugins/marketplace.json` for project syncs and does not add
-`[marketplaces]` or `[plugins]` entries to `.codex/config.toml`.
+The marketplace manifest is emitted at:
+
+```text
+~/.nodus/marketplaces/codex/.agents/plugins/marketplace.json
+```
+
+Nodus registers that root as a local marketplace named `nodus` in
+`$CODEX_HOME/config.toml` or `~/.codex/config.toml`, and enables the selected
+`<plugin>@nodus` entries there. Dependency skills, synthetic command skills,
+plugin hooks, and plugin MCP config live in the snapshot; Codex agents remain
+direct project files under `.codex/agents` until plugin metadata supports
+agents. Project `.codex/config.toml` remains only for project-scoped feature
+flags and root-level hooks.
 
 ## OpenCode v1
 

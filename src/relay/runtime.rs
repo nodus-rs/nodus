@@ -526,6 +526,8 @@ fn adapter_for_managed_path(path: &str) -> Option<Adapter> {
         || path.starts_with(".codex-plugin/")
         || path.starts_with(".nodus/.agents/plugins/")
         || (path.starts_with(".nodus/packages/") && path.contains("/codex-plugin"))
+        || path.contains("/marketplaces/codex/plugins/")
+        || path.ends_with("/marketplaces/codex/.agents/plugins/marketplace.json")
     {
         Some(Adapter::Codex)
     } else if path.starts_with(".github/skills/") || path.starts_with(".github/agents/") {
@@ -1166,7 +1168,11 @@ mod tests {
         let names = Lockfile::read(&project_root.join(LOCKFILE_NAME))
             .map(|lockfile| ManagedArtifactNames::from_locked_packages(lockfile.packages.iter()))
             .unwrap_or_else(|_| ManagedArtifactNames::from_resolved_packages([package]));
-        let runtime_root = test_managed_runtime_root(project_root, adapter, package);
+        let runtime_root = if adapter == Adapter::Codex && kind == ArtifactKind::Agent {
+            project_root.to_path_buf()
+        } else {
+            test_managed_runtime_root(project_root, adapter, package)
+        };
         crate::adapters::managed_artifact_path(
             &names,
             &runtime_root,
@@ -1182,12 +1188,11 @@ mod tests {
         adapter: Adapter,
         package: &ResolvedPackage,
     ) -> PathBuf {
-        if adapter == Adapter::Claude && !matches!(package.source, PackageSource::Root) {
+        if matches!(adapter, Adapter::Claude | Adapter::Codex)
+            && !matches!(package.source, PackageSource::Root)
+        {
             let identities = ManagedPackageIdentities::from_resolved_packages([package]);
-            crate::adapters::global_nodus_home(project_root)
-                .join("packages")
-                .join(identities.managed_package_id(package))
-                .join("claude-plugin")
+            crate::adapters::native_package_plugin_root(project_root, adapter, package, &identities)
         } else {
             project_root.to_path_buf()
         }
@@ -1205,7 +1210,7 @@ mod tests {
             crate::adapters::codex::synthetic_command_skill_id(&names, package, command_id);
         crate::adapters::managed_skill_root(
             &names,
-            project_root,
+            &test_managed_runtime_root(project_root, Adapter::Codex, package),
             Adapter::Codex,
             package,
             &skill_id,

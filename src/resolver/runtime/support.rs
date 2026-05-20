@@ -1036,6 +1036,11 @@ fn path_has_symlinked_ancestor_within(project_root: &Path, path: &Path) -> bool 
 }
 
 fn is_runtime_managed_path(project_root: &Path, path: &Path) -> bool {
+    let global_home = crate::adapters::global_nodus_home(project_root);
+    if path == global_home || path.starts_with(&global_home) {
+        return true;
+    }
+
     let Some(relative) = strip_path_prefix(path, project_root) else {
         return false;
     };
@@ -1101,6 +1106,7 @@ pub(super) fn prune_empty_parent_dirs(path: &Path, project_root: &Path) -> Resul
         project_root.join(".cursor"),
         project_root.join(".github"),
         project_root.join(".opencode"),
+        crate::adapters::global_nodus_home(project_root),
     ];
     let mut current = path.parent();
 

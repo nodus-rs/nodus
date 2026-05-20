@@ -307,7 +307,11 @@ fn runtime_files_under(root: &Path, adapter: Adapter, file_name: &str) -> Vec<Pa
 
             let plugin_root = match adapter {
                 Adapter::Claude => "claude-plugin",
-                Adapter::Codex => "codex-plugin",
+                Adapter::Codex => {
+                    let rendered = crate::paths::display_path(path);
+                    return rendered.contains("/marketplaces/codex/plugins/")
+                        || rendered.contains("\\marketplaces\\codex\\plugins\\");
+                }
                 Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => {
                     return false;
                 }
