@@ -1809,6 +1809,49 @@ fn allows_identical_mcp_servers_from_claude_and_codex_plugin_metadata() {
 }
 
 #[test]
+fn deduplicates_equivalent_plugin_root_mcp_server_paths() {
+    let temp = TempDir::new().unwrap();
+    write_file(&temp.path().join("mcp/src/server.py"), "print('ok')\n");
+    write_modern_claude_plugin_json_with_fields(
+        temp.path(),
+        &[r#"  "mcpServers": {
+    "wenext-api-swagger": {
+      "command": "python3",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/src/server.py"]
+    }
+  }"#],
+    );
+    write_file(
+        &temp.path().join(".mcp.json"),
+        r#"{
+  "mcpServers": {
+    "wenext-api-swagger": {
+      "command": "python3",
+      "args": ["./mcp/src/server.py"]
+    }
+  }
+}
+"#,
+    );
+    write_codex_plugin_json(temp.path(), "2.34.0", Some("./.mcp.json"));
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    assert_eq!(loaded.manifest.mcp_servers.len(), 1);
+    let server = loaded
+        .manifest
+        .mcp_servers
+        .get("wenext-api-swagger")
+        .unwrap();
+    assert_eq!(server.command.as_deref(), Some("python3"));
+    assert_eq!(server.args.len(), 1);
+    assert_eq!(
+        canonicalize_path(Path::new(&server.args[0])).unwrap(),
+        canonicalize_path(&temp.path().join("mcp/src/server.py")).unwrap()
+    );
+}
+
+#[test]
 fn deduplicates_standard_roots_referenced_by_claude_plugin_metadata() {
     let temp = TempDir::new().unwrap();
     write_valid_skill(temp.path());

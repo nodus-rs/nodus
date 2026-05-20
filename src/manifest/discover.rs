@@ -1464,7 +1464,34 @@ fn normalize_claude_plugin_root_arg(value: &str, plugin_root: &Path) -> String {
         return display_path(plugin_root);
     }
     if let Some(suffix) = value.strip_prefix("${CLAUDE_PLUGIN_ROOT}/") {
-        return display_path(&plugin_root.join(suffix));
+        return display_plugin_root_path(plugin_root, Path::new(suffix));
+    }
+
+    value.to_string()
+}
+
+fn display_plugin_root_path(plugin_root: &Path, relative: &Path) -> String {
+    let path = plugin_root.join(relative);
+    let path = canonicalize_path(&path).unwrap_or(path);
+    display_path(&path)
+}
+
+fn normalize_claude_plugin_path_arg(value: &str, plugin_root: &Path) -> String {
+    let rooted = normalize_claude_plugin_root_arg(value, plugin_root);
+    if rooted != value {
+        return rooted;
+    }
+
+    let path = Path::new(value);
+    let starts_with_relative_marker = path
+        .components()
+        .next()
+        .is_some_and(|component| matches!(component, Component::CurDir | Component::ParentDir));
+    if starts_with_relative_marker {
+        let candidate = plugin_root.join(path);
+        if candidate.exists() {
+            return display_plugin_root_path(plugin_root, path);
+        }
     }
 
     value.to_string()
@@ -1500,7 +1527,7 @@ fn normalize_claude_plugin_mcp_server(
             continue;
         }
 
-        normalized_args.push(normalize_claude_plugin_root_arg(
+        normalized_args.push(normalize_claude_plugin_path_arg(
             &server.args[index],
             plugin_root,
         ));
