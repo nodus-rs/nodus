@@ -9524,6 +9524,88 @@ shared = { path = "vendor/shared", components = ["agents"] }
 }
 
 #[test]
+fn sync_merges_metadata_only_codex_agent_toml_with_markdown_body() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[dependencies]
+shared = { path = "vendor/shared", components = ["agents"] }
+"#,
+    );
+    write_file(
+        &temp.path().join("vendor/shared/agents/security.md"),
+        "---\ntitle: Security\n---\n# Shared markdown\nReview carefully.\n",
+    );
+    write_file(
+        &temp.path().join("vendor/shared/agents/security.codex.toml"),
+        "name = \"Security reviewer\"\n\
+description = \"Codex-specific metadata.\"\n\
+model = \"gpt-5\"\n",
+    );
+
+    sync_in_dir_with_adapters(
+        temp.path(),
+        cache.path(),
+        false,
+        false,
+        &[
+            Adapter::Claude,
+            Adapter::Codex,
+            Adapter::Copilot,
+            Adapter::OpenCode,
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(
+        fs::read_to_string(runtime_file_path(
+            temp.path(),
+            Adapter::Claude,
+            "security.md"
+        ))
+        .unwrap(),
+        "---\ntitle: Security\n---\n# Shared markdown\nReview carefully.\n"
+    );
+    assert_eq!(
+        fs::read_to_string(runtime_file_path(
+            temp.path(),
+            Adapter::Copilot,
+            "security.agent.md"
+        ))
+        .unwrap(),
+        "---\ntitle: Security\n---\n# Shared markdown\nReview carefully.\n"
+    );
+    assert_eq!(
+        fs::read_to_string(runtime_file_path(
+            temp.path(),
+            Adapter::OpenCode,
+            "security.md"
+        ))
+        .unwrap(),
+        "---\ntitle: Security\n---\n# Shared markdown\nReview carefully.\n"
+    );
+
+    let codex = fs::read_to_string(runtime_file_path(
+        temp.path(),
+        Adapter::Codex,
+        "security.toml",
+    ))
+    .unwrap();
+    assert!(codex.contains("name = \"Security reviewer\""));
+    assert!(codex.contains("description = \"Codex-specific metadata.\""));
+    assert!(codex.contains("model = \"gpt-5\""));
+    assert_eq!(
+        crate::agent_format::parse_codex_agent_config(codex.as_bytes(), "emitted")
+            .unwrap()
+            .developer_instructions,
+        "# Shared markdown\nReview carefully.\n"
+    );
+    assert!(!codex.contains("title: Security"));
+}
+
+#[test]
 fn sync_emits_codex_agent_toml_from_markdown_fallback() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();

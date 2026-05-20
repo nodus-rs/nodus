@@ -10,8 +10,9 @@ use crate::adapters::{
     managed_artifact_id, managed_artifact_path, managed_skill_root,
 };
 use crate::agent_format::{
-    default_codex_agent_description, emitted_codex_agent_toml,
-    emitted_codex_agent_toml_from_markdown,
+    codex_agent_config_uses_markdown_body, default_codex_agent_description,
+    emitted_codex_agent_toml, emitted_codex_agent_toml_from_markdown,
+    emitted_codex_agent_toml_from_toml_and_markdown,
 };
 use crate::hashing::blake3_hex;
 use crate::lockfile::LockedPackage;
@@ -136,11 +137,32 @@ pub fn agent_file(
     let managed_name = managed_artifact_id(names, package, ArtifactKind::Agent, &agent.id);
     let contents = if agent.is_toml() {
         let runtime_name = (managed_name != agent.id).then_some(managed_name.as_str());
-        emitted_codex_agent_toml(
-            &source_contents,
-            runtime_name,
-            &format!("Codex agent source {}", source_path.display()),
-        )?
+        let context = format!("Codex agent source {}", source_path.display());
+        if codex_agent_config_uses_markdown_body(&source_contents, &context)? {
+            let markdown_agent = package
+                .manifest
+                .discovered
+                .plain_markdown_agent(&agent.id)
+                .with_context(|| {
+                    format!(
+                        "Codex agent source {} requires paired Markdown agent `{}`",
+                        source_path.display(),
+                        agent.id
+                    )
+                })?;
+            let markdown_path = snapshot_root.join(&markdown_agent.path);
+            let markdown_contents = fs::read(&markdown_path).with_context(|| {
+                format!("failed to read snapshot file {}", markdown_path.display())
+            })?;
+            emitted_codex_agent_toml_from_toml_and_markdown(
+                &source_contents,
+                &markdown_contents,
+                runtime_name,
+                &context,
+            )?
+        } else {
+            emitted_codex_agent_toml(&source_contents, runtime_name, &context)?
+        }
     } else {
         emitted_codex_agent_toml_from_markdown(
             &source_contents,

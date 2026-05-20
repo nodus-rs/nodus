@@ -2944,6 +2944,46 @@ developer_instructions = \"Use codex.\"\n",
 }
 
 #[test]
+fn accepts_metadata_only_codex_toml_agent_when_paired_markdown_exists() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(&temp.path().join("agents/security.md"), "# Security\n");
+    write_file(
+        &temp.path().join("agents/security.codex.toml"),
+        "name = \"Security reviewer\"\n\
+description = \"Codex-specific metadata.\"\n\
+model = \"gpt-5\"\n",
+    );
+
+    let loaded = load_root_from_dir(temp.path()).unwrap();
+
+    assert_eq!(loaded.discovered.agents.len(), 2);
+    assert!(
+        loaded
+            .discovered
+            .agents
+            .iter()
+            .any(|agent| agent.path == Path::new("agents/security.codex.toml"))
+    );
+}
+
+#[test]
+fn rejects_metadata_only_codex_toml_agent_without_paired_markdown() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join("agents/security.codex.toml"),
+        "name = \"Security reviewer\"\n\
+description = \"Codex-specific metadata.\"\n",
+    );
+
+    let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+
+    assert!(error.contains("agents/security.codex.toml"));
+    assert!(error.contains("paired plain Markdown agent"));
+}
+
+#[test]
 fn discovers_artifacts_from_configured_content_root() {
     let temp = TempDir::new().unwrap();
     write_valid_skill(temp.path());

@@ -1348,6 +1348,12 @@ impl PackageContents {
         ids
     }
 
+    pub fn plain_markdown_agent(&self, agent_id: &str) -> Option<&AgentEntry> {
+        self.agents
+            .iter()
+            .find(|agent| agent.id == agent_id && agent.is_plain_markdown())
+    }
+
     pub fn files(&self, package: &LoadedManifest) -> Result<Vec<PathBuf>> {
         let mut files = Vec::new();
         for skill in &self.skills {

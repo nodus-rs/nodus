@@ -16,7 +16,7 @@ use super::types::{
 };
 use super::*;
 use crate::adapters::Adapter;
-use crate::agent_format::parse_codex_agent_config;
+use crate::agent_format::parse_partial_codex_agent_config;
 use crate::git::github_slug_from_url;
 use crate::paths::{canonicalize_path, display_path, path_is_dir};
 
@@ -1690,6 +1690,8 @@ pub(super) fn discover_package_contents(
         )?;
     }
 
+    validate_agent_entries(root, &agents)?;
+
     skills.sort_by(|left, right| left.id.cmp(&right.id));
     agents.sort_by(|left, right| {
         left.id
@@ -1952,7 +1954,6 @@ fn discover_agents(root: &Path, discovery_root: &Path) -> Result<Vec<AgentEntry>
         if !canonical.starts_with(root) {
             bail!("`agents` item `{}` escapes the package root", agent.id);
         }
-        validate_agent_entry(path, &agent)?;
         items.push(agent);
     }
 
@@ -2085,7 +2086,6 @@ fn discover_explicit_agents(
             );
         }
         let agent = derive_explicit_agent_entry(relative_path, standard_root)?;
-        validate_agent_entry(&canonical, &agent)?;
         items.push(agent);
     }
 
@@ -2230,14 +2230,36 @@ fn parse_agent_relative_path(relative: &Path) -> Result<(String, Vec<String>, St
     bail!("failed to derive agent id from {}", relative.display());
 }
 
-fn validate_agent_entry(path: &Path, agent: &AgentEntry) -> Result<()> {
-    if !agent_uses_known_codex_toml(agent) {
-        return Ok(());
+fn validate_agent_entries(root: &Path, agents: &[AgentEntry]) -> Result<()> {
+    let plain_markdown_ids = agents
+        .iter()
+        .filter(|agent| agent.is_plain_markdown())
+        .map(|agent| agent.id.as_str())
+        .collect::<HashSet<_>>();
+
+    for agent in agents {
+        if !agent_uses_known_codex_toml(agent) {
+            continue;
+        }
+
+        let path = root.join(&agent.path);
+        let contents = fs::read(&path)
+            .with_context(|| format!("failed to read agent source {}", path.display()))?;
+        let parsed = parse_partial_codex_agent_config(
+            &contents,
+            &format!("agent `{}`", display_path(&agent.path)),
+        )?;
+        if parsed.developer_instructions.is_none()
+            && !plain_markdown_ids.contains(agent.id.as_str())
+        {
+            bail!(
+                "agent `{}` field `developer_instructions` is required unless a paired plain Markdown agent with id `{}` exists",
+                display_path(&agent.path),
+                agent.id
+            );
+        }
     }
 
-    let contents = fs::read(path)
-        .with_context(|| format!("failed to read agent source {}", path.display()))?;
-    parse_codex_agent_config(&contents, &format!("agent `{}`", display_path(&agent.path)))?;
     Ok(())
 }
 
