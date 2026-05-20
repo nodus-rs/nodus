@@ -10,9 +10,11 @@ use crate::adapters::{
     managed_artifact_id, managed_artifact_path, managed_skill_root,
 };
 use crate::agent_format::{
-    default_codex_agent_description, emitted_codex_agent_toml,
-    emitted_codex_agent_toml_from_markdown, markdown_from_codex_agent_toml,
-    source_toml_from_managed_codex, source_toml_from_managed_markdown,
+    codex_agent_config_uses_markdown_body, default_codex_agent_description,
+    emitted_codex_agent_toml, emitted_codex_agent_toml_from_markdown,
+    emitted_codex_agent_toml_from_toml_and_markdown, markdown_from_codex_agent_toml,
+    source_markdown_from_managed_codex, source_toml_from_managed_codex,
+    source_toml_from_managed_markdown, source_toml_metadata_from_managed_codex,
 };
 use crate::manifest::SkillEntry;
 use crate::paths::strip_path_prefix;
@@ -89,13 +91,15 @@ pub(super) fn build_mappings(
                     &agent.id,
                     &identities,
                 ) {
-                    mappings.push(file_mapping(
+                    mappings.extend(agent_mappings(
+                        names,
+                        adapter,
+                        package,
+                        agent,
+                        snapshot_root,
+                        linked_repo,
                         managed_path,
-                        Some(snapshot_root.join(&agent.path)),
-                        linked_repo.join(&agent.path),
-                        agent.id.clone(),
-                        agent_transform(names, adapter, package, agent),
-                    ));
+                    )?);
                 }
             }
         }
@@ -590,6 +594,68 @@ fn agent_transform(
     }
 }
 
+fn agent_mappings(
+    names: &ManagedArtifactNames,
+    adapter: Adapter,
+    package: &ResolvedPackage,
+    agent: &crate::manifest::AgentEntry,
+    snapshot_root: &Path,
+    linked_repo: &Path,
+    managed_path: PathBuf,
+) -> Result<Vec<RelayFileMapping>> {
+    if adapter == Adapter::Codex && agent.is_toml() {
+        let source_path = snapshot_root.join(&agent.path);
+        let source = fs::read(&source_path)
+            .with_context(|| format!("failed to read snapshot file {}", source_path.display()))?;
+        if codex_agent_config_uses_markdown_body(&source, "Codex agent source")? {
+            let markdown_agent = package
+                .manifest
+                .discovered
+                .plain_markdown_agent(&agent.id)
+                .with_context(|| {
+                    format!(
+                        "Codex agent source {} requires paired Markdown agent `{}`",
+                        source_path.display(),
+                        agent.id
+                    )
+                })?;
+            let markdown_snapshot_path = snapshot_root.join(&markdown_agent.path);
+            let managed_name = managed_artifact_id(names, package, ArtifactKind::Agent, &agent.id);
+            let rewritten_name = (managed_name != agent.id).then_some(managed_name);
+            return Ok(vec![
+                file_mapping(
+                    managed_path.clone(),
+                    Some(source_path.clone()),
+                    linked_repo.join(&agent.path),
+                    agent.id.clone(),
+                    RelayTransform::CodexAgentMetadataToml {
+                        markdown_snapshot_path: markdown_snapshot_path.clone(),
+                        rewritten_name: rewritten_name.clone(),
+                    },
+                ),
+                file_mapping(
+                    managed_path,
+                    Some(markdown_snapshot_path),
+                    linked_repo.join(&markdown_agent.path),
+                    agent.id.clone(),
+                    RelayTransform::CodexAgentMarkdownBody {
+                        toml_snapshot_path: source_path,
+                        rewritten_name,
+                    },
+                ),
+            ]);
+        }
+    }
+
+    Ok(vec![file_mapping(
+        managed_path,
+        Some(snapshot_root.join(&agent.path)),
+        linked_repo.join(&agent.path),
+        agent.id.clone(),
+        agent_transform(names, adapter, package, agent),
+    )])
+}
+
 fn skill_mappings(
     names: &ManagedArtifactNames,
     adapter: Adapter,
@@ -700,6 +766,40 @@ impl RelayTransform {
             Self::CodexAgentToml { rewritten_name } => {
                 emitted_codex_agent_toml(source, rewritten_name.as_deref(), "Codex agent source")
             }
+            Self::CodexAgentMetadataToml {
+                markdown_snapshot_path,
+                rewritten_name,
+            } => {
+                let markdown = fs::read(markdown_snapshot_path).with_context(|| {
+                    format!(
+                        "failed to read relay baseline {}",
+                        markdown_snapshot_path.display()
+                    )
+                })?;
+                emitted_codex_agent_toml_from_toml_and_markdown(
+                    source,
+                    &markdown,
+                    rewritten_name.as_deref(),
+                    "Codex agent source",
+                )
+            }
+            Self::CodexAgentMarkdownBody {
+                toml_snapshot_path,
+                rewritten_name,
+            } => {
+                let source_toml = fs::read(toml_snapshot_path).with_context(|| {
+                    format!(
+                        "failed to read relay baseline {}",
+                        toml_snapshot_path.display()
+                    )
+                })?;
+                emitted_codex_agent_toml_from_toml_and_markdown(
+                    &source_toml,
+                    source,
+                    rewritten_name.as_deref(),
+                    "Codex agent source",
+                )
+            }
             Self::CodexAgentMarkdown {
                 runtime_name,
                 description,
@@ -770,6 +870,25 @@ impl RelayTransform {
                     Ok(managed.to_vec())
                 }
             }
+            Self::CodexAgentMetadataToml { rewritten_name, .. } => {
+                source_toml_metadata_from_managed_codex(
+                    managed,
+                    baseline_source,
+                    rewritten_name.as_deref(),
+                    "Codex agent source",
+                )
+            }
+            Self::CodexAgentMarkdownBody { .. } => baseline_source
+                .map(|baseline_source| {
+                    source_markdown_from_managed_codex(
+                        managed,
+                        baseline_source,
+                        "Codex agent source",
+                    )
+                })
+                .unwrap_or_else(|| {
+                    bail!("Codex agent relay needs a Markdown source baseline to write back")
+                }),
             Self::CodexAgentMarkdown { .. } => {
                 markdown_from_codex_agent_toml(managed, "Codex agent source")
             }

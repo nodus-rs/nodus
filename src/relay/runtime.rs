@@ -75,6 +75,14 @@ enum RelayTransform {
     CodexAgentToml {
         rewritten_name: Option<String>,
     },
+    CodexAgentMetadataToml {
+        markdown_snapshot_path: PathBuf,
+        rewritten_name: Option<String>,
+    },
+    CodexAgentMarkdownBody {
+        toml_snapshot_path: PathBuf,
+        rewritten_name: Option<String>,
+    },
     CodexAgentMarkdown {
         runtime_name: String,
         description: String,
@@ -928,6 +936,9 @@ fn plan_linked_source_path(
             mapping_baseline.as_deref(),
             &mapping.artifact_id,
         )?;
+        if mapping_baseline.as_deref() == Some(candidate.as_slice()) {
+            continue;
+        }
         if let Some(existing) = &candidate_source {
             if existing != &candidate {
                 conflicts.push(format!(
@@ -1315,6 +1326,29 @@ mod tests {
             "Security reviewer",
             "Review security-sensitive code.",
             "Be careful.",
+        );
+        init_git_repo(&repo_path);
+        run_git(&repo_path, &["tag", "v0.1.0"]);
+        (temp, repo_path)
+    }
+
+    fn create_remote_dependency_with_metadata_only_codex_agent() -> (TempDir, PathBuf) {
+        let temp = TempDir::new().unwrap();
+        let repo_path = temp.path().join("playbook-codex-metadata");
+        fs::create_dir_all(&repo_path).unwrap();
+        write_file(
+            &repo_path.join("skills/review/SKILL.md"),
+            "---\nname: Review\ndescription: Example.\n---\n# Review\n",
+        );
+        write_file(
+            &repo_path.join("agents/security.md"),
+            "---\ntitle: Security\n---\n# Security\nBase instructions.\n",
+        );
+        write_file(
+            &repo_path.join("agents/security.codex.toml"),
+            "name = \"Security reviewer\"\n\
+description = \"Review security-sensitive code.\"\n\
+model = \"gpt-5\"\n",
         );
         init_git_repo(&repo_path);
         run_git(&repo_path, &["tag", "v0.1.0"]);
@@ -1744,6 +1778,179 @@ placement = "project"
             fs::read_to_string(linked_repo.join("agents/security.md")).unwrap(),
             "# Security\nUpdated from Codex.\n"
         );
+    }
+
+    #[test]
+    fn relay_writes_metadata_only_codex_developer_edits_to_markdown_source() {
+        let (_remote_root, remote_repo) = create_remote_dependency_with_metadata_only_codex_agent();
+        let linked = clone_linked_repo(&remote_repo);
+        let linked_repo = linked.path().join("linked");
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        install_dependency(
+            project.path(),
+            cache.path(),
+            &remote_repo,
+            &[Adapter::Codex],
+        );
+
+        let package = resolved_package_by_alias(
+            project.path(),
+            cache.path(),
+            &[Adapter::Codex],
+            "playbook_codex_metadata",
+        );
+        let managed_path = managed_artifact_path(
+            project.path(),
+            Adapter::Codex,
+            ArtifactKind::Agent,
+            &package,
+            "security",
+        )
+        .unwrap();
+        write_file(
+            &managed_path,
+            "name = \"Security reviewer\"\n\
+description = \"Review security-sensitive code.\"\n\
+developer_instructions = \"# Security\\nUpdated from Codex.\\n\"\n\
+model = \"gpt-5\"\n",
+        );
+
+        let summary = relay_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "playbook_codex_metadata",
+            Some(&linked_repo),
+            Some(Adapter::Codex),
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        assert_eq!(summary.updated_file_count, 1);
+        assert_eq!(
+            fs::read_to_string(linked_repo.join("agents/security.md")).unwrap(),
+            "---\ntitle: Security\n---\n# Security\nUpdated from Codex.\n"
+        );
+        let relayed_toml =
+            fs::read_to_string(linked_repo.join("agents/security.codex.toml")).unwrap();
+        assert!(relayed_toml.contains("model = \"gpt-5\""));
+        assert!(!relayed_toml.contains("developer_instructions"));
+    }
+
+    #[test]
+    fn relay_writes_metadata_only_codex_metadata_edits_to_toml_source() {
+        let (_remote_root, remote_repo) = create_remote_dependency_with_metadata_only_codex_agent();
+        let linked = clone_linked_repo(&remote_repo);
+        let linked_repo = linked.path().join("linked");
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        install_dependency(
+            project.path(),
+            cache.path(),
+            &remote_repo,
+            &[Adapter::Codex],
+        );
+
+        let package = resolved_package_by_alias(
+            project.path(),
+            cache.path(),
+            &[Adapter::Codex],
+            "playbook_codex_metadata",
+        );
+        let managed_path = managed_artifact_path(
+            project.path(),
+            Adapter::Codex,
+            ArtifactKind::Agent,
+            &package,
+            "security",
+        )
+        .unwrap();
+        write_file(
+            &managed_path,
+            "name = \"Security reviewer\"\n\
+description = \"Updated metadata.\"\n\
+developer_instructions = \"# Security\\nBase instructions.\\n\"\n\
+model = \"gpt-5.1\"\n\
+sandbox_mode = \"workspace-write\"\n",
+        );
+
+        let summary = relay_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "playbook_codex_metadata",
+            Some(&linked_repo),
+            Some(Adapter::Codex),
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        assert_eq!(summary.updated_file_count, 1);
+        assert_eq!(
+            fs::read_to_string(linked_repo.join("agents/security.md")).unwrap(),
+            "---\ntitle: Security\n---\n# Security\nBase instructions.\n"
+        );
+        let relayed_toml =
+            fs::read_to_string(linked_repo.join("agents/security.codex.toml")).unwrap();
+        assert!(relayed_toml.contains("name = \"Security reviewer\""));
+        assert!(relayed_toml.contains("description = \"Updated metadata.\""));
+        assert!(relayed_toml.contains("model = \"gpt-5.1\""));
+        assert!(relayed_toml.contains("sandbox_mode = \"workspace-write\""));
+        assert!(!relayed_toml.contains("developer_instructions"));
+    }
+
+    #[test]
+    fn relay_rejects_metadata_only_codex_markdown_conflicts() {
+        let (_remote_root, remote_repo) = create_remote_dependency_with_metadata_only_codex_agent();
+        let linked = clone_linked_repo(&remote_repo);
+        let linked_repo = linked.path().join("linked");
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        install_dependency(
+            project.path(),
+            cache.path(),
+            &remote_repo,
+            &[Adapter::Codex],
+        );
+
+        let package = resolved_package_by_alias(
+            project.path(),
+            cache.path(),
+            &[Adapter::Codex],
+            "playbook_codex_metadata",
+        );
+        let managed_path = managed_artifact_path(
+            project.path(),
+            Adapter::Codex,
+            ArtifactKind::Agent,
+            &package,
+            "security",
+        )
+        .unwrap();
+        append_file(
+            &linked_repo.join("agents/security.md"),
+            "\nManual linked edit.\n",
+        );
+        write_file(
+            &managed_path,
+            "name = \"Security reviewer\"\n\
+description = \"Review security-sensitive code.\"\n\
+developer_instructions = \"# Security\\nUpdated from Codex.\\n\"\n\
+model = \"gpt-5\"\n",
+        );
+
+        let error = relay_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "playbook_codex_metadata",
+            Some(&linked_repo),
+            Some(Adapter::Codex),
+            &Reporter::silent(),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("changed in both managed outputs and linked source"));
+        assert!(error.contains("agents/security.md"));
     }
 
     #[test]
