@@ -1299,6 +1299,28 @@ fn accepts_local_marketplace_plugin_with_inline_lsp_servers() {
 }
 
 #[test]
+fn ancestor_marketplace_root_source_does_not_block_nested_package_loading() {
+    let temp = TempDir::new().unwrap();
+    write_marketplace(
+        temp.path(),
+        r#"{
+  "plugins": [
+    {
+      "name": "root-plugin",
+      "source": "./"
+    }
+  ]
+}"#,
+    );
+    write_valid_skill(&temp.path().join("plugins/nested"));
+
+    let loaded = load_dependency_from_dir(&temp.path().join("plugins/nested")).unwrap();
+
+    assert_eq!(loaded.discovered.skills.len(), 1);
+    assert_eq!(loaded.discovered.skills[0].id, "review");
+}
+
+#[test]
 fn skips_missing_claude_marketplace_local_plugin_sources_with_warning() {
     let temp = TempDir::new().unwrap();
     write_marketplace(

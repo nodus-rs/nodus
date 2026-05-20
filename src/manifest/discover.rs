@@ -771,13 +771,15 @@ fn read_ancestor_claude_marketplace_plugin_extras(
             let Some(source) = plugin.get("source").and_then(Value::as_str) else {
                 continue;
             };
-            let source_path = normalize_manifest_relative_path(
+            let Ok(source_path) = normalize_manifest_relative_path(
                 Path::new(source),
                 &format!(
                     "Claude marketplace plugin source in {}",
                     marketplace_path.display()
                 ),
-            )?;
+            ) else {
+                continue;
+            };
             let Ok(source_root) = canonicalize_existing_path(&ancestor.join(source_path)) else {
                 continue;
             };
