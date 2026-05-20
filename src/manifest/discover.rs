@@ -1570,10 +1570,10 @@ fn normalize_claude_plugin_path_arg(value: &str, plugin_root: &Path) -> String {
     }
 
     let path = Path::new(value);
-    let starts_with_relative_marker = path
-        .components()
-        .next()
-        .is_some_and(|component| matches!(component, Component::CurDir | Component::ParentDir));
+    let starts_with_relative_marker = value.starts_with("./")
+        || value.starts_with("../")
+        || value.starts_with(".\\")
+        || value.starts_with("..\\");
     if starts_with_relative_marker {
         let candidate = plugin_root.join(path);
         if candidate.exists() {
