@@ -735,6 +735,10 @@ fn read_supported_claude_plugin_extras(root: &Path) -> Result<Option<ClaudePlugi
     }
 
     let mut extras = ClaudePluginExtras::default();
+    if let Some(marketplace_extras) = read_ancestor_claude_marketplace_plugin_extras(root)? {
+        merge_claude_plugin_extras(&mut extras, marketplace_extras);
+    }
+
     let default_hooks = PathBuf::from("hooks").join("hooks.json");
     if root.join(&default_hooks).is_file() {
         extras
@@ -743,6 +747,67 @@ fn read_supported_claude_plugin_extras(root: &Path) -> Result<Option<ClaudePlugi
     }
 
     Ok((!extras.is_empty()).then_some(extras))
+}
+
+fn read_ancestor_claude_marketplace_plugin_extras(
+    root: &Path,
+) -> Result<Option<ClaudePluginExtras>> {
+    let root = canonicalize_existing_path(root)?;
+    for ancestor in root.ancestors().skip(1) {
+        let marketplace_path = ancestor.join(".claude-plugin").join("marketplace.json");
+        if !marketplace_path.is_file() {
+            continue;
+        }
+
+        let contents = fs::read_to_string(&marketplace_path)
+            .with_context(|| format!("failed to read {}", marketplace_path.display()))?;
+        let descriptor: Value = serde_json::from_str(&contents)
+            .with_context(|| format!("failed to parse JSON in {}", marketplace_path.display()))?;
+        let Some(plugins) = descriptor.get("plugins").and_then(Value::as_array) else {
+            continue;
+        };
+
+        for plugin in plugins {
+            let Some(source) = plugin.get("source").and_then(Value::as_str) else {
+                continue;
+            };
+            let source_path = normalize_manifest_relative_path(
+                Path::new(source),
+                &format!(
+                    "Claude marketplace plugin source in {}",
+                    marketplace_path.display()
+                ),
+            )?;
+            let Ok(source_root) = canonicalize_existing_path(&ancestor.join(source_path)) else {
+                continue;
+            };
+            if source_root != root {
+                continue;
+            }
+
+            let mut warnings = Vec::new();
+            return Ok(Some(parse_claude_plugin_extras(
+                &root,
+                plugin,
+                &marketplace_path,
+                &mut warnings,
+            )?));
+        }
+    }
+
+    Ok(None)
+}
+
+fn merge_claude_plugin_extras(target: &mut ClaudePluginExtras, source: ClaudePluginExtras) {
+    target.skills.extend(source.skills);
+    target.agents.extend(source.agents);
+    target.commands.extend(source.commands);
+    target
+        .hook_compat_sources
+        .extend(source.hook_compat_sources);
+    target.mcp_servers.extend(source.mcp_servers);
+    target.native_components.extend(source.native_components);
+    target.native_metadata.extend(source.native_metadata);
 }
 
 fn collect_claude_plugin_runtime_files(
@@ -938,7 +1003,27 @@ fn parse_claude_plugin_extras(
             warnings,
         )?,
         native_components: discover_claude_native_components(root),
+        native_metadata: parse_claude_plugin_native_metadata(object, metadata_path, warnings),
     })
+}
+
+fn parse_claude_plugin_native_metadata(
+    object: &serde_json::Map<String, Value>,
+    metadata_path: &Path,
+    warnings: &mut Vec<String>,
+) -> BTreeMap<String, Value> {
+    let mut metadata = BTreeMap::new();
+    if let Some(lsp_servers) = object.get("lspServers") {
+        if lsp_servers.is_object() {
+            metadata.insert("lspServers".to_string(), lsp_servers.clone());
+        } else {
+            warnings.push(format!(
+                "ignoring unsupported Claude plugin field `lspServers` in {}: expected an object",
+                metadata_path.display()
+            ));
+        }
+    }
+    metadata
 }
 
 fn discover_claude_native_components(root: &Path) -> Vec<PathBuf> {

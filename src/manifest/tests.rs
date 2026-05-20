@@ -1254,6 +1254,51 @@ fn marketplace_sources_are_resolved_from_repo_root() {
 }
 
 #[test]
+fn accepts_local_marketplace_plugin_with_inline_lsp_servers() {
+    let temp = TempDir::new().unwrap();
+    write_marketplace(
+        temp.path(),
+        r#"{
+  "plugins": [
+    {
+      "name": "clangd-lsp",
+      "source": "./plugins/clangd-lsp",
+      "lspServers": {
+        "clangd": {
+          "command": "clangd",
+          "args": ["--background-index"]
+        }
+      }
+    }
+  ]
+}"#,
+    );
+    write_file(
+        &temp.path().join("plugins/clangd-lsp/README.md"),
+        "# clangd\n",
+    );
+
+    let wrapper = load_dependency_from_dir(temp.path()).unwrap();
+
+    assert!(wrapper.warnings.is_empty());
+    assert_eq!(
+        wrapper
+            .manifest
+            .dependencies
+            .get("clangd_lsp")
+            .and_then(|dependency| dependency.path.as_deref()),
+        Some(Path::new("./plugins/clangd-lsp"))
+    );
+
+    let plugin = load_dependency_from_dir(&temp.path().join("plugins/clangd-lsp")).unwrap();
+    let metadata = plugin.claude_plugin_native_metadata().unwrap();
+    assert_eq!(
+        metadata["lspServers"]["clangd"]["command"].as_str(),
+        Some("clangd")
+    );
+}
+
+#[test]
 fn skips_missing_claude_marketplace_local_plugin_sources_with_warning() {
     let temp = TempDir::new().unwrap();
     write_marketplace(

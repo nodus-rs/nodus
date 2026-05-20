@@ -2212,6 +2212,68 @@ shared = { path = "vendor/shared" }
 }
 
 #[test]
+fn sync_emits_claude_marketplace_inline_lsp_metadata() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[dependencies]
+clangd_lsp = { path = "vendor/market/plugins/clangd-lsp" }
+"#,
+    );
+    write_file(
+        &temp
+            .path()
+            .join("vendor/market/.claude-plugin/marketplace.json"),
+        r#"{
+  "plugins": [
+    {
+      "name": "clangd-lsp",
+      "source": "./plugins/clangd-lsp",
+      "lspServers": {
+        "clangd": {
+          "command": "clangd",
+          "args": ["--background-index"]
+        }
+      }
+    }
+  ]
+}
+"#,
+    );
+    write_file(
+        &temp
+            .path()
+            .join("vendor/market/plugins/clangd-lsp/README.md"),
+        "# clangd\n",
+    );
+
+    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Claude]).unwrap();
+
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let package = resolution
+        .packages
+        .iter()
+        .find(|package| package.alias == "clangd_lsp")
+        .unwrap();
+    let plugin_root = global_native_plugin_root(temp.path(), package, Adapter::Claude);
+    let plugin: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(plugin_root.join(".claude-plugin/plugin.json")).unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        plugin["lspServers"]["clangd"]["command"].as_str(),
+        Some("clangd")
+    );
+    assert_eq!(
+        plugin["lspServers"]["clangd"]["args"][0].as_str(),
+        Some("--background-index")
+    );
+}
+
+#[test]
 fn sync_emits_codex_native_plugin_layout_for_dependency_package() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();

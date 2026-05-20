@@ -210,6 +210,13 @@ impl LoadedManifest {
             .unwrap_or(&[])
     }
 
+    pub fn claude_plugin_native_metadata(&self) -> Option<&BTreeMap<String, serde_json::Value>> {
+        self.claude_plugin
+            .as_ref()
+            .map(|plugin| &plugin.native_metadata)
+            .filter(|metadata| !metadata.is_empty())
+    }
+
     fn validate_activation(&self) -> Result<()> {
         let Some(activation) = &self.manifest.activation else {
             return Ok(());

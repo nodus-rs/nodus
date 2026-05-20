@@ -1516,6 +1516,7 @@ fn native_package_plugin_has_content(adapter: Adapter, package: &ResolvedPackage
             && !manifest.discovered.rules.is_empty())
         || package_has_mcp_servers(package)
         || (adapter == Adapter::Claude && !manifest.claude_plugin_native_components().is_empty())
+        || (adapter == Adapter::Claude && manifest.claude_plugin_native_metadata().is_some())
         || (adapter == Adapter::Claude
             && !matches!(package.source, PackageSource::Root)
             && (package_has_claude_targeted_hooks(package)
@@ -1925,6 +1926,12 @@ fn claude_native_package_plugin_json(
             "mcpServers".into(),
             JsonValue::String("./.mcp.json".to_string()),
         );
+    }
+
+    if let Some(metadata) = package.manifest.claude_plugin_native_metadata() {
+        for (key, value) in metadata {
+            root.entry(key.clone()).or_insert_with(|| value.clone());
+        }
     }
 
     json_bytes(root)

@@ -463,6 +463,7 @@ pub(super) struct ClaudePluginExtras {
     pub(super) hook_compat_sources: Vec<ClaudePluginHookCompatSource>,
     pub(super) mcp_servers: Vec<ClaudePluginMcpSource>,
     pub(super) native_components: Vec<PathBuf>,
+    pub(super) native_metadata: BTreeMap<String, Value>,
 }
 
 impl ClaudePluginExtras {
@@ -473,6 +474,7 @@ impl ClaudePluginExtras {
             && self.hook_compat_sources.is_empty()
             && self.mcp_servers.is_empty()
             && self.native_components.is_empty()
+            && self.native_metadata.is_empty()
     }
 
     pub(super) fn has_nodus_manageable_content(&self) -> bool {
@@ -482,6 +484,7 @@ impl ClaudePluginExtras {
             || !self.hook_compat_sources.is_empty()
             || !self.mcp_servers.is_empty()
             || !self.native_components.is_empty()
+            || !self.native_metadata.is_empty()
     }
 }
 
