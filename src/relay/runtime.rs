@@ -945,7 +945,7 @@ fn plan_linked_source_path(
             if existing != &candidate {
                 conflicts.push(format!(
                     "managed variants for {} disagree on relayed contents",
-                    linked_source_path.display()
+                    display_path(&linked_source_path)
                 ));
                 continue;
             }
@@ -1003,7 +1003,7 @@ fn plan_linked_source_path(
         if linked_current.is_some() && !linked_matches_baseline && !linked_hash_matches_state {
             conflicts.push(format!(
                 "{} changed in both managed outputs and linked source",
-                linked_source_path.display()
+                display_path(&linked_source_path)
             ));
             return Ok(PlannedLinkedSourcePath {
                 relative_path,
@@ -1017,7 +1017,7 @@ fn plan_linked_source_path(
     } else if linked_current.is_some() && !linked_hash_matches_state {
         conflicts.push(format!(
             "{} already exists in the linked source and does not match the managed creation candidate",
-            linked_source_path.display()
+            display_path(&linked_source_path)
         ));
         return Ok(PlannedLinkedSourcePath {
             relative_path,
