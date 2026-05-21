@@ -249,7 +249,7 @@ fn planned_stale_paths(
                 continue;
             }
             let path = entry.path();
-            if !desired_paths.contains(&path) {
+            if !desired_paths.contains(&path) && !planned_paths.contains(path.as_path()) {
                 removals.insert(path);
             }
         }
@@ -1158,6 +1158,35 @@ mod managed_mode_tests {
         assert!(!is_claude_plugin_runtime_path(Path::new(
             "/tmp/proj/.nodus/packages/alias"
         )));
+    }
+
+    #[test]
+    fn planned_stale_paths_keeps_prefix_owned_planned_files() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let hooks_dir = temp.path().join(".claude/hooks");
+        fs::create_dir_all(&hooks_dir).unwrap();
+        let planned_path = hooks_dir.join("nodus-plugin-hook-shared-11111111.sh");
+        let stale_path = hooks_dir.join("nodus-plugin-hook-shared-22222222.sh");
+        fs::write(&planned_path, "#!/bin/sh\n").unwrap();
+        fs::write(&stale_path, "#!/bin/sh\n").unwrap();
+
+        let owned_paths = OwnedSet {
+            prefixes: vec![crate::lockfile::OwnedPrefixPath {
+                dir: hooks_dir,
+                prefix: "nodus-plugin-hook-shared-".into(),
+            }],
+            ..OwnedSet::default()
+        };
+        let desired_paths = HashSet::new();
+        let planned_files = vec![ManagedFile {
+            path: planned_path.clone(),
+            contents: b"#!/bin/sh\n".to_vec(),
+        }];
+
+        let removals = planned_stale_paths(&owned_paths, &desired_paths, &planned_files).unwrap();
+
+        assert!(!removals.contains(&planned_path));
+        assert!(removals.contains(&stale_path));
     }
 
     #[cfg(unix)]
