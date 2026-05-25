@@ -12904,6 +12904,79 @@ fn slice4_install_digest_from_disk_matches_recorded_digest_for_unchanged_install
     }
 }
 
+/// Regression: `install_digest` must be hashed from the bytes actually written
+/// to disk (the merged output plan), not the merge-free ownership plan. When a
+/// consumer has pre-existing MCP entries, the rendered `.mcp.json` merges them
+/// in, so the written file differs from the merge-free plan. Hashing the latter
+/// made `nodus sync --frozen` report perpetual "disk drift" on every
+/// merge-target config file (`.mcp.json`, `.codex/config.toml`,
+/// `.claude/settings.json`, `opencode.json`).
+#[test]
+fn slice4_install_digest_matches_disk_for_merged_mcp_config() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[dependencies.firebase]
+path = "vendor/firebase"
+"#,
+    );
+    write_file(
+        &temp.path().join("vendor/firebase/nodus.toml"),
+        r#"
+[mcp_servers.firebase]
+command = "npx"
+"#,
+    );
+    // Pre-existing user MCP entry, present on disk before sync. The rendered
+    // `.mcp.json` merges it with the managed `firebase__firebase` server, so the
+    // written bytes diverge from the merge-free ownership plan.
+    write_file(
+        &temp.path().join(".mcp.json"),
+        r#"{
+  "mcpServers": {
+    "local": {
+      "command": "node"
+    }
+  }
+}
+"#,
+    );
+
+    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+
+    // The merge actually happened: the user entry survives on disk alongside the
+    // managed one. Without divergence this test could not catch the bug.
+    let json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(temp.path().join(".mcp.json")).unwrap()).unwrap();
+    assert_eq!(
+        json["mcpServers"]["local"]["command"].as_str(),
+        Some("node")
+    );
+    assert_eq!(
+        json["mcpServers"]["firebase__firebase"]["command"].as_str(),
+        Some("npx")
+    );
+
+    for package in &lockfile.packages {
+        let recorded = package
+            .install_digest
+            .clone()
+            .expect("v10 emission always stamps install_digest");
+        let disk = super::install_digest::install_digest_from_disk(temp.path(), &lockfile, package)
+            .unwrap()
+            .expect("clean install means no owned files are missing");
+        assert_eq!(
+            disk, recorded,
+            "package `{}` disk digest must match recorded digest after a clean sync \
+             that merged pre-existing MCP config",
+            package.alias
+        );
+    }
+}
+
 #[test]
 fn slice4_install_digest_from_disk_returns_none_when_owned_file_is_missing() {
     let temp = slice4_make_workspace();

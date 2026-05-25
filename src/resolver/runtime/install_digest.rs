@@ -26,6 +26,10 @@
 //!   Same comparison-based drift semantics as subtrees.
 //! - Walk errors (permission denied, symlink loop, etc.) → propagated as
 //!   `Err`, since they indicate a genuinely broken workspace.
+//! - Global `${NODUS_HOME}` entries (native marketplace plugin snapshots) →
+//!   skipped entirely. They live outside the workspace and the write side never
+//!   attributes them, so including them here would guarantee a digest mismatch
+//!   under `--frozen`. See [`is_global_home_entry`].
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -60,6 +64,9 @@ pub(crate) fn install_digest_from_disk(
     let names = ManagedArtifactNames::from_locked_packages(lockfile.packages.iter());
 
     for owned in &package.owned_files {
+        if is_global_home_entry(owned, project_root) {
+            continue;
+        }
         // Reject lockfile entries that escape the project root before we
         // touch the disk. A hand-edited or malicious lockfile carrying an
         // absolute path (e.g. "/etc/passwd") or `..` segments would
@@ -96,6 +103,9 @@ pub(crate) fn install_digest_from_disk(
     }
 
     for subtree in &package.owned_subtrees {
+        if is_global_home_entry(subtree, project_root) {
+            continue;
+        }
         let subtree_relative = Lockfile::validate_managed_relative(subtree, project_root)
             .with_context(|| {
                 format!(
@@ -152,6 +162,9 @@ pub(crate) fn install_digest_from_disk(
     }
 
     for rule in &package.owned_prefixes {
+        if is_global_home_entry(&rule.dir, project_root) {
+            continue;
+        }
         let dir_relative = Lockfile::validate_managed_relative(&rule.dir, project_root)
             .with_context(|| {
                 format!(
@@ -173,6 +186,26 @@ pub(crate) fn install_digest_from_disk(
         .map(|(path, contents)| (path.as_str(), contents.as_slice()))
         .collect();
     Ok(Some(content_digest(&digest_input)))
+}
+
+/// True when an `owned_*` lockfile entry points into the global Nodus home
+/// rather than the workspace.
+///
+/// Native marketplace plugin snapshots (e.g. the codex
+/// `${NODUS_HOME}/marketplaces/codex/plugins/<pkg>` subtree) are recorded as
+/// `${NODUS_HOME}/...` tokens — or, in pre-token lockfiles, an absolute path
+/// under the home. They live outside the workspace and are shared across repos,
+/// so the write side (`install_digests_by_package`) never attributes them to a
+/// package: it only buckets project-root-relative output files. The disk
+/// recompute must skip them too; otherwise it would hash files the recorded
+/// digest never covered and `nodus sync --frozen` would report perpetual
+/// "disk drift" for any package that publishes a native plugin.
+fn is_global_home_entry(entry: &str, project_root: &Path) -> bool {
+    if entry.starts_with(crate::adapters::NODUS_HOME_TOKEN) {
+        return true;
+    }
+    let path = Path::new(entry);
+    path.is_absolute() && path.starts_with(crate::adapters::global_nodus_home(project_root))
 }
 
 /// Walk every regular file under `subtree_abs` and insert
@@ -270,6 +303,68 @@ mod tests {
     use crate::lockfile::{LockedSource, OwnedPrefix};
     use std::fs;
     use tempfile::TempDir;
+
+    /// Regression test for the `nodus sync --frozen` "install_digest mismatch
+    /// (disk drift)" bug. A package whose managed output is a global
+    /// `${NODUS_HOME}` marketplace subtree (native codex plugin snapshot) must
+    /// hash to the same value the write side records. The write side
+    /// (`install_digests_by_package`) only attributes project-root-relative
+    /// output files, so the shared global snapshot does not contribute; the
+    /// disk recompute must skip it too. Before the fix the disk side walked the
+    /// global subtree and produced a digest that could never equal the recorded
+    /// (subtree-free) one, so `--frozen` failed even right after a clean sync.
+    ///
+    /// We feed the production-shaped `${NODUS_HOME}/...` token string and place
+    /// the files where the test shim resolves the home (`<root>/.nodus-global`)
+    /// so the buggy code path would otherwise pick them up.
+    #[test]
+    fn global_nodus_home_subtree_excluded_from_digest() {
+        let temp = TempDir::new().unwrap();
+        let plugin = temp
+            .path()
+            .join(".nodus-global/marketplaces/codex/plugins/foo+main");
+        fs::create_dir_all(plugin.join("skills/x")).unwrap();
+        fs::write(plugin.join("skills/x/SKILL.md"), b"skill").unwrap();
+        fs::write(plugin.join(".mcp.json"), b"{}").unwrap();
+
+        let mut pkg = minimal_package("foo");
+        pkg.owned_subtrees = vec!["${NODUS_HOME}/marketplaces/codex/plugins/foo+main".into()];
+
+        let digest = install_digest_for_package(temp.path(), &pkg)
+            .unwrap()
+            .expect("global-only package contributes empty entries, not None");
+
+        assert_eq!(
+            digest,
+            content_digest(&[]),
+            "global ${{NODUS_HOME}} subtree must be excluded from install_digest \
+             so it matches the write side"
+        );
+    }
+
+    /// A package that owns both a workspace-local file and a global
+    /// `${NODUS_HOME}` subtree must hash only the local file — the global
+    /// snapshot is excluded on both sides.
+    #[test]
+    fn local_files_kept_when_global_subtree_excluded() {
+        let temp = TempDir::new().unwrap();
+        fs::write(temp.path().join("local.txt"), b"local").unwrap();
+        let plugin = temp
+            .path()
+            .join(".nodus-global/marketplaces/codex/plugins/foo+main");
+        fs::create_dir_all(&plugin).unwrap();
+        fs::write(plugin.join(".mcp.json"), b"{}").unwrap();
+
+        let mut pkg = minimal_package("foo");
+        pkg.owned_files = vec!["local.txt".into()];
+        pkg.owned_subtrees = vec!["${NODUS_HOME}/marketplaces/codex/plugins/foo+main".into()];
+
+        let digest = install_digest_for_package(temp.path(), &pkg)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(digest, content_digest(&[("local.txt", b"local" as &[u8])]));
+    }
 
     fn minimal_package(alias: &str) -> LockedPackage {
         LockedPackage {

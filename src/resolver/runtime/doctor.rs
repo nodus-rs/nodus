@@ -257,7 +257,8 @@ fn inspect_doctor_state(
         },
     )?;
     let desired_paths = resolution.managed_paths_from_output_plan(cwd, &ownership_output_plan)?;
-    let expected_lockfile = resolution.to_lockfile_from_output_plan(cwd, &ownership_output_plan)?;
+    let expected_lockfile =
+        resolution.to_lockfile_from_plans(cwd, &ownership_output_plan, &output_plan.files)?;
     let external_files = output_plan.external_files;
     let planned_files = output_plan.files;
     let managed_file_count = planned_files.len();
