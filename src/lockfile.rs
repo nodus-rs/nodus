@@ -1182,7 +1182,15 @@ mod tests {
     #[test]
     fn validate_rejects_absolute_paths_outside_the_home() {
         let temp = TempDir::new().unwrap();
-        let err = Lockfile::validate_managed_relative("/etc/passwd", temp.path()).unwrap_err();
+        // Use a path that is genuinely absolute on the host OS: a bare
+        // POSIX-style `/etc/...` is *not* absolute on Windows (it lacks a drive
+        // prefix), so it would be read as a workspace-relative path there.
+        let outside = if cfg!(windows) {
+            r"C:\Windows\System32\drivers\etc\hosts"
+        } else {
+            "/etc/passwd"
+        };
+        let err = Lockfile::validate_managed_relative(outside, temp.path()).unwrap_err();
         assert!(err.to_string().contains("escapes"), "got: {err}");
     }
 
