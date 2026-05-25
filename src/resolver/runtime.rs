@@ -1045,8 +1045,11 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
         let external_files = output_plan.external_files.clone();
         let desired_paths = resolution
             .managed_paths_from_output_plan(&install_paths.runtime_root, &ownership_output_plan)?;
-        let lockfile = resolution
-            .to_lockfile_from_output_plan(&install_paths.runtime_root, &ownership_output_plan)?;
+        let lockfile = resolution.to_lockfile_from_plans(
+            &install_paths.runtime_root,
+            &ownership_output_plan,
+            &planned_files,
+        )?;
         let mut owned_paths =
             load_owned_paths(&install_paths.runtime_root, existing_lockfile.as_ref())?;
         if existing_lockfile.is_none() {
@@ -1362,12 +1365,33 @@ impl Resolution {
         runtime_root: &Path,
         output_plan: &OutputPlan,
     ) -> Result<Lockfile> {
+        // Single-plan callers attribute ownership from, and hash the digest
+        // over, the same plan.
+        self.to_lockfile_from_plans(runtime_root, output_plan, &output_plan.files)
+    }
+
+    /// Build the lockfile attributing per-package ownership from `ownership_plan`
+    /// while computing each `install_digest` over `digest_files`.
+    ///
+    /// `sync` and `doctor` build two plans: ownership is derived from the
+    /// canonical, merge-free plan (so the owned-path set is stable regardless of
+    /// the consumer's pre-existing config), but the digest must cover the merged
+    /// bytes actually written to disk — the same content
+    /// `install_digest_from_disk` reads back. Hashing the merge-free plan
+    /// instead made `nodus sync --frozen` report perpetual drift on every
+    /// merge-target config file.
+    fn to_lockfile_from_plans(
+        &self,
+        runtime_root: &Path,
+        ownership_plan: &OutputPlan,
+        digest_files: &[ManagedFile],
+    ) -> Result<Lockfile> {
         // BTreeMap (not HashMap) so attribute_file_to_package iterates aliases
         // in deterministic alphabetical order. With a HashMap, two packages
         // with overlapping ownership claims would attribute differently across
         // runs and silently shift install_digest contents, breaking the
         // byte-identical-idempotent guarantee.
-        let mut per_package_owned: BTreeMap<String, PackageOwnedPaths> = output_plan
+        let mut per_package_owned: BTreeMap<String, PackageOwnedPaths> = ownership_plan
             .managed_files_by_package
             .iter()
             .cloned()
@@ -1375,7 +1399,7 @@ impl Resolution {
             .collect();
 
         let per_package_install_digests =
-            install_digests_by_package(runtime_root, output_plan, &per_package_owned, &[])?;
+            install_digests_by_package(runtime_root, digest_files, &per_package_owned)?;
 
         let mut packages = Vec::new();
 
@@ -1866,20 +1890,20 @@ fn count_owned_files(lockfile: &Lockfile) -> usize {
 /// caller stamps `content_digest(&[])` on them so v10 lockfiles always carry a
 /// digest (Slice 4's drift fast-path needs a stable empty-install baseline).
 ///
-/// `extra_files` is a compatibility input for files outside the ordinary
-/// output plan that still appear in a package ownership view. Most managed
-/// outputs, including native marketplace JSONs, should already be in
-/// `output_plan.files`.
+/// `files` are the bytes actually written to disk. Sync and doctor pass the
+/// merged output plan here (not the merge-free ownership plan) so the digest
+/// covers the same content `install_digest_from_disk` reads back; otherwise
+/// merge-target config files (`.mcp.json`, `.codex/config.toml`,
+/// `.claude/settings.json`, `opencode.json`) would always report drift under
+/// `nodus sync --frozen`.
 fn install_digests_by_package(
     runtime_root: &Path,
-    output_plan: &OutputPlan,
+    files: &[ManagedFile],
     per_package_owned: &BTreeMap<String, PackageOwnedPaths>,
-    extra_files: &[ManagedFile],
 ) -> Result<HashMap<String, String>> {
     let mut per_package_entries: BTreeMap<String, BTreeMap<PathBuf, Vec<u8>>> = BTreeMap::new();
 
-    let all_files = output_plan.files.iter().chain(extra_files.iter());
-    for file in all_files {
+    for file in files {
         let target_relative = file
             .path
             .strip_prefix(runtime_root)
