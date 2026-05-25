@@ -968,6 +968,43 @@ pub(crate) fn global_nodus_home(_project_root: &Path) -> PathBuf {
     PathBuf::from(".nodus")
 }
 
+/// Portable stand-in for the global Nodus home in lockfile paths.
+///
+/// The home location is machine-specific (`~/.nodus`, or wherever `NODUS_HOME`
+/// points), so writing a resolved absolute path like
+/// `/Users/alice/.nodus/marketplaces/...` would bake one developer's home into
+/// `nodus.lock` — a file that is committed and shared across a team. We instead
+/// store entries under the home as `${NODUS_HOME}/<relative>` and re-anchor them
+/// against the local home on read via [`expand_nodus_home_relative`].
+pub(crate) const NODUS_HOME_TOKEN: &str = "${NODUS_HOME}";
+
+/// Encode `path` as a portable `${NODUS_HOME}/<relative>` string when it lives
+/// under `home`. Returns `None` when `path` is not under `home`, leaving the
+/// caller to fall back to a workspace-relative or absolute rendering.
+pub(crate) fn encode_nodus_home_relative(home: &Path, path: &Path) -> Option<String> {
+    let relative = strip_path_prefix(path, home)?;
+    let rendered = display_path(relative);
+    if rendered.is_empty() || rendered == "." {
+        Some(NODUS_HOME_TOKEN.to_string())
+    } else {
+        Some(format!("{NODUS_HOME_TOKEN}/{rendered}"))
+    }
+}
+
+/// Re-anchor a `${NODUS_HOME}/<relative>` lockfile entry against `home`.
+/// Returns `None` for strings that do not start with the token so callers can
+/// fall through to their existing workspace-relative handling. The caller is
+/// responsible for rejecting `..` segments in the remainder.
+pub(crate) fn expand_nodus_home_relative(home: &Path, value: &str) -> Option<PathBuf> {
+    let remainder = value.strip_prefix(NODUS_HOME_TOKEN)?;
+    let remainder = remainder.strip_prefix('/').unwrap_or(remainder);
+    if remainder.is_empty() {
+        Some(home.to_path_buf())
+    } else {
+        Some(home.join(remainder))
+    }
+}
+
 pub(crate) fn native_marketplace_root(project_root: &Path, adapter: Adapter) -> PathBuf {
     let global_home = global_nodus_home(project_root);
     match adapter {
@@ -1441,5 +1478,74 @@ mod identity_tests {
         assert_eq!(names["one"], "playbook-ios");
         assert_eq!(names["two"], "playbook-ios+fb72");
         assert_eq!(names["three"], "docs-tools");
+    }
+}
+
+#[cfg(test)]
+mod nodus_home_path_tests {
+    use super::*;
+
+    #[test]
+    fn encodes_path_under_home_as_portable_token() {
+        let home = Path::new("/Users/wendell/.nodus");
+        let path = Path::new("/Users/wendell/.nodus/marketplaces/codex/plugins/core+3051");
+
+        assert_eq!(
+            encode_nodus_home_relative(home, path).as_deref(),
+            Some("${NODUS_HOME}/marketplaces/codex/plugins/core+3051"),
+        );
+    }
+
+    #[test]
+    fn encodes_home_root_as_bare_token() {
+        let home = Path::new("/Users/wendell/.nodus");
+        assert_eq!(
+            encode_nodus_home_relative(home, home).as_deref(),
+            Some(NODUS_HOME_TOKEN),
+        );
+    }
+
+    #[test]
+    fn returns_none_for_paths_outside_home() {
+        let home = Path::new("/Users/wendell/.nodus");
+        assert_eq!(
+            encode_nodus_home_relative(home, Path::new("/Users/wendell/project/.codex")),
+            None,
+        );
+    }
+
+    #[test]
+    fn expands_token_against_a_different_developers_home() {
+        // The lockfile was written by `wendell`; `alice` re-anchors it.
+        let alice_home = Path::new("/Users/alice/.nodus");
+        assert_eq!(
+            expand_nodus_home_relative(
+                alice_home,
+                "${NODUS_HOME}/marketplaces/codex/plugins/core+3051",
+            ),
+            Some(alice_home.join("marketplaces/codex/plugins/core+3051")),
+        );
+    }
+
+    #[test]
+    fn round_trips_through_a_relocated_home() {
+        let writer_home = Path::new("/Users/wendell/.nodus");
+        let reader_home = Path::new("/home/ci/.config/nodus");
+        let path = writer_home.join("marketplaces/codex/plugins/core+3051");
+
+        let encoded = encode_nodus_home_relative(writer_home, &path).expect("under home");
+        assert_eq!(
+            expand_nodus_home_relative(reader_home, &encoded),
+            Some(reader_home.join("marketplaces/codex/plugins/core+3051")),
+        );
+    }
+
+    #[test]
+    fn expand_returns_none_for_non_token_strings() {
+        let home = Path::new("/Users/wendell/.nodus");
+        assert_eq!(
+            expand_nodus_home_relative(home, ".nodus/packages/foo"),
+            None,
+        );
     }
 }

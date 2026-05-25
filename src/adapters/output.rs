@@ -3340,7 +3340,18 @@ fn hook_targets_adapter(hook: &HookSpec, selected_adapters: Adapters, adapter: A
 }
 
 fn display_relative(project_root: &Path, path: &Path) -> String {
-    display_path(strip_path_prefix(path, project_root).unwrap_or(path))
+    if let Some(relative) = strip_path_prefix(path, project_root) {
+        return display_path(relative);
+    }
+    // Paths outside the workspace are almost always under the global Nodus home
+    // (native plugin snapshots live in `~/.nodus/...`). Render those as a
+    // portable `${NODUS_HOME}/...` token so the lockfile stays reusable across
+    // developers instead of embedding one machine's home directory.
+    let home = super::global_nodus_home(project_root);
+    if let Some(portable) = super::encode_nodus_home_relative(&home, path) {
+        return portable;
+    }
+    display_path(path)
 }
 
 fn validate_direct_managed_root(

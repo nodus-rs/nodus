@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -397,6 +398,7 @@ impl Lockfile {
 
         for relative in &self.legacy_managed_files {
             let relative_path = Self::validate_managed_relative(relative, project_root)?;
+            let relative_path: &Path = &relative_path;
             managed_paths.insert(project_root.join(relative_path));
             if let Some(paths) =
                 self.expand_previous_schema_managed_root(project_root, relative_path)
@@ -430,6 +432,7 @@ impl Lockfile {
 
         for relative in &self.legacy_managed_files {
             let relative_path = Self::validate_managed_relative(relative, project_root)?;
+            let relative_path: &Path = &relative_path;
             if let Some(paths) = self.expand_managed_root(project_root, relative_path) {
                 managed_paths.extend(paths);
             } else {
@@ -486,15 +489,32 @@ impl Lockfile {
     pub(crate) fn validate_managed_relative<'a>(
         relative: &'a str,
         project_root: &Path,
-    ) -> Result<&'a Path> {
+    ) -> Result<Cow<'a, Path>> {
         let relative_path = Path::new(relative);
         let contains_parent = relative_path
             .components()
             .any(|component| matches!(component, Component::ParentDir));
+        let global_home = crate::adapters::global_nodus_home(project_root);
+
+        // Portable `${NODUS_HOME}/<relative>` entries re-anchor against this
+        // machine's home, so a lockfile committed by one developer resolves
+        // correctly for everyone else regardless of where their `~/.nodus`
+        // (or `NODUS_HOME`) lives.
+        if let Some(expanded) = crate::adapters::expand_nodus_home_relative(&global_home, relative)
+        {
+            if contains_parent {
+                bail!("managed path {} escapes the Nodus home", relative);
+            }
+            return Ok(Cow::Owned(expanded));
+        }
+
         if relative_path.is_absolute() {
-            let global_home = crate::adapters::global_nodus_home(project_root);
+            // Legacy form: a resolved absolute path under the local home, written
+            // by pre-`${NODUS_HOME}` builds. Accept it on the machine that wrote
+            // it (where the home prefix still matches); a subsequent `nodus sync`
+            // rewrites it to the portable token.
             if !contains_parent && relative_path.starts_with(&global_home) {
-                return Ok(relative_path);
+                return Ok(Cow::Borrowed(relative_path));
             }
             bail!(
                 "managed path {} escapes project root {}",
@@ -509,7 +529,7 @@ impl Lockfile {
                 project_root.display()
             );
         }
-        Ok(relative_path)
+        Ok(Cow::Borrowed(relative_path))
     }
 
     fn expand_managed_root(
@@ -1121,6 +1141,49 @@ mod tests {
         let decoded: Lockfile = toml::from_str(&encoded).unwrap();
 
         assert_eq!(decoded, lockfile);
+    }
+
+    #[test]
+    fn validate_expands_portable_nodus_home_token() {
+        let temp = TempDir::new().unwrap();
+        let project_root = temp.path();
+        // In test builds the global home resolves under the project root.
+        let home = crate::adapters::global_nodus_home(project_root);
+
+        let resolved = Lockfile::validate_managed_relative(
+            "${NODUS_HOME}/marketplaces/codex/plugins/core+3051",
+            project_root,
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolved.as_ref(),
+            home.join("marketplaces/codex/plugins/core+3051"),
+        );
+    }
+
+    #[test]
+    fn validate_rejects_nodus_home_token_with_parent_segment() {
+        let temp = TempDir::new().unwrap();
+        let err =
+            Lockfile::validate_managed_relative("${NODUS_HOME}/../../etc/passwd", temp.path())
+                .unwrap_err();
+        assert!(err.to_string().contains("escapes"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_keeps_workspace_relative_paths() {
+        let temp = TempDir::new().unwrap();
+        let resolved =
+            Lockfile::validate_managed_relative(".nodus/packages/foo", temp.path()).unwrap();
+        assert_eq!(resolved.as_ref(), Path::new(".nodus/packages/foo"));
+    }
+
+    #[test]
+    fn validate_rejects_absolute_paths_outside_the_home() {
+        let temp = TempDir::new().unwrap();
+        let err = Lockfile::validate_managed_relative("/etc/passwd", temp.path()).unwrap_err();
+        assert!(err.to_string().contains("escapes"), "got: {err}");
     }
 
     #[test]
