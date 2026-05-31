@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use rayon::prelude::*;
@@ -64,16 +65,55 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
         .with_context(|| format!("failed to write temp file for {}", path.display()))?;
     temp.flush()
         .with_context(|| format!("failed to flush temp file for {}", path.display()))?;
-    temp.persist(path)
-        .map_err(|error| error.error)
-        .with_context(|| {
-            format!(
-                "failed to persist atomically written file to {}",
-                path.display()
-            )
-        })?;
+    persist_temp_file_with_retry(temp, path)?;
 
     Ok(())
+}
+
+fn persist_temp_file_with_retry(mut temp: NamedTempFile, path: &Path) -> Result<()> {
+    let mut attempt = 0;
+    loop {
+        match temp.persist(path) {
+            Ok(_) => return Ok(()),
+            Err(error) => {
+                let tempfile::PersistError { file, error } = error;
+                let retry_delay = atomic_persist_retry_delay(&error, attempt);
+                let Some(delay) = retry_delay else {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "failed to persist atomically written file to {}",
+                            path.display()
+                        )
+                    });
+                };
+
+                temp = file;
+                attempt += 1;
+                std::thread::sleep(delay);
+            }
+        }
+    }
+}
+
+fn atomic_persist_retry_delay(error: &std::io::Error, attempt: usize) -> Option<Duration> {
+    const WINDOWS_RETRY_DELAYS_MS: [u64; 5] = [10, 25, 50, 100, 200];
+
+    if !cfg!(windows) {
+        return None;
+    }
+    if !is_transient_windows_atomic_replace_error(error) {
+        return None;
+    }
+
+    WINDOWS_RETRY_DELAYS_MS
+        .get(attempt)
+        .copied()
+        .map(Duration::from_millis)
+}
+
+fn is_transient_windows_atomic_replace_error(error: &std::io::Error) -> bool {
+    matches!(error.kind(), std::io::ErrorKind::PermissionDenied)
+        || matches!(error.raw_os_error(), Some(5 | 32))
 }
 
 fn snapshot_package<T: SnapshotSource>(store_root: &Path, package: &T) -> Result<PathBuf> {
@@ -329,5 +369,37 @@ beta = { path = "vendor/beta" }
         write_atomic(&target, b"hello").unwrap();
 
         assert_eq!(fs::read_to_string(target).unwrap(), "hello");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn atomically_replaces_file_after_transient_windows_lock() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::sync::mpsc;
+        use std::thread;
+        use std::time::Duration;
+
+        let temp = TempDir::new().unwrap();
+        let target = temp.path().join("output.txt");
+        write_file(&target, "old");
+
+        let locked = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&target)
+            .unwrap();
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let target_for_writer = target.clone();
+        let writer = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            write_atomic(&target_for_writer, b"new")
+        });
+        started_rx.recv().unwrap();
+        thread::sleep(Duration::from_millis(50));
+        drop(locked);
+
+        writer.join().unwrap().unwrap();
+        assert_eq!(fs::read_to_string(target).unwrap(), "new");
     }
 }
