@@ -7,8 +7,9 @@ use anyhow::{Context, Result, bail};
 use rayon::prelude::*;
 
 use super::{
-    DependencyFailureMode, ManagedMappingMigration, PackageSource, Resolution, ResolveMode,
-    ResolvedManagedFile, ResolvedManagedPath, ResolvedManagedPathOrigin, ResolvedPackage,
+    DependencyFailureMode, ManagedMappingMigration, MemberOrigin, PackageSource, Resolution,
+    ResolveMode, ResolvedManagedFile, ResolvedManagedPath, ResolvedManagedPathOrigin,
+    ResolvedPackage,
 };
 use crate::git::{
     GitCheckout, current_rev, ensure_git_dependency, ensure_git_dependency_at_rev,
@@ -75,6 +76,7 @@ struct ResolvePackageInput {
     incoming_managed_paths: Vec<ResolvedManagedPath>,
     extra_package_files: Vec<PathBuf>,
     manifest_override: Option<LoadedManifest>,
+    member_origin: Option<MemberOrigin>,
 }
 
 pub(super) fn validate_git_package(package: &ResolvedPackage, cache_root: &Path) -> Result<()> {
@@ -160,6 +162,7 @@ pub(super) fn resolve_project(
             incoming_managed_paths: Vec::new(),
             extra_package_files: Vec::new(),
             manifest_override: None,
+            member_origin: None,
         },
         &mut state,
     )?;
@@ -199,6 +202,7 @@ fn resolve_package(
         incoming_managed_paths,
         extra_package_files,
         manifest_override,
+        member_origin,
     } = input;
     if let Some(existing) = state.resolved_by_path.get_mut(&package_root) {
         existing.selected_components =
@@ -274,18 +278,39 @@ fn resolve_package(
         );
     }
 
-    let dependencies =
+    // Compute the digest before resolving members so members can record this
+    // package's identity (source, version, digest) as their `MemberOrigin`. The
+    // digest depends only on the manifest and package files, not on dependencies,
+    // so computing it here is equivalent to computing it afterwards.
+    let digest = compute_package_digest(&manifest, &extra_package_files)?;
+    let member_group = MemberOrigin {
+        namespace: manifest
+            .manifest
+            .workspace
+            .as_ref()
+            .and_then(|workspace| workspace.namespace.clone()),
+        group_source: source.clone(),
+        group_version: manifest
+            .effective_version()
+            .map(|version| version.to_string()),
+        group_digest: digest.clone(),
+    };
+
+    let declared =
         selected_declared_dependencies(&manifest, role, selected_workspace_members.clone())?
             .into_iter()
-            .chain(workspace_member_dependencies(
-                &manifest,
-                role,
-                selected_workspace_members.clone(),
-            )?)
-            .map(|(alias, spec)| resolve_dependency(&manifest, role, &alias, &spec, context, state))
-            .collect::<Result<Vec<_>>>()?;
+            .map(|(alias, spec)| (alias, spec, None));
+    let members =
+        workspace_member_dependencies(&manifest, role, selected_workspace_members.clone())?
+            .into_iter()
+            .map(|(alias, spec)| (alias, spec, Some(member_group.clone())));
+    let dependencies = declared
+        .chain(members)
+        .map(|(alias, spec, origin)| {
+            resolve_dependency(&manifest, role, &alias, &spec, origin, context, state)
+        })
+        .collect::<Result<Vec<_>>>()?;
 
-    let digest = compute_package_digest(&manifest, &extra_package_files)?;
     let resolved = ResolvedPackage {
         alias,
         root: package_root.clone(),
@@ -295,6 +320,7 @@ fn resolve_package(
         selected_components,
         selected_workspace_members,
         managed_paths,
+        member_origin,
         extra_package_files,
     };
     state
@@ -312,6 +338,7 @@ fn resolve_dependency(
     parent_role: PackageRole,
     alias: &str,
     dependency: &DependencySpec,
+    member_origin: Option<MemberOrigin>,
     context: &ResolveContext<'_>,
     state: &mut ResolverState,
 ) -> Result<ResolvedPackage> {
@@ -352,6 +379,7 @@ fn resolve_dependency(
                     incoming_managed_paths,
                     extra_package_files,
                     manifest_override: Some(dependency_manifest),
+                    member_origin,
                 },
                 state,
             )
@@ -404,6 +432,7 @@ fn resolve_dependency(
                     incoming_managed_paths,
                     extra_package_files,
                     manifest_override: Some(dependency_manifest),
+                    member_origin,
                 },
                 state,
             )

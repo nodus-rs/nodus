@@ -1387,7 +1387,7 @@ fn add_dependency_uses_latest_tag_when_not_provided() {
 }
 
 #[test]
-fn managed_package_ids_prefer_tag_version_branch_then_revision() {
+fn managed_package_ids_prefer_tag_branch_version_then_revision() {
     let tag_project = TempDir::new().unwrap();
     let tag_cache = cache_dir();
     let tagged_repo = TempDir::new().unwrap();
@@ -1416,23 +1416,62 @@ fn managed_package_ids_prefer_tag_version_branch_then_revision() {
         "playbook-ios+v0.6.1"
     );
 
-    let version_project = TempDir::new().unwrap();
-    let version_cache = cache_dir();
-    let version_repo = TempDir::new().unwrap();
+    // A branch pin is the human-stable identity and wins over the manifest
+    // version, so every package from the same repo + commit lines up on the
+    // branch suffix (e.g. `ena+main`, `ena-core+main`) instead of drifting onto
+    // per-package versions or digests.
+    let branch_over_version_project = TempDir::new().unwrap();
+    let branch_over_version_cache = cache_dir();
+    let branch_over_version_repo = TempDir::new().unwrap();
     write_manifest(
-        version_repo.path(),
+        branch_over_version_repo.path(),
         r#"name = "playbook-ios"
 version = "0.6.1"
 "#,
     );
-    write_skill(&version_repo.path().join("skills/review"), "Review");
-    init_git_repo(version_repo.path());
+    write_skill(
+        &branch_over_version_repo.path().join("skills/review"),
+        "Review",
+    );
+    init_git_repo(branch_over_version_repo.path());
+    rename_current_branch(branch_over_version_repo.path(), "main");
 
     add_dependency_in_dir_with_adapters(
+        branch_over_version_project.path(),
+        branch_over_version_cache.path(),
+        &branch_over_version_repo.path().to_string_lossy(),
+        None,
+        &[Adapter::Claude],
+        &[],
+    )
+    .unwrap();
+    let (resolution, _) = resolve_project_from_existing_lockfile_in_dir(
+        branch_over_version_project.path(),
+        branch_over_version_cache.path(),
+        &[Adapter::Claude],
+    )
+    .unwrap();
+    assert_eq!(
+        dependency_managed_package_id(&resolution),
+        "playbook-ios+main"
+    );
+
+    // Version fallback: a revision pin records no branch, so the manifest
+    // version supplies the suffix (rather than the bare revision hash).
+    let version_project = TempDir::new().unwrap();
+    let version_cache = cache_dir();
+    let version_repo_parent = TempDir::new().unwrap();
+    let version_repo = version_repo_parent.path().join("playbook-ios");
+    write_manifest(&version_repo, r#"version = "0.6.1""#);
+    write_skill(&version_repo.join("skills/review"), "Review");
+    init_git_repo(&version_repo);
+    let version_rev = crate::git::current_rev(&version_repo).unwrap();
+
+    add_dependency_in_dir_with_git_ref(
         version_project.path(),
         version_cache.path(),
-        &version_repo.path().to_string_lossy(),
-        None,
+        &version_repo.to_string_lossy(),
+        RequestedGitRef::Revision(version_rev.as_str()),
         &[Adapter::Claude],
         &[],
     )
@@ -1447,40 +1486,10 @@ version = "0.6.1"
         dependency_managed_package_id(&resolution),
         "playbook-ios+0.6.1"
     );
-
-    let unnamed_version_project = TempDir::new().unwrap();
-    let unnamed_version_cache = cache_dir();
-    let unnamed_version_repo_parent = TempDir::new().unwrap();
-    let unnamed_version_repo = unnamed_version_repo_parent.path().join("playbook-ios");
-    write_manifest(&unnamed_version_repo, r#"version = "0.6.1""#);
-    write_skill(&unnamed_version_repo.join("skills/review"), "Review");
-    init_git_repo(&unnamed_version_repo);
-
-    add_dependency_in_dir_with_adapters(
-        unnamed_version_project.path(),
-        unnamed_version_cache.path(),
-        &unnamed_version_repo.to_string_lossy(),
-        None,
-        &[Adapter::Claude],
-        &[],
-    )
-    .unwrap();
-    let (resolution, _) = resolve_project_from_existing_lockfile_in_dir(
-        unnamed_version_project.path(),
-        unnamed_version_cache.path(),
-        &[Adapter::Claude],
-    )
-    .unwrap();
-    assert_eq!(
-        dependency_managed_package_id(&resolution),
-        "playbook-ios+0.6.1"
-    );
-    let package_dirs = fs::read_dir(generated_global_packages_root(
-        unnamed_version_project.path(),
-    ))
-    .unwrap()
-    .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-    .collect::<Vec<_>>();
+    let package_dirs = fs::read_dir(generated_global_packages_root(version_project.path()))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
     assert_eq!(package_dirs, vec!["playbook-ios+0.6.1"]);
 
     let branch_project = TempDir::new().unwrap();
@@ -1538,6 +1547,76 @@ version = "0.6.1"
         dependency_managed_package_id(&resolution),
         format!("playbook-ios+{}", &revision[..4])
     );
+}
+
+#[test]
+fn git_workspace_members_share_owner_suffix_and_namespaced_names() {
+    // Mirrors a consumer that depends on a namespaced multi-package git repo:
+    //   ena = { url = "...", branch = "main", members = ["core", "rust"] }
+    // Every package from that one repo + commit must line up on a single,
+    // stable suffix derived from the pinned branch, and members must carry the
+    // workspace namespace so they read `ena-core` / `ena-rust` rather than bare
+    // `core` / `rust` that could collide with unrelated packages.
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    let repo = TempDir::new().unwrap();
+    write_manifest(
+        repo.path(),
+        r#"
+name = "ena"
+version = "0.1.0"
+
+[adapters]
+enabled = ["claude", "codex"]
+
+[workspace]
+members = ["packages/core", "packages/rust"]
+namespace = "ena"
+
+[workspace.package.core]
+path = "packages/core"
+name = "Ena Core"
+
+[workspace.package.rust]
+path = "packages/rust"
+name = "Ena Rust"
+"#,
+    );
+    write_skill(&repo.path().join("packages/core/skills/plan"), "Plan");
+    write_skill(&repo.path().join("packages/rust/skills/checks"), "Checks");
+    init_git_repo(repo.path());
+    rename_current_branch(repo.path(), "main");
+
+    write_manifest(
+        temp.path(),
+        &format!(
+            r#"
+[adapters]
+enabled = ["claude", "codex"]
+
+[dependencies]
+ena = {{ url = "{}", branch = "main", members = ["core", "rust"] }}
+"#,
+            toml_path_value(repo.path())
+        ),
+    );
+
+    let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+    let identities = ManagedPackageIdentities::from_resolved_packages(resolution.packages.iter());
+    let managed_id = |alias: &str| {
+        let package = resolution
+            .packages
+            .iter()
+            .find(|package| package.alias == alias)
+            .unwrap_or_else(|| panic!("missing package `{alias}`"));
+        identities.managed_package_id(package)
+    };
+
+    // The branch wins over the manifest version (0.1.0), and the members inherit
+    // the owner's `+main` suffix instead of falling back to their own digests.
+    assert_eq!(managed_id("ena"), "ena+main");
+    assert_eq!(managed_id("ena_core"), "ena-core+main");
+    assert_eq!(managed_id("ena_rust"), "ena-rust+main");
 }
 
 #[test]
