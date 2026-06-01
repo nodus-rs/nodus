@@ -536,6 +536,18 @@ impl ManagedPackageIdentities {
 }
 
 pub(crate) fn normalized_package_plugin_name(package: &ResolvedPackage) -> String {
+    // A member of a namespaced workspace is named from its (already namespaced)
+    // alias so it reads `ena-core` rather than a bare `core` that collides with
+    // unrelated packages. This matches the marketplace naming used when the
+    // owning workspace is synced directly (`normalize_marketplace_name(alias)`).
+    if package
+        .member_origin
+        .as_ref()
+        .is_some_and(|origin| origin.namespace.is_some())
+    {
+        return normalize_package_name_segment(&package.alias, "agentpack");
+    }
+
     if let Some(name) = package.manifest.manifest.name.as_deref() {
         return normalize_package_name_segment(name, "agentpack");
     }
@@ -591,7 +603,31 @@ fn package_identity_parts(package: &ResolvedPackage) -> PackageIdentityParts {
 }
 
 fn package_identity_suffix(package: &ResolvedPackage) -> PackageIdentitySuffix {
-    match &package.source {
+    // Workspace members adopt their owning package's source identity so every
+    // package from one git repo + commit shares a suffix (e.g. `ena+main`,
+    // `ena-core+main`) instead of each member falling back to its own digest.
+    if let Some(origin) = &package.member_origin {
+        return source_identity_suffix(
+            &origin.group_source,
+            origin.group_version.as_deref(),
+            &origin.group_digest,
+        );
+    }
+    let version = package.manifest.effective_version().map(|v| v.to_string());
+    source_identity_suffix(&package.source, version.as_deref(), &package.digest)
+}
+
+/// Derive the plugin-directory suffix for a source. A git pin prefers its
+/// human-stable ref (tag, then branch) so a branch dependency reads `+main`
+/// rather than churning on every revision; only then does it fall back to the
+/// manifest version and finally the revision hash.
+fn source_identity_suffix(
+    source: &PackageSource,
+    version: Option<&str>,
+    digest: &str,
+) -> PackageIdentitySuffix {
+    let version = version.filter(|value| !value.trim().is_empty());
+    match source {
         PackageSource::Git {
             tag, branch, rev, ..
         } => {
@@ -600,15 +636,14 @@ fn package_identity_suffix(package: &ResolvedPackage) -> PackageIdentitySuffix {
                     tag, "version",
                 ));
             }
-            if let Some(version) = package.manifest.effective_version() {
-                return PackageIdentitySuffix::Stable(normalize_package_source_segment(
-                    &version.to_string(),
-                    "version",
-                ));
-            }
             if let Some(branch) = branch.as_deref().filter(|value| !value.trim().is_empty()) {
                 return PackageIdentitySuffix::Stable(normalize_package_source_segment(
                     branch, "branch",
+                ));
+            }
+            if let Some(version) = version {
+                return PackageIdentitySuffix::Stable(normalize_package_source_segment(
+                    version, "version",
                 ));
             }
             PackageIdentitySuffix::Hash {
@@ -622,26 +657,24 @@ fn package_identity_suffix(package: &ResolvedPackage) -> PackageIdentitySuffix {
                     tag, "version",
                 ));
             }
-            if let Some(version) = package.manifest.effective_version() {
+            if let Some(version) = version {
                 return PackageIdentitySuffix::Stable(normalize_package_source_segment(
-                    &version.to_string(),
-                    "version",
+                    version, "version",
                 ));
             }
-            let digest = strip_digest_prefix(&package.digest);
+            let digest = strip_digest_prefix(digest);
             PackageIdentitySuffix::Hash {
                 short: short_source_id_with_len(digest, 4),
                 long: short_source_id_with_len(digest, 8),
             }
         }
         PackageSource::Root => {
-            if let Some(version) = package.manifest.effective_version() {
+            if let Some(version) = version {
                 return PackageIdentitySuffix::Stable(normalize_package_source_segment(
-                    &version.to_string(),
-                    "version",
+                    version, "version",
                 ));
             }
-            let digest = strip_digest_prefix(&package.digest);
+            let digest = strip_digest_prefix(digest);
             PackageIdentitySuffix::Hash {
                 short: short_source_id_with_len(digest, 4),
                 long: short_source_id_with_len(digest, 8),

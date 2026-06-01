@@ -62,7 +62,28 @@ pub struct ResolvedPackage {
     pub selected_components: Option<Vec<DependencyComponent>>,
     pub selected_workspace_members: Option<Vec<String>>,
     pub managed_paths: Vec<ResolvedManagedPath>,
+    /// Set when this package is a workspace member resolved through an owning
+    /// package (a git/path workspace dependency). It records the owner's source
+    /// identity and namespace so every member of one repo + commit shares a
+    /// stable plugin suffix (e.g. `+main`) and a namespaced plugin name.
+    pub member_origin: Option<MemberOrigin>,
     extra_package_files: Vec<PathBuf>,
+}
+
+/// Identity of the package that owns a resolved workspace member. Members adopt
+/// the owner's source-derived suffix so packages from the same git repo + commit
+/// line up (`ena+main`, `ena-core+main`, `ena-rust+main`) instead of each member
+/// falling back to its own digest hash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberOrigin {
+    /// Namespace declared by the owning workspace, if any (e.g. `ena`).
+    pub namespace: Option<String>,
+    /// Source of the owning package; members reuse its identity suffix.
+    pub group_source: PackageSource,
+    /// Owning package version, used as a suffix fallback for non-git groups.
+    pub group_version: Option<String>,
+    /// Owning package digest, used as the final suffix fallback.
+    pub group_digest: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
