@@ -55,14 +55,42 @@ pub struct Manifest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdapterConfig {
     pub enabled: Vec<Adapter>,
+    /// Codex-specific adapter options. Kept separate from `enabled` so the
+    /// table round-trips even when a workspace only customizes Codex behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex: Option<CodexAdapterConfig>,
 }
 
 impl AdapterConfig {
-    pub fn normalized(adapters: &[Adapter]) -> Self {
+    /// Normalize the enabled-adapter list while preserving an existing Codex
+    /// sub-configuration. Used when persisting an adapter-selection change so a
+    /// previously declared `[adapters.codex]` profile is not dropped.
+    pub fn normalized_with_codex(adapters: &[Adapter], codex: Option<CodexAdapterConfig>) -> Self {
         let mut enabled = adapters.to_vec();
         enabled.sort();
         enabled.dedup();
-        Self { enabled }
+        Self {
+            enabled,
+            codex: codex.filter(CodexAdapterConfig::is_meaningful),
+        }
+    }
+}
+
+/// Codex adapter options declared under `[adapters.codex]` in `nodus.toml`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodexAdapterConfig {
+    /// Name of the Codex profile to manage. When set, `nodus sync` writes the
+    /// MCP servers it manages into the profile overlay
+    /// (`$CODEX_HOME/<profile>.config.toml`) instead of the top-level
+    /// `.codex/config.toml`, leaving the base config untouched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+}
+
+impl CodexAdapterConfig {
+    /// True when the sub-table carries at least one setting worth persisting.
+    fn is_meaningful(&self) -> bool {
+        self.profile.is_some()
     }
 }
 

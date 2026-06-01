@@ -215,6 +215,12 @@ fn inspect_doctor_state(
     let mut owned_paths = load_owned_paths(cwd, existing_lockfile.as_ref())?;
     let mut invalid_owned_outputs = Vec::new();
     let codex_native_plugins_auto_enabled = selected_adapters.contains(Adapter::Codex);
+    // Doctor never overrides the profile from the CLI; the manifest is the
+    // source of truth for what a clean sync would produce.
+    let codex_profile = super::resolve_codex_profile(&root.manifest, None)?;
+    let codex_previous_profile = existing_lockfile
+        .as_ref()
+        .and_then(|lockfile| lockfile.codex_profile.clone());
     let output_plan = match build_output_plan_with_options(
         cwd,
         &package_roots,
@@ -224,6 +230,8 @@ fn inspect_doctor_state(
             merge_existing_mcp: true,
             codex_native_plugins_auto_enabled,
             codex_user_config: None,
+            codex_profile: codex_profile.clone(),
+            codex_previous_profile: codex_previous_profile.clone(),
         },
     ) {
         Ok(plan) => plan,
@@ -241,6 +249,8 @@ fn inspect_doctor_state(
                     merge_existing_mcp: false,
                     codex_native_plugins_auto_enabled,
                     codex_user_config: None,
+                    codex_profile: codex_profile.clone(),
+                    codex_previous_profile: codex_previous_profile.clone(),
                 },
             )?
         }
@@ -254,11 +264,14 @@ fn inspect_doctor_state(
             merge_existing_mcp: false,
             codex_native_plugins_auto_enabled,
             codex_user_config: None,
+            codex_profile: codex_profile.clone(),
+            ..OutputPlanOptions::default()
         },
     )?;
     let desired_paths = resolution.managed_paths_from_output_plan(cwd, &ownership_output_plan)?;
-    let expected_lockfile =
+    let mut expected_lockfile =
         resolution.to_lockfile_from_plans(cwd, &ownership_output_plan, &output_plan.files)?;
+    expected_lockfile.codex_profile = codex_profile.clone();
     let external_files = output_plan.external_files;
     let planned_files = output_plan.files;
     let managed_file_count = planned_files.len();

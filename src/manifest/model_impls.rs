@@ -613,7 +613,23 @@ impl Manifest {
     }
 
     pub fn set_enabled_adapters(&mut self, adapters: &[Adapter]) {
-        self.adapters = Some(AdapterConfig::normalized(adapters));
+        let codex = self
+            .adapters
+            .as_ref()
+            .and_then(|config| config.codex.clone());
+        self.adapters = Some(AdapterConfig::normalized_with_codex(adapters, codex));
+    }
+
+    /// The Codex profile declared under `[adapters.codex] profile = "..."`, if
+    /// any. Returns the trimmed name. Returns `None` for an empty/whitespace
+    /// value so callers treat "no profile" uniformly.
+    pub fn codex_profile(&self) -> Option<&str> {
+        self.adapters
+            .as_ref()
+            .and_then(|config| config.codex.as_ref())
+            .and_then(|codex| codex.profile.as_deref())
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
     }
 
     pub fn effective_hooks(&self) -> Vec<HookSpec> {

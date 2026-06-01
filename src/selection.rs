@@ -331,6 +331,7 @@ mod tests {
         let manifest = Manifest {
             adapters: Some(crate::manifest::AdapterConfig {
                 enabled: vec![Adapter::Copilot],
+                codex: None,
             }),
             ..Manifest::default()
         };

@@ -32,7 +32,7 @@ use crate::lockfile::{
     locked_runtime_adapter_owned_paths,
 };
 use crate::manifest::{
-    DependencyComponent, LoadedManifest, ManagedPlacement, PackageRole,
+    DependencyComponent, LoadedManifest, ManagedPlacement, Manifest, PackageRole,
     load_root_from_dir_allow_missing,
 };
 use crate::paths::display_path;
@@ -156,7 +156,7 @@ pub(crate) enum DependencyFailureMode {
     Strict,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct SyncExecutionOptions<'a> {
     allow_high_sensitivity: bool,
     force: bool,
@@ -170,9 +170,14 @@ struct SyncExecutionOptions<'a> {
     /// the common "nothing changed on disk" case; this flag is the escape
     /// hatch for users who want to force a full re-render.
     force_rebuild: bool,
+    /// CLI override for the Codex profile (`--codex-profile <name>`). Takes
+    /// precedence over the manifest's `[adapters.codex] profile`. `None` means
+    /// "no override"; fall back to the manifest.
+    codex_profile: Option<String>,
 }
 
 impl<'a> SyncExecutionOptions<'a> {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         allow_high_sensitivity: bool,
         force: bool,
@@ -181,6 +186,7 @@ impl<'a> SyncExecutionOptions<'a> {
         execution_mode: ExecutionMode,
         dependency_failure_mode: DependencyFailureMode,
         force_rebuild: bool,
+        codex_profile: Option<String>,
     ) -> Self {
         Self {
             allow_high_sensitivity,
@@ -190,6 +196,7 @@ impl<'a> SyncExecutionOptions<'a> {
             execution_mode,
             dependency_failure_mode,
             force_rebuild,
+            codex_profile,
         }
     }
 }
@@ -210,6 +217,42 @@ impl SyncMode {
             Self::Frozen => "`nodus sync --frozen`",
         }
     }
+}
+
+/// Resolve the effective Codex profile for a sync or doctor run: the CLI
+/// override when supplied, otherwise the manifest's `[adapters.codex] profile`.
+/// The name is validated so nodus never writes the overlay outside `CODEX_HOME`.
+pub(crate) fn resolve_codex_profile(
+    manifest: &Manifest,
+    override_profile: Option<&str>,
+) -> Result<Option<String>> {
+    let resolved = override_profile
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .or_else(|| manifest.codex_profile().map(str::to_string));
+    if let Some(name) = resolved.as_deref() {
+        validate_codex_profile_name(name)?;
+    }
+    Ok(resolved)
+}
+
+/// Codex resolves `--profile <name>` to `$CODEX_HOME/<name>.config.toml`, so the
+/// profile name must be a single, benign path segment.
+fn validate_codex_profile_name(name: &str) -> Result<()> {
+    let unsafe_name = name.is_empty()
+        || name == "."
+        || name.contains("..")
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains(std::path::MAIN_SEPARATOR)
+        || name.chars().any(char::is_control);
+    if unsafe_name {
+        bail!(
+            "invalid Codex profile `{name}`: use a simple profile name without path separators or `..`"
+        );
+    }
+    Ok(())
 }
 
 fn lockfile_out_of_date_message() -> String {
@@ -300,6 +343,7 @@ pub fn sync_in_dir_with_adapters(
         adapters,
         sync_on_launch,
         false,
+        None,
         reporter,
     )
 }
@@ -321,6 +365,7 @@ pub fn sync_in_dir_with_adapters_full(
     adapters: &[Adapter],
     sync_on_launch: bool,
     force_rebuild: bool,
+    codex_profile: Option<String>,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
     sync_in_dir_with_adapters_with_failure_mode(
@@ -335,6 +380,7 @@ pub fn sync_in_dir_with_adapters_full(
             ExecutionMode::Apply,
             DependencyFailureMode::Graceful,
             force_rebuild,
+            codex_profile,
         ),
         reporter,
     )
@@ -360,6 +406,7 @@ pub fn sync_in_dir_with_adapters_strict(
         adapters,
         sync_on_launch,
         false,
+        None,
         reporter,
     )
 }
@@ -375,6 +422,7 @@ pub fn sync_in_dir_with_adapters_strict_full(
     adapters: &[Adapter],
     sync_on_launch: bool,
     force_rebuild: bool,
+    codex_profile: Option<String>,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
     sync_in_dir_with_adapters_with_failure_mode(
@@ -389,6 +437,7 @@ pub fn sync_in_dir_with_adapters_strict_full(
             ExecutionMode::Apply,
             DependencyFailureMode::Strict,
             force_rebuild,
+            codex_profile,
         ),
         reporter,
     )
@@ -402,6 +451,7 @@ fn sync_in_dir_with_adapters_with_failure_mode(
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
     let install_paths = InstallPaths::project(cwd);
+    let codex_profile = options.codex_profile.clone();
     sync_in_dir_with_adapters_mode(
         &install_paths,
         cache_root,
@@ -418,6 +468,7 @@ fn sync_in_dir_with_adapters_with_failure_mode(
         None,
         options.dependency_failure_mode,
         options.force_rebuild,
+        codex_profile,
         reporter,
     )
 }
@@ -440,6 +491,7 @@ pub fn sync_in_dir_with_adapters_frozen(
         adapters,
         sync_on_launch,
         false,
+        None,
         reporter,
     )
 }
@@ -454,6 +506,7 @@ pub fn sync_in_dir_with_adapters_frozen_full(
     adapters: &[Adapter],
     sync_on_launch: bool,
     force_rebuild: bool,
+    codex_profile: Option<String>,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
     sync_in_dir_with_adapters_frozen_with_failure_mode(
@@ -467,6 +520,7 @@ pub fn sync_in_dir_with_adapters_frozen_full(
             ExecutionMode::Apply,
             DependencyFailureMode::Graceful,
             force_rebuild,
+            codex_profile,
         ),
         reporter,
     )
@@ -490,6 +544,7 @@ pub fn sync_in_dir_with_adapters_frozen_strict(
         adapters,
         sync_on_launch,
         false,
+        None,
         reporter,
     )
 }
@@ -504,6 +559,7 @@ pub fn sync_in_dir_with_adapters_frozen_strict_full(
     adapters: &[Adapter],
     sync_on_launch: bool,
     force_rebuild: bool,
+    codex_profile: Option<String>,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
     sync_in_dir_with_adapters_frozen_with_failure_mode(
@@ -517,6 +573,7 @@ pub fn sync_in_dir_with_adapters_frozen_strict_full(
             ExecutionMode::Apply,
             DependencyFailureMode::Strict,
             force_rebuild,
+            codex_profile,
         ),
         reporter,
     )
@@ -529,6 +586,7 @@ fn sync_in_dir_with_adapters_frozen_with_failure_mode(
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
     let install_paths = InstallPaths::project(cwd);
+    let codex_profile = options.codex_profile.clone();
     sync_in_dir_with_adapters_mode(
         &install_paths,
         cache_root,
@@ -541,6 +599,7 @@ fn sync_in_dir_with_adapters_frozen_with_failure_mode(
         None,
         options.dependency_failure_mode,
         options.force_rebuild,
+        codex_profile,
         reporter,
     )
 }
@@ -565,6 +624,7 @@ pub fn sync_in_dir_with_adapters_dry_run(
         adapters,
         sync_on_launch,
         false,
+        None,
         reporter,
     )
 }
@@ -580,6 +640,7 @@ pub fn sync_in_dir_with_adapters_dry_run_full(
     adapters: &[Adapter],
     sync_on_launch: bool,
     force_rebuild: bool,
+    codex_profile: Option<String>,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
     sync_in_dir_with_adapters_with_failure_mode(
@@ -594,6 +655,7 @@ pub fn sync_in_dir_with_adapters_dry_run_full(
             ExecutionMode::DryRun,
             DependencyFailureMode::Graceful,
             force_rebuild,
+            codex_profile,
         ),
         reporter,
     )
@@ -619,6 +681,7 @@ pub fn sync_in_dir_with_adapters_strict_dry_run(
         adapters,
         sync_on_launch,
         false,
+        None,
         reporter,
     )
 }
@@ -634,6 +697,7 @@ pub fn sync_in_dir_with_adapters_strict_dry_run_full(
     adapters: &[Adapter],
     sync_on_launch: bool,
     force_rebuild: bool,
+    codex_profile: Option<String>,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
     sync_in_dir_with_adapters_with_failure_mode(
@@ -648,6 +712,7 @@ pub fn sync_in_dir_with_adapters_strict_dry_run_full(
             ExecutionMode::DryRun,
             DependencyFailureMode::Strict,
             force_rebuild,
+            codex_profile,
         ),
         reporter,
     )
@@ -671,6 +736,7 @@ pub fn sync_in_dir_with_adapters_frozen_dry_run(
         adapters,
         sync_on_launch,
         false,
+        None,
         reporter,
     )
 }
@@ -685,6 +751,7 @@ pub fn sync_in_dir_with_adapters_frozen_dry_run_full(
     adapters: &[Adapter],
     sync_on_launch: bool,
     force_rebuild: bool,
+    codex_profile: Option<String>,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
     sync_in_dir_with_adapters_frozen_with_failure_mode(
@@ -698,6 +765,7 @@ pub fn sync_in_dir_with_adapters_frozen_dry_run_full(
             ExecutionMode::DryRun,
             DependencyFailureMode::Graceful,
             force_rebuild,
+            codex_profile,
         ),
         reporter,
     )
@@ -721,6 +789,7 @@ pub fn sync_in_dir_with_adapters_frozen_strict_dry_run(
         adapters,
         sync_on_launch,
         false,
+        None,
         reporter,
     )
 }
@@ -736,6 +805,7 @@ pub fn sync_in_dir_with_adapters_frozen_strict_dry_run_full(
     adapters: &[Adapter],
     sync_on_launch: bool,
     force_rebuild: bool,
+    codex_profile: Option<String>,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
     sync_in_dir_with_adapters_frozen_with_failure_mode(
@@ -749,6 +819,7 @@ pub fn sync_in_dir_with_adapters_frozen_strict_dry_run_full(
             ExecutionMode::DryRun,
             DependencyFailureMode::Strict,
             force_rebuild,
+            codex_profile,
         ),
         reporter,
     )
@@ -767,6 +838,7 @@ fn sync_in_dir_with_adapters_mode(
     root_override: Option<LoadedManifest>,
     dependency_failure_mode: DependencyFailureMode,
     force_rebuild: bool,
+    codex_profile_override: Option<String>,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
     let mut collision_resolver = TtyManagedCollisionResolver;
@@ -782,6 +854,7 @@ fn sync_in_dir_with_adapters_mode(
         root_override,
         dependency_failure_mode,
         force_rebuild,
+        codex_profile_override,
         if sync_mode.checks_lockfile() || !should_prompt_for_adapter() {
             None
         } else {
@@ -804,6 +877,7 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
     root_override: Option<LoadedManifest>,
     dependency_failure_mode: DependencyFailureMode,
     force_rebuild: bool,
+    codex_profile_override: Option<String>,
     mut collision_resolver: Option<&mut dyn ManagedCollisionResolver>,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
@@ -894,6 +968,14 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
         );
     }
 
+    // The Codex profile that determines where managed MCP servers are written
+    // (manifest `[adapters.codex] profile`, CLI override applied upstream), plus
+    // the profile recorded by the previous sync so a change can be cleaned up.
+    let codex_profile = resolve_codex_profile(&root.manifest, codex_profile_override.as_deref())?;
+    let previous_codex_profile = existing_lockfile
+        .as_ref()
+        .and_then(|lockfile| lockfile.codex_profile.clone());
+
     // ---- v10 install_digest drift fast-path ----------------------------
     //
     // Slice 4: when the lockfile is v10, all packages are exactly pinned,
@@ -915,6 +997,10 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
         || legacy_launch_hook_config;
     let attempt_fast_path = !force_rebuild
         && !manifest_mutation_pending
+        // A profile change moves managed servers between the project config and
+        // the overlay (an external file outside the install_digest), so the
+        // digests alone can't detect it — force a full render in that case.
+        && codex_profile.as_deref() == previous_codex_profile.as_deref()
         && existing_lockfile
             .as_ref()
             .is_some_and(Lockfile::uses_current_schema);
@@ -1049,6 +1135,8 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
                 merge_existing_mcp: true,
                 codex_native_plugins_auto_enabled,
                 codex_user_config: install_paths.codex_user_config.clone(),
+                codex_profile: codex_profile.clone(),
+                codex_previous_profile: previous_codex_profile.clone(),
             },
         )?;
         let ownership_output_plan = build_output_plan_with_options(
@@ -1060,17 +1148,20 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
                 merge_existing_mcp: false,
                 codex_native_plugins_auto_enabled,
                 codex_user_config: install_paths.codex_user_config.clone(),
+                codex_profile: codex_profile.clone(),
+                ..OutputPlanOptions::default()
             },
         )?;
         let planned_files = output_plan.files.clone();
         let external_files = output_plan.external_files.clone();
         let desired_paths = resolution
             .managed_paths_from_output_plan(&install_paths.runtime_root, &ownership_output_plan)?;
-        let lockfile = resolution.to_lockfile_from_plans(
+        let mut lockfile = resolution.to_lockfile_from_plans(
             &install_paths.runtime_root,
             &ownership_output_plan,
             &planned_files,
         )?;
+        lockfile.codex_profile = codex_profile.clone();
         let mut owned_paths =
             load_owned_paths(&install_paths.runtime_root, existing_lockfile.as_ref())?;
         if existing_lockfile.is_none() {
@@ -1290,6 +1381,7 @@ pub(crate) fn sync_with_loaded_root_at_paths(
         Some(root),
         DependencyFailureMode::Graceful,
         false,
+        None,
         reporter,
     )
 }
@@ -1375,6 +1467,7 @@ impl Resolution {
                 merge_existing_mcp: false,
                 codex_native_plugins_auto_enabled,
                 codex_user_config: None,
+                ..OutputPlanOptions::default()
             },
         )?;
 
@@ -1578,6 +1671,7 @@ impl Resolution {
                 merge_existing_mcp: false,
                 codex_native_plugins_auto_enabled,
                 codex_user_config: None,
+                ..OutputPlanOptions::default()
             },
         )?;
         self.managed_paths_from_output_plan(runtime_root, &output_plan)

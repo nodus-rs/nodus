@@ -27,6 +27,7 @@ pub(crate) struct SyncCommand {
     pub(crate) sync_on_launch: bool,
     pub(crate) no_sync_on_launch: bool,
     pub(crate) dry_run: bool,
+    pub(crate) codex_profile: Option<String>,
 }
 
 pub(crate) fn handle_init(context: &CommandContext<'_>, dry_run: bool) -> anyhow::Result<()> {
@@ -179,6 +180,7 @@ pub(crate) fn handle_sync(
         sync_on_launch,
         no_sync_on_launch,
         dry_run,
+        codex_profile,
     } = command;
     let sync_on_launch = if locked || frozen {
         sync_on_launch
@@ -197,6 +199,7 @@ pub(crate) fn handle_sync(
                     &adapter,
                     sync_on_launch,
                     force_rebuild,
+                    codex_profile.clone(),
                     context.reporter,
                 )?
             } else {
@@ -208,6 +211,7 @@ pub(crate) fn handle_sync(
                     &adapter,
                     sync_on_launch,
                     force_rebuild,
+                    codex_profile.clone(),
                     context.reporter,
                 )?
             }
@@ -221,6 +225,7 @@ pub(crate) fn handle_sync(
                     &adapter,
                     sync_on_launch,
                     force_rebuild,
+                    codex_profile.clone(),
                     context.reporter,
                 )?
             } else {
@@ -232,6 +237,7 @@ pub(crate) fn handle_sync(
                     &adapter,
                     sync_on_launch,
                     force_rebuild,
+                    codex_profile.clone(),
                     context.reporter,
                 )?
             }
@@ -247,6 +253,7 @@ pub(crate) fn handle_sync(
                 &adapter,
                 sync_on_launch,
                 force_rebuild,
+                codex_profile.clone(),
                 context.reporter,
             )?
         } else {
@@ -259,6 +266,7 @@ pub(crate) fn handle_sync(
                 &adapter,
                 sync_on_launch,
                 force_rebuild,
+                codex_profile.clone(),
                 context.reporter,
             )?
         }
@@ -273,6 +281,7 @@ pub(crate) fn handle_sync(
                 &adapter,
                 sync_on_launch,
                 force_rebuild,
+                codex_profile.clone(),
                 context.reporter,
             )?
         } else {
@@ -285,6 +294,7 @@ pub(crate) fn handle_sync(
                 &adapter,
                 sync_on_launch,
                 force_rebuild,
+                codex_profile.clone(),
                 context.reporter,
             )?
         }

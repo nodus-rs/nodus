@@ -364,6 +364,23 @@ fn parses_remove_subcommand() {
 }
 
 #[test]
+fn parses_sync_codex_profile_flag() {
+    let cli = Cli::try_parse_from(["nodus", "sync", "--codex-profile", "work"]).unwrap();
+    match cli.command {
+        Command::Sync { codex_profile, .. } => {
+            assert_eq!(codex_profile.as_deref(), Some("work"));
+        }
+        other => panic!("expected sync command, got {other:?}"),
+    }
+
+    let cli = Cli::try_parse_from(["nodus", "sync"]).unwrap();
+    match cli.command {
+        Command::Sync { codex_profile, .. } => assert_eq!(codex_profile, None),
+        other => panic!("expected sync command, got {other:?}"),
+    }
+}
+
+#[test]
 fn parses_global_add_and_remove_flags() {
     let add = Cli::try_parse_from(["nodus", "add", "example/repo", "--global"]).unwrap();
     let remove = Cli::try_parse_from(["nodus", "remove", "example/repo", "--global"]).unwrap();
@@ -1073,6 +1090,7 @@ fn sync_does_not_persist_launch_hook_by_default() {
             sync_on_launch: false,
             no_sync_on_launch: false,
             dry_run: false,
+            codex_profile: None,
         },
         temp.path(),
         cache.path(),
@@ -2448,6 +2466,7 @@ justification = "Run checks."
             sync_on_launch: false,
             no_sync_on_launch: false,
             dry_run: false,
+            codex_profile: None,
         },
         temp.path(),
         cache.path(),
@@ -2477,6 +2496,7 @@ fn sync_dry_run_previews_without_writing_project_files() {
             sync_on_launch: true,
             no_sync_on_launch: false,
             dry_run: true,
+            codex_profile: None,
         },
         temp.path(),
         cache.path(),
@@ -2913,6 +2933,7 @@ fn sync_recreates_cache_after_clean_command() {
             sync_on_launch: false,
             no_sync_on_launch: false,
             dry_run: false,
+            codex_profile: None,
         },
         temp.path(),
         cache.path(),
@@ -3195,6 +3216,7 @@ fn sync_dry_run_locked_and_frozen_modes_leave_state_unchanged() {
             sync_on_launch: false,
             no_sync_on_launch: false,
             dry_run: true,
+            codex_profile: None,
         },
         temp.path(),
         cache.path(),
@@ -3211,6 +3233,7 @@ fn sync_dry_run_locked_and_frozen_modes_leave_state_unchanged() {
             sync_on_launch: false,
             no_sync_on_launch: false,
             dry_run: true,
+            codex_profile: None,
         },
         temp.path(),
         cache.path(),
@@ -3652,6 +3675,7 @@ enabled = false
             sync_on_launch: false,
             no_sync_on_launch: false,
             dry_run: false,
+            codex_profile: None,
         },
         temp.path(),
         cache.path(),
@@ -3717,6 +3741,7 @@ args = ["mcp", "serve"]
         sync_on_launch: false,
         no_sync_on_launch: false,
         dry_run: false,
+        codex_profile: None,
     };
 
     run_command_in_dir(
@@ -3780,6 +3805,7 @@ publish_root = true
             sync_on_launch: false,
             no_sync_on_launch: false,
             dry_run: false,
+            codex_profile: None,
         },
         temp.path(),
         cache.path(),
@@ -3848,6 +3874,7 @@ shared = { path = "vendor/shared" }
             sync_on_launch: false,
             no_sync_on_launch: false,
             dry_run: false,
+            codex_profile: None,
         },
         temp.path(),
         cache.path(),

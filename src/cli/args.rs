@@ -374,6 +374,12 @@ pub(super) enum Command {
             help = "Preview project changes without writing to the project or linked repo; may still populate the shared store to compute the result"
         )]
         dry_run: bool,
+        #[arg(
+            long = "codex-profile",
+            value_name = "NAME",
+            help = "Write managed Codex MCP servers into the `$CODEX_HOME/<NAME>.config.toml` profile overlay for this run instead of `.codex/config.toml` (overrides `[adapters.codex] profile`)"
+        )]
+        codex_profile: Option<String>,
     },
     #[command(
         about = CLEAN_ABOUT,

@@ -3448,6 +3448,7 @@ fn serializes_adapters_in_stable_sorted_order() {
     let manifest = Manifest {
         adapters: Some(AdapterConfig {
             enabled: vec![Adapter::OpenCode, Adapter::Claude, Adapter::Codex],
+            codex: None,
         }),
         ..Manifest::default()
     };
@@ -3456,6 +3457,62 @@ fn serializes_adapters_in_stable_sorted_order() {
 
     assert!(encoded.contains("[adapters]"));
     assert!(encoded.contains("enabled = [\"claude\", \"codex\", \"opencode\"]"));
+}
+
+#[test]
+fn parses_codex_profile_from_adapters_table() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[adapters]
+enabled = ["codex"]
+
+[adapters.codex]
+profile = "work"
+"#,
+    );
+
+    let loaded = load_root_from_dir(temp.path()).unwrap();
+    assert_eq!(loaded.manifest.codex_profile(), Some("work"));
+}
+
+#[test]
+fn codex_profile_round_trips_through_serialization() {
+    let manifest = Manifest {
+        adapters: Some(AdapterConfig {
+            enabled: vec![Adapter::Codex],
+            codex: Some(CodexAdapterConfig {
+                profile: Some("work".to_string()),
+            }),
+        }),
+        ..Manifest::default()
+    };
+
+    let encoded = serialize_manifest(&manifest).unwrap();
+    assert!(encoded.contains("[adapters.codex]"));
+    assert!(encoded.contains("profile = \"work\""));
+
+    let parsed: Manifest = toml::from_str(&encoded).unwrap();
+    assert_eq!(parsed.codex_profile(), Some("work"));
+}
+
+#[test]
+fn set_enabled_adapters_preserves_codex_profile() {
+    let mut manifest = Manifest {
+        adapters: Some(AdapterConfig {
+            enabled: vec![Adapter::Codex],
+            codex: Some(CodexAdapterConfig {
+                profile: Some("work".to_string()),
+            }),
+        }),
+        ..Manifest::default()
+    };
+
+    manifest.set_enabled_adapters(&[Adapter::Claude, Adapter::Codex]);
+
+    assert_eq!(manifest.codex_profile(), Some("work"));
 }
 
 #[test]

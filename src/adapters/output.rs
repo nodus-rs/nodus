@@ -59,6 +59,14 @@ pub(crate) struct OutputPlanOptions {
     pub merge_existing_mcp: bool,
     pub codex_native_plugins_auto_enabled: bool,
     pub codex_user_config: Option<PathBuf>,
+    /// When set, managed Codex MCP servers are written into the profile overlay
+    /// (`$CODEX_HOME/<profile>.config.toml`) instead of the top-level
+    /// `.codex/config.toml`. The base config is left untouched.
+    pub codex_profile: Option<String>,
+    /// The Codex profile recorded by the previous sync (from the lockfile). Used
+    /// to clean managed entries out of an overlay that is no longer targeted
+    /// after the profile is changed or removed.
+    pub codex_previous_profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -71,6 +79,13 @@ struct NativePackagePluginHooks<'a> {
 struct CodexFeatureRequirements {
     hooks: bool,
     plugin_hooks: bool,
+}
+
+impl CodexFeatureRequirements {
+    const NONE: Self = Self {
+        hooks: false,
+        plugin_hooks: false,
+    };
 }
 
 #[derive(Debug)]
@@ -226,6 +241,7 @@ pub(crate) fn build_output_plan(
             merge_existing_mcp,
             codex_native_plugins_auto_enabled: false,
             codex_user_config: None,
+            ..OutputPlanOptions::default()
         },
     )
 }
@@ -750,7 +766,7 @@ pub(crate) fn build_output_plan_with_options(
             .insert(display_relative(project_root, &file.path));
         merge_file(&mut plan.files, file)?;
     }
-    if let Some(file) = codex_mcp_config_file(
+    let codex_config_targets = codex_config_files(
         project_root,
         packages,
         selected_adapters,
@@ -761,19 +777,17 @@ pub(crate) fn build_output_plan_with_options(
             hooks: emit_codex_workspace_hooks,
             plugin_hooks: emit_codex_plugin_hooks,
         },
-    )? {
+        options.codex_profile.as_deref(),
+        options.codex_previous_profile.as_deref(),
+        options.codex_user_config.as_deref(),
+    )?;
+    if let Some(file) = codex_config_targets.project {
         track_owned_file(&mut plan, project_root, &workspace_alias, &file.path);
         plan.managed_files
             .insert(display_relative(project_root, &file.path));
         merge_file(&mut plan.files, file)?;
     }
-    if let Some(file) = codex_user_config_file(
-        project_root,
-        packages,
-        selected_adapters,
-        options.merge_existing_mcp,
-        options.codex_user_config.as_deref(),
-    )? {
+    for file in codex_config_targets.user_files {
         merge_file(&mut plan.external_files, file)?;
     }
     if selected_adapters.contains(Adapter::OpenCode)
@@ -2257,18 +2271,26 @@ fn read_project_mcp_config(path: &Path) -> Result<ProjectMcpConfig> {
         .with_context(|| format!("failed to parse MCP config {}", path.display()))
 }
 
-fn codex_mcp_config_file(
-    project_root: &Path,
+/// The Codex config files nodus manages for MCP servers. The `project` config
+/// (`.codex/config.toml`) is workspace-relative and owned for cleanup; the
+/// `overlays` are user-level profile files (`$CODEX_HOME/<name>.config.toml`)
+/// written as external files.
+struct CodexConfigTargets {
+    /// Workspace-relative `.codex/config.toml` (owned + tracked for cleanup).
+    project: Option<ManagedFile>,
+    /// User-level files: the base `$CODEX_HOME/config.toml` and any profile
+    /// overlays. Written as external files.
+    user_files: Vec<ManagedFile>,
+}
+
+/// Compute the managed Codex MCP server entries (including the `nodus` server
+/// when any package contributes direct MCP servers). Returns an empty map when
+/// Codex emits all MCP servers through native plugins instead.
+fn codex_managed_servers(
     packages: &[(ResolvedPackage, PathBuf)],
     selected_adapters: Adapters,
     codex_native_plugins_auto_enabled: bool,
-    existing_lockfile: Option<&Lockfile>,
-    merge_existing_mcp: bool,
-    feature_requirements: CodexFeatureRequirements,
-) -> Result<Option<ManagedFile>> {
-    let path = project_root.join(".codex/config.toml");
-    let previously_managed =
-        previously_managed_mcp_servers(existing_lockfile, ".codex/config.toml");
+) -> BTreeMap<String, TomlValue> {
     let mut desired_servers = BTreeMap::new();
     let mut has_direct_mcp_package = false;
     if selected_adapters.contains(Adapter::Codex) {
@@ -2305,33 +2327,253 @@ fn codex_mcp_config_file(
     }
 
     if has_direct_mcp_package {
-        let nodus_command = managed_nodus_command();
-        let mut table = toml::map::Map::new();
-        table.insert("command".into(), TomlValue::String(nodus_command));
-        table.insert(
-            "args".into(),
-            TomlValue::Array(
-                managed_nodus_args()
-                    .into_iter()
-                    .map(TomlValue::String)
-                    .collect(),
-            ),
-        );
-        desired_servers.insert("nodus".to_string(), TomlValue::Table(table));
+        desired_servers.insert("nodus".to_string(), managed_nodus_server_table());
+    }
+    desired_servers
+}
+
+fn managed_nodus_server_table() -> TomlValue {
+    let mut table = toml::map::Map::new();
+    table.insert("command".into(), TomlValue::String(managed_nodus_command()));
+    table.insert(
+        "args".into(),
+        TomlValue::Array(
+            managed_nodus_args()
+                .into_iter()
+                .map(TomlValue::String)
+                .collect(),
+        ),
+    );
+    TomlValue::Table(table)
+}
+
+/// Resolve the on-disk path of a Codex profile overlay. Codex loads
+/// `--profile <name>` from `$CODEX_HOME/<name>.config.toml` (a sibling of the
+/// base `config.toml`), so the overlay lives next to the resolved user config.
+fn codex_profile_overlay_path(
+    project_root: &Path,
+    codex_user_config: Option<&Path>,
+    profile: &str,
+) -> PathBuf {
+    let base = codex_user_config
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| default_codex_user_config_path(project_root));
+    let dir = base
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    dir.join(format!("{profile}.config.toml"))
+}
+
+/// Build the managed Codex config files. Without a profile this preserves the
+/// historical layout: managed MCP servers + feature flags in the project
+/// `.codex/config.toml`, and the native-plugin marketplace/plugins registration
+/// in the user `$CODEX_HOME/config.toml`.
+///
+/// With a profile, everything nodus manages (servers, features, marketplace, and
+/// plugin enablement) is consolidated into the `$CODEX_HOME/<profile>.config.toml`
+/// overlay, the base project and user configs are cleaned of anything nodus used
+/// to write, and an overlay abandoned by a profile change is cleaned too.
+#[allow(clippy::too_many_arguments)]
+fn codex_config_files(
+    project_root: &Path,
+    packages: &[(ResolvedPackage, PathBuf)],
+    selected_adapters: Adapters,
+    codex_native_plugins_auto_enabled: bool,
+    existing_lockfile: Option<&Lockfile>,
+    merge_existing_mcp: bool,
+    feature_requirements: CodexFeatureRequirements,
+    codex_profile: Option<&str>,
+    codex_previous_profile: Option<&str>,
+    codex_user_config: Option<&Path>,
+) -> Result<CodexConfigTargets> {
+    let desired_servers = codex_managed_servers(
+        packages,
+        selected_adapters,
+        codex_native_plugins_auto_enabled,
+    );
+    let registration =
+        codex_plugin_marketplace_registration(project_root, packages, selected_adapters)?;
+    let legacy_marketplace = legacy_project_marketplace_name(project_root, packages);
+
+    let project_path = project_root.join(".codex/config.toml");
+    let project_managed = previously_managed_mcp_servers(existing_lockfile, ".codex/config.toml");
+    let user_base_path = codex_user_config
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| default_codex_user_config_path(project_root));
+
+    let mut user_files = Vec::new();
+
+    let project;
+    match codex_profile {
+        None => {
+            // Historical layout: servers + features in the project config, the
+            // marketplace/plugin registration in the user config.
+            project = rewrite_codex_config(
+                &project_path,
+                project_root,
+                desired_servers,
+                feature_requirements,
+                None,
+                &project_managed,
+                &legacy_marketplace,
+                merge_existing_mcp,
+            )?;
+            if let Some(file) = rewrite_codex_config(
+                &user_base_path,
+                project_root,
+                BTreeMap::new(),
+                CodexFeatureRequirements::NONE,
+                registration.as_ref(),
+                &HashSet::new(),
+                &legacy_marketplace,
+                merge_existing_mcp,
+            )? {
+                user_files.push(file);
+            }
+        }
+        Some(profile) => {
+            // Profile active: the base configs keep nothing nodus-managed; the
+            // overlay carries the full managed set for that profile only.
+            project = rewrite_codex_config(
+                &project_path,
+                project_root,
+                BTreeMap::new(),
+                CodexFeatureRequirements::NONE,
+                None,
+                &project_managed,
+                &legacy_marketplace,
+                merge_existing_mcp,
+            )?;
+            if let Some(file) = rewrite_codex_config(
+                &user_base_path,
+                project_root,
+                BTreeMap::new(),
+                CodexFeatureRequirements::NONE,
+                None,
+                &HashSet::new(),
+                &legacy_marketplace,
+                merge_existing_mcp,
+            )? {
+                user_files.push(file);
+            }
+
+            let overlay_path = codex_profile_overlay_path(project_root, codex_user_config, profile);
+            let mut overlay_managed = lockfile_managed_mcp_server_names(existing_lockfile);
+            // We own the overlay's `nodus` entry when we wrote it last sync.
+            if codex_previous_profile == Some(profile) {
+                overlay_managed.insert("nodus".to_string());
+            }
+            if let Some(file) = rewrite_codex_config(
+                &overlay_path,
+                project_root,
+                desired_servers,
+                feature_requirements,
+                registration.as_ref(),
+                &overlay_managed,
+                &legacy_marketplace,
+                merge_existing_mcp,
+            )? {
+                user_files.push(file);
+            }
+        }
     }
 
-    let managed_marketplace = Some(MANAGED_MARKETPLACE_NAME.to_string());
-    let legacy_marketplace = legacy_project_marketplace_name(project_root, packages);
+    // After a profile change/removal, strip nodus-managed entries from the
+    // overlay we no longer target so they do not linger under a dead profile.
+    if let Some(previous) = codex_previous_profile
+        && codex_profile != Some(previous)
+    {
+        let overlay_path = codex_profile_overlay_path(project_root, codex_user_config, previous);
+        let mut overlay_managed = lockfile_managed_mcp_server_names(existing_lockfile);
+        overlay_managed.insert("nodus".to_string());
+        if let Some(file) =
+            clean_codex_overlay(&overlay_path, &overlay_managed, &legacy_marketplace)?
+        {
+            user_files.push(file);
+        }
+    }
+
+    Ok(CodexConfigTargets {
+        project,
+        user_files,
+    })
+}
+
+fn lockfile_managed_mcp_server_names(existing_lockfile: Option<&Lockfile>) -> HashSet<String> {
+    existing_lockfile
+        .map(Lockfile::managed_mcp_server_names)
+        .unwrap_or_default()
+}
+
+/// Neutralize a profile overlay that nodus no longer targets by removing its
+/// managed marketplace, plugins, MCP servers, and feature flags. Unlike
+/// [`rewrite_codex_config`], this rewrites the file even when the result is
+/// empty (so an overlay containing only nodus content is actually cleared),
+/// but returns `None` when the file is absent or already free of our entries.
+fn clean_codex_overlay(
+    path: &Path,
+    previously_managed: &HashSet<String>,
+    legacy_marketplace: &str,
+) -> Result<Option<ManagedFile>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let original = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let mut config = read_project_codex_config(path)?;
+    remove_codex_marketplace_config(&mut config, MANAGED_MARKETPLACE_NAME);
+    if legacy_marketplace != MANAGED_MARKETPLACE_NAME {
+        remove_codex_marketplace_config(&mut config, legacy_marketplace);
+    }
+    config
+        .mcp_servers
+        .retain(|server_name, _| !previously_managed.contains(server_name));
+    config.features.remove("hooks");
+    config.features.remove("plugin_hooks");
+    config.features.remove("codex_hooks");
+
+    let mut contents = toml::to_string_pretty(&config)
+        .context("failed to serialize cleaned Codex profile overlay")?
+        .into_bytes();
+    contents.push(b'\n');
+    if contents == original {
+        return Ok(None);
+    }
+    Ok(Some(ManagedFile {
+        path: path.to_path_buf(),
+        contents,
+    }))
+}
+
+/// Merge the managed Codex entries into the config at `path`, preserving any
+/// user-authored content. Writes `desired_servers`, the `feature_requirements`
+/// flags, and (when `registration` is set) the native-plugin marketplace and
+/// plugin enablement. `previously_managed` is the set of MCP server names nodus
+/// may remove; the managed marketplace is always cleaned out before re-adding.
+/// Returns `None` when nothing managed remains to write.
+#[allow(clippy::too_many_arguments)]
+fn rewrite_codex_config(
+    path: &Path,
+    project_root: &Path,
+    desired_servers: BTreeMap<String, TomlValue>,
+    feature_requirements: CodexFeatureRequirements,
+    registration: Option<&CodexMarketplaceRegistration>,
+    previously_managed: &HashSet<String>,
+    legacy_marketplace: &str,
+    merge_existing_mcp: bool,
+) -> Result<Option<ManagedFile>> {
     let needs_config_for_outputs = !desired_servers.is_empty()
         || !previously_managed.is_empty()
         || feature_requirements.hooks
-        || feature_requirements.plugin_hooks;
+        || feature_requirements.plugin_hooks
+        || registration.is_some();
+
     let needs_marketplace_cleanup = if needs_config_for_outputs {
         false
     } else {
-        codex_project_config_has_marketplace_entries(&path, managed_marketplace.as_deref())?
-            || (managed_marketplace.as_deref() != Some(legacy_marketplace.as_str())
-                && codex_project_config_has_marketplace_entries(&path, Some(&legacy_marketplace))?)
+        codex_project_config_has_marketplace_entries(path, Some(MANAGED_MARKETPLACE_NAME))?
+            || (legacy_marketplace != MANAGED_MARKETPLACE_NAME
+                && codex_project_config_has_marketplace_entries(path, Some(legacy_marketplace))?)
     };
 
     if !needs_config_for_outputs && !needs_marketplace_cleanup {
@@ -2339,16 +2581,14 @@ fn codex_mcp_config_file(
     }
 
     let mut config = if merge_existing_mcp && path.exists() {
-        read_project_codex_config(&path)?
+        read_project_codex_config(path)?
     } else {
         ProjectCodexConfig::default()
     };
 
-    if let Some(marketplace) = managed_marketplace.as_deref() {
-        remove_codex_marketplace_config(&mut config, marketplace);
-    }
-    if managed_marketplace.as_deref() != Some(legacy_marketplace.as_str()) {
-        remove_codex_marketplace_config(&mut config, &legacy_marketplace);
+    remove_codex_marketplace_config(&mut config, MANAGED_MARKETPLACE_NAME);
+    if legacy_marketplace != MANAGED_MARKETPLACE_NAME {
+        remove_codex_marketplace_config(&mut config, legacy_marketplace);
     }
 
     config.mcp_servers.retain(|server_name, _| {
@@ -2371,6 +2611,19 @@ fn codex_mcp_config_file(
         config.features.remove("plugin_hooks");
     }
 
+    if let Some(registration) = registration {
+        let source = absolute_codex_marketplace_source(project_root)?;
+        config.marketplaces.insert(
+            registration.marketplace.clone(),
+            codex_local_marketplace_config(source),
+        );
+        for plugin in &registration.enabled_plugins {
+            config
+                .plugins
+                .insert(plugin.clone(), codex_enabled_plugin_config());
+        }
+    }
+
     if config.mcp_servers.is_empty()
         && config.features.is_empty()
         && config.marketplaces.is_empty()
@@ -2382,74 +2635,13 @@ fn codex_mcp_config_file(
     }
 
     let mut contents = toml::to_string_pretty(&config)
-        .context("failed to serialize managed Codex MCP configuration")?
+        .context("failed to serialize managed Codex configuration")?
         .into_bytes();
     contents.push(b'\n');
-    Ok(Some(ManagedFile { path, contents }))
-}
-
-fn codex_user_config_file(
-    project_root: &Path,
-    packages: &[(ResolvedPackage, PathBuf)],
-    selected_adapters: Adapters,
-    merge_existing_mcp: bool,
-    codex_user_config: Option<&Path>,
-) -> Result<Option<ManagedFile>> {
-    let path = codex_user_config
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| default_codex_user_config_path(project_root));
-    let plugin_registration =
-        codex_plugin_marketplace_registration(project_root, packages, selected_adapters)?;
-    let legacy_marketplace = legacy_project_marketplace_name(project_root, packages);
-    let needs_registration = plugin_registration.is_some();
-    let needs_cleanup = if needs_registration {
-        false
-    } else {
-        codex_project_config_has_marketplace_entries(&path, Some(MANAGED_MARKETPLACE_NAME))?
-            || (legacy_marketplace != MANAGED_MARKETPLACE_NAME
-                && codex_project_config_has_marketplace_entries(&path, Some(&legacy_marketplace))?)
-    };
-
-    if !needs_registration && !needs_cleanup {
-        return Ok(None);
-    }
-
-    let mut config = if merge_existing_mcp && path.exists() {
-        read_project_codex_config(&path)?
-    } else {
-        ProjectCodexConfig::default()
-    };
-    remove_codex_marketplace_config(&mut config, MANAGED_MARKETPLACE_NAME);
-    if legacy_marketplace != MANAGED_MARKETPLACE_NAME {
-        remove_codex_marketplace_config(&mut config, &legacy_marketplace);
-    }
-
-    if let Some(registration) = plugin_registration {
-        let source = absolute_codex_marketplace_source(project_root)?;
-        config.marketplaces.insert(
-            registration.marketplace.clone(),
-            codex_local_marketplace_config(source),
-        );
-        for plugin in registration.enabled_plugins {
-            config.plugins.insert(plugin, codex_enabled_plugin_config());
-        }
-    }
-
-    if config.mcp_servers.is_empty()
-        && config.features.is_empty()
-        && config.marketplaces.is_empty()
-        && config.plugins.is_empty()
-        && config.extra.is_empty()
-        && !needs_cleanup
-    {
-        return Ok(None);
-    }
-
-    let mut contents = toml::to_string_pretty(&config)
-        .context("failed to serialize managed Codex user configuration")?
-        .into_bytes();
-    contents.push(b'\n');
-    Ok(Some(ManagedFile { path, contents }))
+    Ok(Some(ManagedFile {
+        path: path.to_path_buf(),
+        contents,
+    }))
 }
 
 fn legacy_project_marketplace_name(
