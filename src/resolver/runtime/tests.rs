@@ -117,11 +117,11 @@ fn generated_claude_marketplace_path(path: &Path) -> PathBuf {
 }
 
 fn generated_codex_marketplace_path(path: &Path) -> PathBuf {
-    path.join(".nodus-global/marketplaces/codex/.agents/plugins/marketplace.json")
+    path.join(".nodus-global/.agents/plugins/marketplace.json")
 }
 
 fn generated_codex_marketplace_root(path: &Path) -> PathBuf {
-    path.join(".nodus-global/marketplaces/codex")
+    path.join(".nodus-global")
 }
 
 fn generated_codex_user_config_path(path: &Path) -> PathBuf {
@@ -142,9 +142,9 @@ fn global_native_plugin_root(
         Adapter::Claude => generated_global_packages_root(project_root)
             .join(identities.managed_package_id(package))
             .join("claude-plugin"),
-        Adapter::Codex => generated_codex_marketplace_root(project_root)
-            .join("plugins")
-            .join(identities.managed_package_id(package)),
+        Adapter::Codex => generated_global_packages_root(project_root)
+            .join(identities.managed_package_id(package))
+            .join("codex-plugin"),
         Adapter::OpenCode => generated_global_packages_root(project_root)
             .join(identities.managed_package_id(package))
             .join("opencode-plugin"),
@@ -341,11 +341,7 @@ fn path_contains_adapter_runtime(path: &Path, adapter: Adapter) -> bool {
 
     let plugin_root = match adapter {
         Adapter::Claude => "claude-plugin",
-        Adapter::Codex => {
-            let rendered = display_path(path);
-            return rendered.contains("/marketplaces/codex/plugins/")
-                || rendered.contains("\\marketplaces\\codex\\plugins\\");
-        }
+        Adapter::Codex => "codex-plugin",
         Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => {
             return false;
         }
@@ -475,8 +471,10 @@ fn managed_skill_file(
     let names = ManagedArtifactNames::from_resolved_packages([package]);
     let runtime_root = if matches!(adapter, Adapter::Claude | Adapter::Codex)
         && !matches!(package.source, PackageSource::Root)
-        && project_root.file_name().and_then(|name| name.to_str()) != Some("claude-plugin")
-        && !display_path(project_root).contains("/marketplaces/codex/plugins/")
+        && !matches!(
+            project_root.file_name().and_then(|name| name.to_str()),
+            Some("claude-plugin") | Some("codex-plugin")
+        )
     {
         global_native_plugin_root(project_root, package, adapter)
     } else {
@@ -2070,7 +2068,7 @@ fn sync_generates_claude_workspace_marketplace_files() {
     assert_not_owned(
         &lockfile,
         repo.path(),
-        ".nodus-global/marketplaces/codex/.agents/plugins/marketplace.json",
+        ".nodus-global/.agents/plugins/marketplace.json",
     );
 }
 
@@ -2602,6 +2600,41 @@ shared = { path = "vendor/shared" }
         error.contains("invalid Codex profile"),
         "expected profile validation error, got: {error}"
     );
+}
+
+#[test]
+fn sync_prunes_legacy_codex_marketplace_tree() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+    );
+    write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+
+    // Simulate a store written by a pre-re-root Nodus: the Codex marketplace and
+    // its plugin snapshots lived under `<home>/marketplaces/codex` instead of
+    // sharing the Nodus home root. The manifest there was never recorded as
+    // package-owned, so only the migration cleanup can prune it.
+    let legacy_root = temp.path().join(".nodus-global/marketplaces/codex");
+    write_file(
+        &legacy_root.join(".agents/plugins/marketplace.json"),
+        "{\n  \"name\": \"nodus\",\n  \"plugins\": []\n}\n",
+    );
+    write_file(
+        &legacy_root.join("plugins/shared+legacy/.codex-plugin/plugin.json"),
+        "{\n  \"name\": \"shared\"\n}\n",
+    );
+
+    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
+
+    // The re-rooted marketplace is written at the home root, and the entire
+    // legacy `marketplaces/codex` tree (including its empty parent) is gone.
+    assert!(generated_codex_marketplace_path(temp.path()).exists());
+    assert!(!temp.path().join(".nodus-global/marketplaces").exists());
 }
 
 #[test]
@@ -6261,7 +6294,7 @@ shared = { path = "vendor/shared" }
             .unwrap_err()
             .to_string();
     assert!(error.contains("refusing to overwrite unmanaged file"));
-    assert!(error.contains("marketplaces/codex/plugins"));
+    assert!(error.contains("packages") && error.contains("codex-plugin"));
 
     sync_in_dir_with_adapters_force(temp.path(), cache.path(), false, false, &[Adapter::Codex])
         .unwrap();
@@ -11971,11 +12004,10 @@ shared = { path = "vendor/shared" }
     .unwrap();
     assert_eq!(check.status, DoctorStatus::Blocked);
     assert!(check.findings.iter().any(|finding| {
+        let message = finding.message.replace('\\', "/");
         finding.kind == DoctorFindingKind::SafeAutoFix
-            && finding
-                .message
-                .replace('\\', "/")
-                .contains(".nodus-global/marketplaces/codex/plugins/")
+            && message.contains(".nodus-global/packages/")
+            && message.contains("codex-plugin")
     }));
     assert!(!plugin_root.exists());
 

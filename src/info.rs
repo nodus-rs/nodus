@@ -2461,11 +2461,12 @@ always_context = ["prompts/context.md"]
         assert!(output.contains("native-integration:"));
         assert!(output.contains("adapters = [claude, codex]"));
         assert!(output.contains(".nodus-global/.claude-plugin/marketplace.json (present"));
-        assert!(
-            output.contains(".nodus-global/marketplaces/codex/.agents/plugins/marketplace.json")
-        );
+        assert!(output.contains(".nodus-global/.agents/plugins/marketplace.json"));
         assert!(output.contains("claude shared-tools@"));
-        assert!(output.contains(".nodus-global/marketplaces/codex/plugins/shared-tools+"));
+        assert!(
+            output.contains(".nodus-global/packages/shared-tools+")
+                && output.contains("/codex-plugin")
+        );
         assert!(output.contains("plugin_hooks=true plugin_hooks_required=true"));
         assert!(output.contains("registration=global-snapshot-marketplace"));
         assert!(output.contains("enabled=[shared-tools@nodus]"));

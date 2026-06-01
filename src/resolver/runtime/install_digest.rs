@@ -192,7 +192,7 @@ pub(crate) fn install_digest_from_disk(
 /// rather than the workspace.
 ///
 /// Native marketplace plugin snapshots (e.g. the codex
-/// `${NODUS_HOME}/marketplaces/codex/plugins/<pkg>` subtree) are recorded as
+/// `${NODUS_HOME}/packages/<pkg>/codex-plugin` subtree) are recorded as
 /// `${NODUS_HOME}/...` tokens — or, in pre-token lockfiles, an absolute path
 /// under the home. They live outside the workspace and are shared across repos,
 /// so the write side (`install_digests_by_package`) never attributes them to a
@@ -322,13 +322,13 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let plugin = temp
             .path()
-            .join(".nodus-global/marketplaces/codex/plugins/foo+main");
+            .join(".nodus-global/packages/foo+main/codex-plugin");
         fs::create_dir_all(plugin.join("skills/x")).unwrap();
         fs::write(plugin.join("skills/x/SKILL.md"), b"skill").unwrap();
         fs::write(plugin.join(".mcp.json"), b"{}").unwrap();
 
         let mut pkg = minimal_package("foo");
-        pkg.owned_subtrees = vec!["${NODUS_HOME}/marketplaces/codex/plugins/foo+main".into()];
+        pkg.owned_subtrees = vec!["${NODUS_HOME}/packages/foo+main/codex-plugin".into()];
 
         let digest = install_digest_for_package(temp.path(), &pkg)
             .unwrap()
@@ -351,13 +351,13 @@ mod tests {
         fs::write(temp.path().join("local.txt"), b"local").unwrap();
         let plugin = temp
             .path()
-            .join(".nodus-global/marketplaces/codex/plugins/foo+main");
+            .join(".nodus-global/packages/foo+main/codex-plugin");
         fs::create_dir_all(&plugin).unwrap();
         fs::write(plugin.join(".mcp.json"), b"{}").unwrap();
 
         let mut pkg = minimal_package("foo");
         pkg.owned_files = vec!["local.txt".into()];
-        pkg.owned_subtrees = vec!["${NODUS_HOME}/marketplaces/codex/plugins/foo+main".into()];
+        pkg.owned_subtrees = vec!["${NODUS_HOME}/packages/foo+main/codex-plugin".into()];
 
         let digest = install_digest_for_package(temp.path(), &pkg)
             .unwrap()

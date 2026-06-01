@@ -27,19 +27,31 @@ native global snapshot marketplace rather than a project-local virtual
 marketplace.
 
 When the Codex adapter is selected, full packages with Codex-supported runtime
-content are copied to pinned snapshot roots below the registered marketplace:
+content are copied to pinned snapshot roots that share the Nodus home with the
+Claude package plugins:
 
 ```text
-~/.nodus/marketplaces/codex/plugins/<managed-package-id>/
+~/.nodus/packages/<managed-package-id>/codex-plugin/
 ```
 
 The marketplace manifest is emitted at:
 
 ```text
-~/.nodus/marketplaces/codex/.agents/plugins/marketplace.json
+~/.nodus/.agents/plugins/marketplace.json
 ```
 
-Nodus registers that root as a local marketplace named `nodus` in
+with each plugin referenced root-relative as
+`./packages/<managed-package-id>/codex-plugin`.
+
+> The Codex marketplace is re-rooted at `~/.nodus` (mirroring Claude's
+> `~/.nodus/.claude-plugin/marketplace.json`). This supersedes the earlier
+> `~/.nodus/marketplaces/codex/plugins/<id>` layout so that every adapter's
+> payload for a package lives under one `packages/<id>/` directory. Codex
+> resolves a plugin's `source.path` relative to the registered marketplace
+> root, so the path stays a clean root-relative reference with no parent
+> traversal.
+
+Nodus registers the Nodus home as a local marketplace named `nodus` in
 `$CODEX_HOME/config.toml` or `~/.codex/config.toml`, and enables the selected
 `<plugin>@nodus` entries there. Dependency skills, synthetic command skills,
 plugin hooks, and plugin MCP config live in the snapshot; Codex agents remain

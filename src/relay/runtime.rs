@@ -526,6 +526,9 @@ fn adapter_for_managed_path(path: &str) -> Option<Adapter> {
         || path.starts_with(".codex-plugin/")
         || path.starts_with(".nodus/.agents/plugins/")
         || (path.starts_with(".nodus/packages/") && path.contains("/codex-plugin"))
+        // Legacy: pre-re-root lockfiles stored codex snapshots under
+        // `marketplaces/codex/plugins/<id>`. Kept for backward-compat with
+        // lockfiles written before the marketplace was re-rooted at the Nodus home.
         || path.contains("/marketplaces/codex/plugins/")
         || path.ends_with("/marketplaces/codex/.agents/plugins/marketplace.json")
     {

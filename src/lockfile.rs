@@ -1158,14 +1158,14 @@ mod tests {
         let home = crate::adapters::global_nodus_home(project_root);
 
         let resolved = Lockfile::validate_managed_relative(
-            "${NODUS_HOME}/marketplaces/codex/plugins/core+3051",
+            "${NODUS_HOME}/packages/core+3051/codex-plugin",
             project_root,
         )
         .unwrap();
 
         assert_eq!(
             resolved.as_ref(),
-            home.join("marketplaces/codex/plugins/core+3051"),
+            home.join("packages/core+3051/codex-plugin"),
         );
     }
 
