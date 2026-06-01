@@ -172,6 +172,31 @@ fn read_codex_user_config(path: &Path) -> toml::Value {
     toml::from_str(&fs::read_to_string(generated_codex_user_config_path(path)).unwrap()).unwrap()
 }
 
+fn generated_codex_user_overlay_path(path: &Path, profile: &str) -> PathBuf {
+    path.join(format!(".codex-user/{profile}.config.toml"))
+}
+
+fn read_codex_user_overlay(path: &Path, profile: &str) -> toml::Value {
+    toml::from_str(&fs::read_to_string(generated_codex_user_overlay_path(path, profile)).unwrap())
+        .unwrap()
+}
+
+/// Assert the base `$CODEX_HOME/config.toml` carries no nodus-managed
+/// marketplace registration (it is either absent or cleaned).
+fn assert_codex_user_base_has_no_managed_marketplace(path: &Path) {
+    let base = generated_codex_user_config_path(path);
+    if !base.exists() {
+        return;
+    }
+    let config: toml::Value = toml::from_str(&fs::read_to_string(&base).unwrap()).unwrap();
+    if let Some(marketplaces) = config.get("marketplaces").and_then(toml::Value::as_table) {
+        assert!(
+            !marketplaces.contains_key("nodus"),
+            "base Codex user config should not register the nodus marketplace; config was {config:?}"
+        );
+    }
+}
+
 fn assert_codex_user_config_registers_plugins(project_root: &Path, plugin_keys: &[&str]) {
     let config = read_codex_user_config(project_root);
     assert_codex_config_registers_plugins(project_root, &config, plugin_keys);
@@ -877,7 +902,7 @@ fn sync_in_dir_with_adapters_no_fast_path(
 ) -> Result<SyncSummary> {
     let reporter = Reporter::silent();
     super::sync_in_dir_with_adapters_full(
-        cwd, cache_root, false, false, false, adapters, false, true, &reporter,
+        cwd, cache_root, false, false, false, adapters, false, true, None, &reporter,
     )
 }
 
@@ -955,6 +980,7 @@ fn sync_in_dir_with_collision_choice(
         None,
         DependencyFailureMode::Graceful,
         false,
+        None,
         Some(&mut resolver),
         &reporter,
     )
@@ -2074,6 +2100,7 @@ model = "gpt-5"
         None,
         DependencyFailureMode::Graceful,
         false,
+        None,
         &reporter,
     )
     .unwrap();
@@ -2111,6 +2138,7 @@ fn sync_creates_codex_user_config_for_workspace_plugins() {
         None,
         DependencyFailureMode::Graceful,
         false,
+        None,
         &reporter,
     )
     .unwrap();
@@ -2129,6 +2157,7 @@ fn sync_creates_codex_user_config_for_workspace_plugins() {
         None,
         DependencyFailureMode::Graceful,
         false,
+        None,
         &reporter,
     )
     .unwrap();
@@ -2430,6 +2459,152 @@ args = ["figma-developer-mcp"]
 }
 
 #[test]
+fn sync_writes_codex_profile_overlay_and_keeps_base_config_clean() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[adapters]
+enabled = ["codex"]
+
+[adapters.codex]
+profile = "work"
+
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+    );
+    write_manifest(
+        &temp.path().join("vendor/shared"),
+        r#"
+name = "Shared Tools"
+"#,
+    );
+    write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+
+    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
+
+    // The nodus marketplace + plugin enablement is registered in the profile
+    // overlay, not the base config the active profile inherits from.
+    let overlay = read_codex_user_overlay(temp.path(), "work");
+    assert_codex_config_registers_plugins(temp.path(), &overlay, &["shared-tools@nodus"]);
+    assert_codex_user_base_has_no_managed_marketplace(temp.path());
+
+    // The lockfile records the profile so a later change forces a re-render.
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    assert_eq!(lockfile.codex_profile.as_deref(), Some("work"));
+}
+
+#[test]
+fn sync_moves_codex_registration_back_to_base_when_profile_removed() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    let with_profile = r#"
+[adapters]
+enabled = ["codex"]
+
+[adapters.codex]
+profile = "work"
+
+[dependencies]
+shared = { path = "vendor/shared" }
+"#;
+    write_manifest(temp.path(), with_profile);
+    write_manifest(
+        &temp.path().join("vendor/shared"),
+        r#"
+name = "Shared Tools"
+"#,
+    );
+    write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+
+    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
+    assert!(generated_codex_user_overlay_path(temp.path(), "work").exists());
+
+    // Drop the profile and re-sync: the registration returns to the base config
+    // and the abandoned overlay is cleaned of the nodus marketplace.
+    write_manifest(
+        temp.path(),
+        r#"
+[adapters]
+enabled = ["codex"]
+
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+    );
+    sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
+
+    assert_codex_user_config_registers_plugins(temp.path(), &["shared-tools@nodus"]);
+    let overlay_path = generated_codex_user_overlay_path(temp.path(), "work");
+    if overlay_path.exists() {
+        let overlay: toml::Value =
+            toml::from_str(&fs::read_to_string(&overlay_path).unwrap()).unwrap();
+        if let Some(marketplaces) = overlay.get("marketplaces").and_then(toml::Value::as_table) {
+            assert!(
+                !marketplaces.contains_key("nodus"),
+                "abandoned overlay should not keep the nodus marketplace; was {overlay:?}"
+            );
+        }
+    }
+
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    assert_eq!(lockfile.codex_profile, None);
+}
+
+#[test]
+fn resolve_codex_profile_validates_and_prefers_override() {
+    let manifest = crate::manifest::Manifest::default();
+    // Override wins and is returned verbatim once validated.
+    assert_eq!(
+        super::resolve_codex_profile(&manifest, Some("work"))
+            .unwrap()
+            .as_deref(),
+        Some("work")
+    );
+    // No override and no manifest profile means no profile.
+    assert_eq!(super::resolve_codex_profile(&manifest, None).unwrap(), None);
+    // Names that could escape `$CODEX_HOME` are rejected.
+    for unsafe_name in ["../evil", "a/b", "a\\b", "..", "."] {
+        assert!(
+            super::resolve_codex_profile(&manifest, Some(unsafe_name)).is_err(),
+            "expected `{unsafe_name}` to be rejected"
+        );
+    }
+}
+
+#[test]
+fn sync_rejects_unsafe_codex_profile_name() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_manifest(
+        temp.path(),
+        r#"
+[adapters]
+enabled = ["codex"]
+
+[adapters.codex]
+profile = "../evil"
+
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+    );
+    write_manifest(&temp.path().join("vendor/shared"), "name = \"Shared\"\n");
+    write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+
+    let error =
+        sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex])
+            .unwrap_err()
+            .to_string();
+    assert!(
+        error.contains("invalid Codex profile"),
+        "expected profile validation error, got: {error}"
+    );
+}
+
+#[test]
 fn sync_uses_workspace_namespace_for_member_alias_and_plugin_name() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();
@@ -2654,6 +2829,7 @@ custom = "kept"
         None,
         DependencyFailureMode::Graceful,
         false,
+        None,
         &reporter,
     )
     .unwrap();
@@ -7089,6 +7265,7 @@ shared = { path = "vendor/shared" }
     legacy_paths.sort();
     Lockfile {
         version: 8,
+        codex_profile: None,
         packages: current_lockfile.packages,
         legacy_managed_files: legacy_paths,
     }

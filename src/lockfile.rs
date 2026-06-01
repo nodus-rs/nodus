@@ -26,6 +26,12 @@ pub const ROOT_PACKAGE_NAME_SENTINEL: &str = "<root>";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lockfile {
     pub version: u32,
+    /// The Codex profile that managed MCP servers were written into during the
+    /// last sync (from `[adapters.codex] profile` or `--codex-profile`). `None`
+    /// means the servers live in the top-level `.codex/config.toml`. Recorded so
+    /// a profile change forces a re-render and an abandoned overlay is cleaned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_profile: Option<String>,
     pub packages: Vec<LockedPackage>,
     /// Legacy v9 read-only fallback. Empty for v10 writes.
     ///
@@ -208,6 +214,7 @@ impl Lockfile {
         });
         Self {
             version: LOCKFILE_VERSION,
+            codex_profile: None,
             packages,
             legacy_managed_files: Vec::new(),
         }
@@ -1236,6 +1243,7 @@ managed_files = []
     fn managed_paths_for_sync_include_legacy_direct_paths() {
         let lockfile = Lockfile {
             version: 4,
+            codex_profile: None,
             packages: vec![LockedPackage {
                 alias: "shared".into(),
                 name: "shared".into(),
@@ -1525,6 +1533,7 @@ managed_files = []
     fn managed_paths_for_sync_expand_legacy_github_agent_roots() {
         let lockfile = Lockfile {
             version: 7,
+            codex_profile: None,
             packages: vec![LockedPackage {
                 alias: "shared".into(),
                 name: "shared".into(),
@@ -1571,6 +1580,7 @@ managed_files = []
     fn managed_mcp_server_names_include_alias_prefixes() {
         let lockfile = Lockfile {
             version: LOCKFILE_VERSION,
+            codex_profile: None,
             packages: vec![LockedPackage {
                 alias: "firebase".into(),
                 name: "firebase-tools".into(),

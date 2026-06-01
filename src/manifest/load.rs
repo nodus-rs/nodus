@@ -263,6 +263,13 @@ pub fn serialize_manifest(manifest: &Manifest) -> Result<String> {
             .collect::<Vec<_>>()
             .join(", ");
         output.push_str(&format!("enabled = [{encoded}]\n"));
+        if let Some(codex) = &adapters.codex
+            && let Some(profile) = &codex.profile
+        {
+            output.push('\n');
+            output.push_str("[adapters.codex]\n");
+            output.push_str(&format!("profile = {}\n", quote(profile)));
+        }
     }
 
     if let Some(activation) = &manifest.activation

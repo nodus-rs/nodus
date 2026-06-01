@@ -164,6 +164,7 @@ pub(super) fn run_command_in_dir(
             sync_on_launch,
             no_sync_on_launch,
             dry_run,
+            codex_profile,
         } => project::handle_sync(
             &context,
             project::SyncCommand {
@@ -177,6 +178,7 @@ pub(super) fn run_command_in_dir(
                 sync_on_launch,
                 no_sync_on_launch,
                 dry_run,
+                codex_profile,
             },
         ),
         Command::Clean { all, dry_run } => system::handle_clean(&context, all, dry_run),
