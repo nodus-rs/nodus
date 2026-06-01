@@ -6460,6 +6460,109 @@ shared = { path = "vendor/shared" }
 }
 
 #[test]
+fn sync_adopts_branch_tracked_dependency_collisions_without_prompting() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    let dep = TempDir::new().unwrap();
+    write_manifest(dep.path(), r#"name = "shared""#);
+    write_skill(&dep.path().join("skills/review"), "Review");
+    write_file(
+        &dep.path().join("prompts/review.md"),
+        "Use the review prompt.\n",
+    );
+    init_git_repo(dep.path());
+    rename_current_branch(dep.path(), "main");
+
+    // Consumer tracks the dependency on its moving `main` branch and maps one
+    // of its files into the repo.
+    write_manifest(
+        temp.path(),
+        &format!(
+            r#"
+[dependencies.shared]
+url = "{url}"
+branch = "main"
+
+[[dependencies.shared.managed]]
+source = "prompts/review.md"
+target = ".github/prompts/review.md"
+"#,
+            url = dep.path().to_string_lossy(),
+        ),
+    );
+
+    // A user file already occupies the managed target, which would normally
+    // force the collision prompt.
+    write_file(
+        &temp.path().join(".github/prompts/review.md"),
+        "user-owned prompt\n",
+    );
+
+    // A stable pin would consult the resolver and cancel here. A branch pin is
+    // intentionally unstable, so sync adopts the upstream state silently and
+    // never consults the resolver.
+    sync_in_dir_with_collision_choice(temp.path(), cache.path(), ManagedCollisionChoice::Cancel)
+        .unwrap();
+
+    assert_eq!(
+        fs::read_to_string(temp.path().join(".github/prompts/review.md")).unwrap(),
+        "Use the review prompt.\n"
+    );
+    let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+    assert_owned(&lockfile, temp.path(), ".github/prompts/review.md");
+}
+
+#[test]
+fn sync_still_prompts_for_non_branch_dependency_collisions() {
+    let temp = TempDir::new().unwrap();
+    let cache = cache_dir();
+    let dep = TempDir::new().unwrap();
+    write_manifest(dep.path(), r#"name = "shared""#);
+    write_skill(&dep.path().join("skills/review"), "Review");
+    write_file(
+        &dep.path().join("prompts/review.md"),
+        "Use the review prompt.\n",
+    );
+    init_git_repo(dep.path());
+    run_git(dep.path(), &["tag", "v0.1.0"]);
+
+    // The same dependency pinned to a fixed tag instead of a branch: the user
+    // never opted into "always take upstream", so the collision must still
+    // prompt (and cancel here) rather than silently overwrite their file.
+    write_manifest(
+        temp.path(),
+        &format!(
+            r#"
+[dependencies.shared]
+url = "{url}"
+tag = "v0.1.0"
+
+[[dependencies.shared.managed]]
+source = "prompts/review.md"
+target = ".github/prompts/review.md"
+"#,
+            url = dep.path().to_string_lossy(),
+        ),
+    );
+    write_file(
+        &temp.path().join(".github/prompts/review.md"),
+        "user-owned prompt\n",
+    );
+
+    let error =
+        sync_in_dir_with_collision_choice(temp.path(), cache.path(), ManagedCollisionChoice::Cancel)
+            .unwrap_err()
+            .to_string();
+
+    assert!(error.contains("cancelled `nodus sync`"));
+    assert!(error.contains(".github/prompts/review.md"));
+    assert_eq!(
+        fs::read_to_string(temp.path().join(".github/prompts/review.md")).unwrap(),
+        "user-owned prompt\n"
+    );
+}
+
+#[test]
 fn sync_dry_run_force_previews_without_overwriting_unmanaged_files() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();

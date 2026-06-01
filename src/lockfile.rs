@@ -185,6 +185,18 @@ pub struct LockedSource {
     pub rev: Option<String>,
 }
 
+/// True when a locked source follows a moving git branch (rather than a fixed
+/// tag or revision). A branch pin records a `branch` and re-resolves to the
+/// latest upstream commit on every sync, so its managed outputs are expected to
+/// change without user involvement.
+pub(crate) fn locked_source_tracks_branch(source: &LockedSource) -> bool {
+    source.kind == "git"
+        && source
+            .branch
+            .as_deref()
+            .is_some_and(|branch| !branch.trim().is_empty())
+}
+
 impl Lockfile {
     pub fn new(mut packages: Vec<LockedPackage>) -> Self {
         for package in packages.iter_mut() {
@@ -255,8 +267,39 @@ impl Lockfile {
     /// `subtree`, or an `owned_files` entry inside an owned `subtree`) are
     /// reported via `eprintln!` and otherwise ignored.
     pub fn owned_set(&self, project_root: &Path) -> Result<OwnedSet> {
+        self.owned_set_for_packages(project_root, |_| true, true)
+    }
+
+    /// Owned paths contributed only by packages whose git source tracks a
+    /// branch. Branch pins are intentionally unstable -- the branch moves on
+    /// every upstream commit -- so sync adopts their managed outputs silently
+    /// instead of prompting the user to reconcile each upstream change as a
+    /// collision. Non-branch packages (tags, revisions, paths) are excluded so
+    /// their outputs keep the normal "don't clobber unmanaged files" guard.
+    pub(crate) fn branch_tracked_owned_set(&self, project_root: &Path) -> Result<OwnedSet> {
+        self.owned_set_for_packages(
+            project_root,
+            |package| locked_source_tracks_branch(&package.source),
+            false,
+        )
+    }
+
+    fn owned_set_for_packages(
+        &self,
+        project_root: &Path,
+        include: impl Fn(&LockedPackage) -> bool,
+        seed_legacy_managed_paths: bool,
+    ) -> Result<OwnedSet> {
         let mut set = OwnedSet {
-            exact: self.managed_paths(project_root)?,
+            // The legacy artifact-root expansion in `managed_paths` is not
+            // attributable to a single package, so it is only seeded for the
+            // whole-lockfile view. Per-package filters start empty and rely on
+            // the explicit `owned_*` records below.
+            exact: if seed_legacy_managed_paths {
+                self.managed_paths(project_root)?
+            } else {
+                HashSet::new()
+            },
             subtrees: Vec::new(),
             prefixes: Vec::new(),
         };
@@ -271,6 +314,9 @@ impl Lockfile {
         let names = ManagedArtifactNames::from_locked_packages(self.packages.iter());
 
         for package in &self.packages {
+            if !include(package) {
+                continue;
+            }
             for relative in &package.owned_files {
                 let validated = Self::validate_managed_relative(relative, project_root)?;
                 set.exact.insert(project_root.join(validated));
@@ -1842,6 +1888,51 @@ managed_files = []
                 .exact
                 .contains(&PathBuf::from("/tmp/project/.codex/rules/default.md"))
         );
+    }
+
+    #[test]
+    fn branch_tracked_owned_set_includes_only_branch_pinned_packages() {
+        let mut branch_pkg = minimal_package("branchy");
+        branch_pkg.source = LockedSource {
+            kind: "git".into(),
+            path: None,
+            url: Some("https://example.test/branchy".into()),
+            tag: None,
+            branch: Some("main".into()),
+            rev: Some("abc123".into()),
+        };
+        branch_pkg.owned_subtrees = vec![".nodus/packages/branchy/codex-plugin".into()];
+
+        let mut tag_pkg = minimal_package("tagged");
+        tag_pkg.source = LockedSource {
+            kind: "git".into(),
+            path: None,
+            url: Some("https://example.test/tagged".into()),
+            tag: Some("v1.0.0".into()),
+            branch: None,
+            rev: Some("def456".into()),
+        };
+        tag_pkg.owned_files = vec![".github/prompts/review.md".into()];
+
+        let mut path_pkg = minimal_package("local");
+        path_pkg.owned_files = vec![".claude/agents/security.md".into()];
+
+        let lockfile = Lockfile::new(vec![branch_pkg, tag_pkg, path_pkg]);
+        let project_root = Path::new("/tmp/project");
+        let branch_owned = lockfile.branch_tracked_owned_set(project_root).unwrap();
+
+        // The branch package's outputs are adoptable...
+        assert!(branch_owned.contains(Path::new(
+            "/tmp/project/.nodus/packages/branchy/codex-plugin/skills/x/SKILL.md"
+        )));
+        // ...while the tag-pinned and path packages keep the normal guard.
+        assert!(!branch_owned.contains(Path::new("/tmp/project/.github/prompts/review.md")));
+        assert!(!branch_owned.contains(Path::new("/tmp/project/.claude/agents/security.md")));
+
+        // The unfiltered view still covers every package.
+        let all_owned = lockfile.owned_set(project_root).unwrap();
+        assert!(all_owned.contains(Path::new("/tmp/project/.github/prompts/review.md")));
+        assert!(all_owned.contains(Path::new("/tmp/project/.claude/agents/security.md")));
     }
 
     #[test]

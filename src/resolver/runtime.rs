@@ -1217,17 +1217,32 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
                     display_path(&unmanaged_collision.path)
                 );
             };
-            let Some(resolver) = collision_resolver.as_deref_mut() else {
-                bail!(
-                    "{}",
-                    unmanaged_collision_guidance(
-                        &install_paths.runtime_root,
-                        &managed_collision,
-                        sync_mode,
-                    )
-                );
+            // Branch-tracked dependencies follow a moving ref: the branch
+            // advances on every upstream commit, so a changed managed output is
+            // the expected state, not a user-vs-package conflict. Adopt it
+            // silently (even without a TTY, e.g. the sync-on-launch hook)
+            // instead of prompting the user to reconcile every branch update.
+            let branch_owned = lockfile.branch_tracked_owned_set(&install_paths.runtime_root)?;
+            let choice = if branch_owned.contains(&unmanaged_collision.path) {
+                reporter.note(format!(
+                    "adopting {} from a branch-tracked dependency without prompting",
+                    display_path(&unmanaged_collision.path)
+                ))?;
+                ManagedCollisionChoice::Adopt
+            } else {
+                let Some(resolver) = collision_resolver.as_deref_mut() else {
+                    bail!(
+                        "{}",
+                        unmanaged_collision_guidance(
+                            &install_paths.runtime_root,
+                            &managed_collision,
+                            sync_mode,
+                        )
+                    );
+                };
+                resolver.resolve(&install_paths.runtime_root, &managed_collision)?
             };
-            match resolver.resolve(&install_paths.runtime_root, &managed_collision)? {
+            match choice {
                 ManagedCollisionChoice::Adopt => {
                     let adopted_path = match managed_collision.source {
                         ManagedCollisionSource::RuntimeOutput => {
