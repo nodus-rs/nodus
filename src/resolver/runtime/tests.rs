@@ -6486,7 +6486,7 @@ branch = "main"
 source = "prompts/review.md"
 target = ".github/prompts/review.md"
 "#,
-            url = dep.path().to_string_lossy(),
+            url = toml_path_value(dep.path()),
         ),
     );
 
@@ -6540,7 +6540,7 @@ tag = "v0.1.0"
 source = "prompts/review.md"
 target = ".github/prompts/review.md"
 "#,
-            url = dep.path().to_string_lossy(),
+            url = toml_path_value(dep.path()),
         ),
     );
     write_file(
