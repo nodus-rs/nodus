@@ -1563,10 +1563,7 @@ mod nodus_home_path_tests {
         // The lockfile was written by `wendell`; `alice` re-anchors it.
         let alice_home = Path::new("/Users/alice/.nodus");
         assert_eq!(
-            expand_nodus_home_relative(
-                alice_home,
-                "${NODUS_HOME}/packages/core+3051/codex-plugin",
-            ),
+            expand_nodus_home_relative(alice_home, "${NODUS_HOME}/packages/core+3051/codex-plugin",),
             Some(alice_home.join("packages/core+3051/codex-plugin")),
         );
     }

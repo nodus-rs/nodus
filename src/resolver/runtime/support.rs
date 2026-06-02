@@ -44,7 +44,10 @@ pub(super) fn build_sync_execution_plan(
         desired_paths,
         &working_root.root,
     )?);
-    removals.extend(legacy_global_removals(&working_root.root, &summary.adapters));
+    removals.extend(legacy_global_removals(
+        &working_root.root,
+        &summary.adapters,
+    ));
     removals.sort();
     removals.dedup();
     let lockfile_write = if sync_mode.checks_lockfile() {

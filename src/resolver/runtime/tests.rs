@@ -474,8 +474,7 @@ fn managed_skill_file(
         && !matches!(
             project_root.file_name().and_then(|name| name.to_str()),
             Some("claude-plugin") | Some("codex-plugin")
-        )
-    {
+        ) {
         global_native_plugin_root(project_root, package, adapter)
     } else {
         project_root.to_path_buf()
@@ -6549,10 +6548,13 @@ target = ".github/prompts/review.md"
         "user-owned prompt\n",
     );
 
-    let error =
-        sync_in_dir_with_collision_choice(temp.path(), cache.path(), ManagedCollisionChoice::Cancel)
-            .unwrap_err()
-            .to_string();
+    let error = sync_in_dir_with_collision_choice(
+        temp.path(),
+        cache.path(),
+        ManagedCollisionChoice::Cancel,
+    )
+    .unwrap_err()
+    .to_string();
 
     assert!(error.contains("cancelled `nodus sync`"));
     assert!(error.contains(".github/prompts/review.md"));
