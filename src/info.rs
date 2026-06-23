@@ -1189,7 +1189,8 @@ fn inspect_codex_native_state(
 ) -> CodexNativeState {
     let path = project_root.join(".codex").join("config.toml");
     let user_config_path = codex_user_config_path(project_root);
-    let marketplace_path = crate::adapters::native_marketplace_root(project_root, Adapter::Codex);
+    let marketplace_path = crate::adapters::native_marketplace_path(project_root, Adapter::Codex)
+        .expect("codex marketplace path");
     let (marketplace_registered, mut enabled_plugins) =
         inspect_codex_user_config(&user_config_path, warnings);
     if workspace_marketplace {
@@ -2479,7 +2480,7 @@ always_context = ["prompts/context.md"]
         assert!(output.contains("native-integration:"));
         assert!(output.contains("adapters = [claude, codex]"));
         assert!(output.contains(".nodus/.claude-plugin/marketplace.json (present"));
-        assert!(output.contains(".nodus/.agents/plugins/marketplace.json"));
+        assert!(output.contains(".agents/plugins/marketplace.json"));
         assert!(output.contains("claude shared-tools@"));
         assert!(
             output.contains(".nodus/packages/shared-tools+") && output.contains("/codex-plugin")

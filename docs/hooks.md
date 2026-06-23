@@ -87,18 +87,20 @@ emit a sync warning.
 ## Codex workspace marketplace
 
 When the Codex adapter is enabled, dependency package content is rendered as
-pinned plugin snapshots below the workspace Nodus marketplace root:
+pinned plugin snapshots under `.nodus/packages`, with a repo-scoped Codex
+marketplace manifest at the documented workspace path:
 
 ```text
+.agents/
+  plugins/marketplace.json
 .nodus/
-  .agents/plugins/marketplace.json
   packages/<managed-package-id>/codex-plugin/
 ```
 
 Nodus does not write user-level Codex config in `$CODEX_HOME/config.toml` or
 `~/.codex/config.toml` to register workspace plugins. Codex discovers the
 repo-local marketplace manifest, and Nodus keeps plugin sources relative to the
-workspace `.nodus` root.
+repository root.
 
 Dependency skills, synthetic command skills, plugin hooks, and plugin MCP
 config live inside those snapshots rather than being duplicated into project

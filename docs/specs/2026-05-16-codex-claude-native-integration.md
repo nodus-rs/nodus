@@ -105,7 +105,7 @@ changes.
 Nodus emits Codex runtime files directly under `.codex/` and copies full
 dependency package payloads under `.nodus/packages/<managed-package-id>/codex-plugin/`
 as workspace native plugin roots. It emits
-`.nodus/.agents/plugins/marketplace.json` for project syncs and does not add
+`.agents/plugins/marketplace.json` for project syncs and does not add
 `[marketplaces]` or `[plugins]` entries to Codex user config.
 
 Codex commands do not have a native Nodus command artifact. They are bridged as

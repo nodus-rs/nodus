@@ -117,7 +117,7 @@ fn generated_claude_marketplace_path(path: &Path) -> PathBuf {
 }
 
 fn generated_codex_marketplace_path(path: &Path) -> PathBuf {
-    path.join(".nodus/.agents/plugins/marketplace.json")
+    path.join(".agents/plugins/marketplace.json")
 }
 
 fn generated_codex_user_config_path(path: &Path) -> PathBuf {
@@ -2022,11 +2022,7 @@ fn sync_generates_claude_workspace_marketplace_files() {
         repo.path(),
         ".nodus/.claude-plugin/marketplace.json",
     );
-    assert_owned(
-        &lockfile,
-        repo.path(),
-        ".nodus/.agents/plugins/marketplace.json",
-    );
+    assert_owned(&lockfile, repo.path(), ".agents/plugins/marketplace.json");
 }
 
 #[test]
@@ -2873,11 +2869,7 @@ custom = "kept"
         }),
         "codex user config {codex_config_relative} should not appear in any package's ownership view",
     );
-    assert_owned(
-        &lockfile,
-        temp.path(),
-        ".nodus/.agents/plugins/marketplace.json",
-    );
+    assert_owned(&lockfile, temp.path(), ".agents/plugins/marketplace.json");
     assert_owned(&lockfile, temp.path(), ".codex/config.toml");
 }
 
@@ -6193,7 +6185,8 @@ shared = { path = "vendor/shared", components = ["commands"] }
             ))
             .exists()
     );
-    assert_eq!(summary.managed_file_count, 3);
+    assert_eq!(summary.managed_file_count, 4);
+    assert!(generated_codex_marketplace_path(temp.path()).exists());
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     let shared = lockfile
@@ -6207,6 +6200,7 @@ shared = { path = "vendor/shared", components = ["commands"] }
     );
     assert_eq!(shared.commands, vec!["build"]);
     assert_owned(&lockfile, temp.path(), &display_path(&plugin_root));
+    assert_owned(&lockfile, temp.path(), ".agents/plugins/marketplace.json");
     assert_not_owned(&lockfile, temp.path(), ".codex/config.toml");
 }
 

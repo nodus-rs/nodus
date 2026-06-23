@@ -36,18 +36,18 @@ directory:
 The marketplace manifest is emitted at:
 
 ```text
-.nodus/.agents/plugins/marketplace.json
+.agents/plugins/marketplace.json
 ```
 
-with each plugin referenced root-relative as
-`./packages/<managed-package-id>/codex-plugin`.
+with each plugin referenced repository-root-relative as
+`./.nodus/packages/<managed-package-id>/codex-plugin`.
 
-> The Codex marketplace is rooted at the workspace `.nodus` directory, mirroring
-> Claude's `.nodus/.claude-plugin/marketplace.json`. This supersedes the older
+> The Codex marketplace is rooted at the repository, matching Codex's
+> repo-scoped marketplace path. This supersedes the older
 > global snapshots under `~/.nodus/marketplaces/codex/` and the intermediate
 > `~/.nodus/packages/<id>/codex-plugin` user-config registration path. Codex
-> resolves a plugin's `source.path` relative to the workspace marketplace root,
-> so the path stays a clean root-relative reference with no parent traversal.
+> resolves a plugin's `source.path` relative to the repository root, so the
+> package snapshot can stay under `.nodus/packages` with no parent traversal.
 
 Nodus does not write `[marketplaces]` or `[plugins]` entries to
 `$CODEX_HOME/config.toml` or `~/.codex/config.toml` for workspace plugin

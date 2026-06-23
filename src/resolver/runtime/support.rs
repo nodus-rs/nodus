@@ -183,7 +183,7 @@ fn planned_lockfile_write(path: &Path, lockfile: &Lockfile) -> Result<PlannedFil
 ///
 /// The only current entry is the pre-workspace Codex global snapshot marketplace
 /// tree (`<home>/marketplaces/codex`). Current Codex output is project-local
-/// under `.nodus/.agents/plugins/marketplace.json` plus
+/// under `.agents/plugins/marketplace.json` plus
 /// `.nodus/packages/<id>/codex-plugin`, so the old tree is dead once the new
 /// layout is written. The manifest under that tree was never package-owned, so
 /// without this it would orphan on migration. Gated on the directory existing so

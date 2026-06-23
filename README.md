@@ -133,15 +133,16 @@ plugin hooks, and plugin MCP config are emitted into workspace-local plugin
 roots:
 
 ```text
+.agents/
+  plugins/marketplace.json
 .nodus/
-  .agents/plugins/marketplace.json
   packages/<managed-package-id>/codex-plugin/
 ```
 
 Nodus no longer registers a user-level Codex marketplace in
 `$CODEX_HOME/config.toml` or `~/.codex/config.toml` for workspace plugins.
 The marketplace manifest is managed inside the repository, and plugin sources
-are referenced relative to the `.nodus` marketplace root.
+are referenced relative to the repository root.
 
 Dependency artifacts are not duplicated into project `.codex/skills`.
 Codex agents still live under project `.codex/agents` because the current
