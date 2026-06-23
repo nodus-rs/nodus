@@ -328,7 +328,7 @@ fn first_runtime_file_under(root: &Path, adapter: Adapter, file_name: &str) -> P
 }
 
 fn claude_package_skill(root: &Path, alias: &str, skill_id: &str) -> PathBuf {
-    let packages_root = root.join(".nodus-global/packages");
+    let packages_root = root.join(".nodus/packages");
     WalkDir::new(&packages_root)
         .into_iter()
         .filter_map(Result::ok)
@@ -344,7 +344,7 @@ fn claude_package_skill(root: &Path, alias: &str, skill_id: &str) -> PathBuf {
         })
         .unwrap_or_else(|| {
             root.join(format!(
-                ".nodus-global/packages/{alias}/claude-plugin/skills/{skill_id}/SKILL.md"
+                ".nodus/packages/{alias}/claude-plugin/skills/{skill_id}/SKILL.md"
             ))
         })
 }
@@ -1918,7 +1918,7 @@ fn add_command_tracks_current_branch_for_local_checkout_ahead_of_latest_tag() {
     assert!(manifest.contains("branch = \"main\""));
     assert!(!manifest.contains("tag = \"v0.1.0\""));
     assert!(
-        WalkDir::new(temp.path().join(".nodus-global/packages"))
+        WalkDir::new(temp.path().join(".nodus/packages"))
             .into_iter()
             .filter_map(Result::ok)
             .any(|entry| entry.path().ends_with("skills/testing/SKILL.md"))
@@ -3887,7 +3887,7 @@ shared = { path = "vendor/shared" }
         "dependency Codex agent should also land in .codex/agents/"
     );
     assert!(
-        !WalkDir::new(temp.path().join(".nodus-global/packages"))
+        !WalkDir::new(temp.path().join(".nodus/packages"))
             .into_iter()
             .filter_map(Result::ok)
             .any(|entry| entry.path().ends_with("codex-plugin/agents/dep-agent.md")),

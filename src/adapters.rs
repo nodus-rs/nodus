@@ -1039,14 +1039,12 @@ pub(crate) fn expand_nodus_home_relative(home: &Path, value: &str) -> Option<Pat
 }
 
 pub(crate) fn native_marketplace_root(project_root: &Path, adapter: Adapter) -> PathBuf {
-    let global_home = global_nodus_home(project_root);
     match adapter {
-        // Codex re-roots its global snapshot marketplace at the Nodus home,
-        // mirroring Claude, so package payloads live under `packages/<id>/codex-plugin`
-        // instead of a separate `marketplaces/codex/plugins/<id>` tree.
-        Adapter::Claude | Adapter::Codex => global_home,
+        Adapter::Claude | Adapter::Codex => project_root.join(".nodus"),
         Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => {
-            global_home.join("marketplaces").join(adapter.as_str())
+            global_nodus_home(project_root)
+                .join("marketplaces")
+                .join(adapter.as_str())
         }
     }
 }
@@ -1153,11 +1151,11 @@ pub(crate) fn native_package_plugin_root(
     }
 
     match adapter {
-        Adapter::Claude => global_nodus_home(project_root)
+        Adapter::Claude => native_marketplace_root(project_root, adapter)
             .join("packages")
             .join(package_identities.managed_package_id(package))
             .join("claude-plugin"),
-        Adapter::Codex => global_nodus_home(project_root)
+        Adapter::Codex => native_marketplace_root(project_root, adapter)
             .join("packages")
             .join(package_identities.managed_package_id(package))
             .join("codex-plugin"),
@@ -1497,27 +1495,27 @@ mod codex_marketplace_layout_tests {
     use super::*;
 
     #[test]
-    fn codex_marketplace_re_roots_at_nodus_home_like_claude() {
+    fn codex_marketplace_uses_workspace_nodus_root_like_claude() {
         let project_root = Path::new("/workspace/project");
-        let home = global_nodus_home(project_root);
+        let workspace_nodus = project_root.join(".nodus");
 
-        // Codex shares the Claude marketplace root (the Nodus home) rather than a
-        // dedicated `marketplaces/codex` subtree.
         assert_eq!(
             native_marketplace_root(project_root, Adapter::Codex),
             native_marketplace_root(project_root, Adapter::Claude),
         );
-        assert_eq!(native_marketplace_root(project_root, Adapter::Codex), home);
+        assert_eq!(
+            native_marketplace_root(project_root, Adapter::Codex),
+            workspace_nodus
+        );
 
-        // The manifest lives at `<home>/.agents/plugins/marketplace.json`.
         assert_eq!(
             native_marketplace_path(project_root, Adapter::Codex),
-            Some(home.join(".agents/plugins/marketplace.json")),
+            Some(project_root.join(".nodus/.agents/plugins/marketplace.json")),
         );
 
         // Payloads are referenced root-relative under `packages/<id>/codex-plugin`,
         // so no `../` escape from the marketplace root is needed.
-        let plugin_root = home.join("packages/foo+main/codex-plugin");
+        let plugin_root = project_root.join(".nodus/packages/foo+main/codex-plugin");
         assert_eq!(
             native_marketplace_plugin_source_path(project_root, Adapter::Codex, &plugin_root),
             "./packages/foo+main/codex-plugin",

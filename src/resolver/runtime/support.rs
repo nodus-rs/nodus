@@ -181,10 +181,10 @@ fn planned_lockfile_write(path: &Path, lockfile: &Lockfile) -> Result<PlannedFil
 /// home and are no longer recorded as package-owned, so the owned-vs-desired
 /// diff cannot prune them. A re-sync removes them here.
 ///
-/// The only current entry is the pre-re-root Codex global snapshot marketplace
-/// tree (`<home>/marketplaces/codex`). Codex now shares the Nodus home root with
-/// Claude (`<home>/.agents/plugins/marketplace.json` plus
-/// `<home>/packages/<id>/codex-plugin`), so the old tree is dead once the new
+/// The only current entry is the pre-workspace Codex global snapshot marketplace
+/// tree (`<home>/marketplaces/codex`). Current Codex output is project-local
+/// under `.nodus/.agents/plugins/marketplace.json` plus
+/// `.nodus/packages/<id>/codex-plugin`, so the old tree is dead once the new
 /// layout is written. The manifest under that tree was never package-owned, so
 /// without this it would orphan on migration. Gated on the directory existing so
 /// dry-run previews and logs stay quiet for stores that never used the old layout.

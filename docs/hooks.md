@@ -41,7 +41,7 @@ The Codex adapter uses the same root/dependency split:
 - **Root manifest hooks** land in workspace `.codex/hooks.json` with scripts
   under `.codex/hooks/`.
 - **Dependency package hooks** land inside the generated Codex plugin snapshot
-  at `~/.nodus/marketplaces/codex/plugins/<managed-package-id>/hooks/hooks.json`,
+  at `.nodus/packages/<managed-package-id>/codex-plugin/hooks/hooks.json`,
   with scripts under `hooks/scripts/`. When a plugin has hook output, Nodus
   adds `"hooks": "./hooks/hooks.json"` to `.codex-plugin/plugin.json`.
 
@@ -84,21 +84,21 @@ but are not a replacement for command hooks that need to run arbitrary logic.
 Adapters without supported session-start context injection skip activation and
 emit a sync warning.
 
-## Codex global snapshot marketplace
+## Codex workspace marketplace
 
 When the Codex adapter is enabled, dependency package content is rendered as
-pinned plugin snapshots below the global Nodus marketplace root:
+pinned plugin snapshots below the workspace Nodus marketplace root:
 
 ```text
-~/.nodus/marketplaces/codex/
+.nodus/
   .agents/plugins/marketplace.json
-  plugins/<managed-package-id>/
+  packages/<managed-package-id>/codex-plugin/
 ```
 
-Nodus writes user-level Codex config in `$CODEX_HOME/config.toml` or
-`~/.codex/config.toml` to register a single local marketplace named `nodus`
-and enable the selected `<plugin>@nodus` entries. Current Codex requires this
-user-level registration for marketplace and plugin discovery.
+Nodus does not write user-level Codex config in `$CODEX_HOME/config.toml` or
+`~/.codex/config.toml` to register workspace plugins. Codex discovers the
+repo-local marketplace manifest, and Nodus keeps plugin sources relative to the
+workspace `.nodus` root.
 
 Dependency skills, synthetic command skills, plugin hooks, and plugin MCP
 config live inside those snapshots rather than being duplicated into project

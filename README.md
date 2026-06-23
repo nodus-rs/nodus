@@ -111,14 +111,13 @@ That flow:
 
 If the package publishes `mcp_servers`, Nodus carries that MCP config into the
 managed runtime outputs as well. Today that includes Claude and Codex native
-plugin `.mcp.json` files under Nodus's global package/marketplace snapshots,
+plugin `.mcp.json` files under the workspace `.nodus/packages/` plugin roots,
 plus OpenCode `opencode.json` when that adapter is selected.
 
 `nodus info .` now includes a `native-integration` section after sync. It shows
 the generated Claude and Codex marketplace files, plugin keys and roots, hook
-locations, Codex `features.hooks` / `features.plugin_hooks`, Codex global
-snapshot marketplace registration, enabled Codex plugin keys, and Claude
-`enabledPlugins` state.
+locations, Codex `features.hooks` / `features.plugin_hooks`, Codex workspace
+marketplace registration, and Claude `enabledPlugins` state.
 
 Adapters without a native marketplace can still expose managed plugins through
 Nodus's virtual plugin marketplace layer. OpenCode v1 uses
@@ -127,29 +126,28 @@ Nodus's virtual plugin marketplace layer. OpenCode v1 uses
 `.opencode/plugins/`. `nodus info .` reports these as `virtual-plugins`, not
 native marketplace plugins.
 
-### Codex global snapshot marketplace
+### Codex workspace marketplace
 
 When the Codex adapter is enabled, dependency skills, synthetic command skills,
-plugin hooks, and plugin MCP config are emitted into pinned snapshots under
-the global Nodus marketplace root:
+plugin hooks, and plugin MCP config are emitted into workspace-local plugin
+roots:
 
 ```text
-~/.nodus/marketplaces/codex/
+.nodus/
   .agents/plugins/marketplace.json
-  plugins/<managed-package-id>/
+  packages/<managed-package-id>/codex-plugin/
 ```
 
-Nodus registers one user-level Codex marketplace named `nodus` in
-`$CODEX_HOME/config.toml` or `~/.codex/config.toml`, with a local source path
-pointing at that marketplace root, then enables the selected
-`<plugin>@nodus` snapshot plugins. This user config write is required because
-current Codex reads `marketplaces` and `plugins` from user config.
+Nodus no longer registers a user-level Codex marketplace in
+`$CODEX_HOME/config.toml` or `~/.codex/config.toml` for workspace plugins.
+The marketplace manifest is managed inside the repository, and plugin sources
+are referenced relative to the `.nodus` marketplace root.
 
 Dependency artifacts are not duplicated into project `.codex/skills`.
 Codex agents still live under project `.codex/agents` because the current
 Codex plugin metadata format does not declare agents. Project
-`.codex/config.toml` remains for project-scoped Codex features such as
-workspace hooks and plugin hook feature flags.
+`.codex/config.toml` remains for project-scoped MCP servers and feature flags
+such as workspace hooks and plugin hooks.
 
 Packages can also declare activation context that is injected at session start
 for adapters with native support:

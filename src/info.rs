@@ -975,11 +975,21 @@ fn build_native_integration_info(
     }
 
     let hooks = inspect_native_hook_locations(project_root, &plugins);
+    let codex_workspace_marketplace = marketplaces
+        .iter()
+        .any(|marketplace| marketplace.adapter == Adapter::Codex && marketplace.exists);
+    let codex_workspace_plugins = plugins
+        .iter()
+        .filter(|plugin| plugin.adapter == Adapter::Codex)
+        .map(|plugin| plugin.key.clone())
+        .collect::<Vec<_>>();
     let codex = inspect_codex_native_state(
         project_root,
         plugins
             .iter()
             .any(|plugin| plugin.adapter == Adapter::Codex && plugin.hooks.is_some()),
+        codex_workspace_marketplace,
+        codex_workspace_plugins,
         warnings,
     );
     let claude = inspect_claude_native_state(project_root, warnings);
@@ -997,7 +1007,7 @@ fn build_native_integration_info(
     if codex.hooks.is_some()
         || codex.plugin_hooks.is_some()
         || !codex.enabled_plugins.is_empty()
-        || codex.registration == "global-snapshot-marketplace"
+        || codex.registration != "project-runtime"
     {
         adapters.insert(Adapter::Codex);
     }
@@ -1012,7 +1022,7 @@ fn build_native_integration_info(
         || codex.hooks.is_some()
         || codex.plugin_hooks.is_some()
         || !codex.enabled_plugins.is_empty()
-        || codex.registration == "global-snapshot-marketplace"
+        || codex.registration != "project-runtime"
         || !claude.extra_known_marketplaces.is_empty()
         || !claude.enabled_plugins.is_empty();
     has_state.then(|| PackageNativeIntegration {
@@ -1173,6 +1183,8 @@ fn inspect_native_hook_locations(
 fn inspect_codex_native_state(
     project_root: &Path,
     plugin_hooks_required: bool,
+    workspace_marketplace: bool,
+    workspace_plugins: Vec<String>,
     warnings: &mut Vec<String>,
 ) -> CodexNativeState {
     let path = project_root.join(".codex").join("config.toml");
@@ -1180,6 +1192,9 @@ fn inspect_codex_native_state(
     let marketplace_path = crate::adapters::native_marketplace_root(project_root, Adapter::Codex);
     let (marketplace_registered, mut enabled_plugins) =
         inspect_codex_user_config(&user_config_path, warnings);
+    if workspace_marketplace {
+        enabled_plugins.extend(workspace_plugins);
+    }
     let (hooks, plugin_hooks) = if path.exists() {
         match fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))
@@ -1208,9 +1223,12 @@ fn inspect_codex_native_state(
         (None, None)
     };
     enabled_plugins.sort();
+    enabled_plugins.dedup();
 
-    let registration = if marketplace_registered || !enabled_plugins.is_empty() {
-        "global-snapshot-marketplace"
+    let registration = if workspace_marketplace {
+        "workspace-marketplace"
+    } else if marketplace_registered || !enabled_plugins.is_empty() {
+        "legacy-user-config-marketplace"
     } else {
         "project-runtime"
     };
@@ -2460,15 +2478,14 @@ always_context = ["prompts/context.md"]
 
         assert!(output.contains("native-integration:"));
         assert!(output.contains("adapters = [claude, codex]"));
-        assert!(output.contains(".nodus-global/.claude-plugin/marketplace.json (present"));
-        assert!(output.contains(".nodus-global/.agents/plugins/marketplace.json"));
+        assert!(output.contains(".nodus/.claude-plugin/marketplace.json (present"));
+        assert!(output.contains(".nodus/.agents/plugins/marketplace.json"));
         assert!(output.contains("claude shared-tools@"));
         assert!(
-            output.contains(".nodus-global/packages/shared-tools+")
-                && output.contains("/codex-plugin")
+            output.contains(".nodus/packages/shared-tools+") && output.contains("/codex-plugin")
         );
         assert!(output.contains("plugin_hooks=true plugin_hooks_required=true"));
-        assert!(output.contains("registration=global-snapshot-marketplace"));
+        assert!(output.contains("registration=workspace-marketplace"));
         assert!(output.contains("enabled=[shared-tools@nodus]"));
 
         let info =
@@ -2478,7 +2495,7 @@ always_context = ["prompts/context.md"]
         assert_eq!(native.codex.hooks, None);
         assert_eq!(native.codex.plugin_hooks, Some(true));
         assert!(native.codex.plugin_hooks_required);
-        assert_eq!(native.codex.registration, "global-snapshot-marketplace");
+        assert_eq!(native.codex.registration, "workspace-marketplace");
         assert_eq!(native.codex.enabled_plugins, vec!["shared-tools@nodus"]);
         assert!(
             native

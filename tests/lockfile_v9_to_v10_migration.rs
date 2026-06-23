@@ -65,12 +65,12 @@ shared = { path = "vendor/shared" }
     cache
 }
 
-fn global_claude_skill_path(workspace: &Path, package_prefix: &str, skill_id: &str) -> PathBuf {
-    let packages_root = workspace.join(".nodus-global/packages");
+fn workspace_claude_skill_path(workspace: &Path, package_prefix: &str, skill_id: &str) -> PathBuf {
+    let packages_root = workspace.join(".nodus/packages");
     let package_root = fs::read_dir(&packages_root)
         .unwrap_or_else(|error| {
             panic!(
-                "failed to read global packages root {}: {error}",
+                "failed to read workspace packages root {}: {error}",
                 packages_root.display()
             )
         })
@@ -83,7 +83,7 @@ fn global_claude_skill_path(workspace: &Path, package_prefix: &str, skill_id: &s
         })
         .unwrap_or_else(|| {
             panic!(
-                "expected a global package directory starting with `{package_prefix}` under {}",
+                "expected a workspace package directory starting with `{package_prefix}` under {}",
                 packages_root.display()
             )
         });
@@ -236,10 +236,10 @@ fn sync_repairs_drifted_owned_file_and_keeps_install_digest_consistent() {
         String::from_utf8_lossy(&initial.stderr)
     );
 
-    // Pick any file Nodus owns and overwrite its contents. Dependency
-    // Claude plugin payloads live under the global NODUS_HOME package cache,
-    // keyed by the managed package ID.
-    let drifted_file = global_claude_skill_path(temp.path(), "shared+", "review");
+    // Pick any file Nodus owns and overwrite its contents. Dependency Claude
+    // plugin payloads live under the workspace `.nodus/packages` tree, keyed by
+    // the managed package ID.
+    let drifted_file = workspace_claude_skill_path(temp.path(), "shared+", "review");
     assert!(
         drifted_file.exists(),
         "expected the planned SKILL.md to exist on disk after the initial sync; got missing path {}",

@@ -88,12 +88,6 @@ impl CodexFeatureRequirements {
     };
 }
 
-#[derive(Debug)]
-struct CodexMarketplaceRegistration {
-    marketplace: String,
-    enabled_plugins: Vec<String>,
-}
-
 #[derive(Debug, Default)]
 struct OutputAccumulator {
     files: BTreeMap<PathBuf, Vec<u8>>,
@@ -751,7 +745,10 @@ pub(crate) fn build_output_plan_with_options(
         selected_adapters,
         &package_identities,
     )? {
-        merge_file(&mut plan.external_files, file)?;
+        let relative = display_relative(project_root, &file.path);
+        track_owned_file(&mut plan, project_root, &workspace_alias, &file.path);
+        plan.managed_files.insert(relative);
+        merge_file(&mut plan.files, file)?;
     }
 
     if let Some(file) = mcp_config_file(
@@ -1446,18 +1443,14 @@ fn emit_native_package_plugins(
             plugin_hooks.claude,
             activation_hook.as_ref(),
         )?;
-        if matches!(package.source, PackageSource::Root) {
-            merge_files(&mut plan.files, plugin_files)?;
-            register_native_package_plugin_root(
-                project_root,
-                plan,
-                Adapter::Claude,
-                package,
-                &plugin_root,
-            );
-        } else {
-            merge_files(&mut plan.external_files, plugin_files)?;
-        }
+        merge_files(&mut plan.files, plugin_files)?;
+        register_native_package_plugin_root(
+            project_root,
+            plan,
+            Adapter::Claude,
+            package,
+            &plugin_root,
+        );
     }
 
     if selected_adapters.contains(Adapter::Codex)
@@ -1494,8 +1487,9 @@ fn emit_native_package_plugins(
             plugin_hooks.codex,
             activation_hook.as_ref(),
         )?;
-        if preferred_surface(Adapter::Codex) == PreferredSurface::PackagePluginWorkspaceMarketplace
-        {
+        if preferred_surface(Adapter::Codex) == PreferredSurface::DirectManagedOutput {
+            merge_files(&mut plan.external_files, plugin_files)?;
+        } else {
             merge_files(&mut plan.files, plugin_files)?;
             register_native_package_plugin_root(
                 project_root,
@@ -1504,8 +1498,6 @@ fn emit_native_package_plugins(
                 package,
                 &plugin_root,
             );
-        } else {
-            merge_files(&mut plan.external_files, plugin_files)?;
         }
     }
 
@@ -2366,12 +2358,11 @@ fn codex_profile_overlay_path(
 }
 
 /// Build the managed Codex config files. Without a profile this preserves the
-/// historical layout: managed MCP servers + feature flags in the project
-/// `.codex/config.toml`, and the native-plugin marketplace/plugins registration
-/// in the user `$CODEX_HOME/config.toml`.
+/// project-local layout: managed MCP servers + feature flags in the project
+/// `.codex/config.toml`.
 ///
-/// With a profile, everything nodus manages (servers, features, marketplace, and
-/// plugin enablement) is consolidated into the `$CODEX_HOME/<profile>.config.toml`
+/// With a profile, everything nodus manages (servers and features) is
+/// consolidated into the `$CODEX_HOME/<profile>.config.toml`
 /// overlay, the base project and user configs are cleaned of anything nodus used
 /// to write, and an overlay abandoned by a profile change is cleaned too.
 #[allow(clippy::too_many_arguments)]
@@ -2392,65 +2383,49 @@ fn codex_config_files(
         selected_adapters,
         codex_native_plugins_auto_enabled,
     );
-    let registration =
-        codex_plugin_marketplace_registration(project_root, packages, selected_adapters)?;
     let legacy_marketplace = legacy_project_marketplace_name(project_root, packages);
 
     let project_path = project_root.join(".codex/config.toml");
     let project_managed = previously_managed_mcp_servers(existing_lockfile, ".codex/config.toml");
-    let user_base_path = codex_user_config
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| default_codex_user_config_path(project_root));
 
     let mut user_files = Vec::new();
 
     let project;
     match codex_profile {
         None => {
-            // Historical layout: servers + features in the project config, the
-            // marketplace/plugin registration in the user config.
+            // Without a profile, servers and feature flags live in the project
+            // config. Plugin marketplaces are now discovered from workspace
+            // files instead of user config.
             project = rewrite_codex_config(
                 &project_path,
                 project_root,
                 desired_servers,
                 feature_requirements,
-                None,
                 &project_managed,
                 &legacy_marketplace,
                 merge_existing_mcp,
             )?;
-            if let Some(file) = rewrite_codex_config(
-                &user_base_path,
-                project_root,
-                BTreeMap::new(),
-                CodexFeatureRequirements::NONE,
-                registration.as_ref(),
-                &HashSet::new(),
-                &legacy_marketplace,
-                merge_existing_mcp,
-            )? {
-                user_files.push(file);
-            }
         }
         Some(profile) => {
             // Profile active: the base configs keep nothing nodus-managed; the
-            // overlay carries the full managed set for that profile only.
+            // overlay carries the managed Codex config set for that profile only.
             project = rewrite_codex_config(
                 &project_path,
                 project_root,
                 BTreeMap::new(),
                 CodexFeatureRequirements::NONE,
-                None,
                 &project_managed,
                 &legacy_marketplace,
                 merge_existing_mcp,
             )?;
+            let user_base_path = codex_user_config
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| default_codex_user_config_path(project_root));
             if let Some(file) = rewrite_codex_config(
                 &user_base_path,
                 project_root,
                 BTreeMap::new(),
                 CodexFeatureRequirements::NONE,
-                None,
                 &HashSet::new(),
                 &legacy_marketplace,
                 merge_existing_mcp,
@@ -2469,7 +2444,6 @@ fn codex_config_files(
                 project_root,
                 desired_servers,
                 feature_requirements,
-                registration.as_ref(),
                 &overlay_managed,
                 &legacy_marketplace,
                 merge_existing_mcp,
@@ -2507,7 +2481,7 @@ fn lockfile_managed_mcp_server_names(existing_lockfile: Option<&Lockfile>) -> Ha
 }
 
 /// Neutralize a profile overlay that nodus no longer targets by removing its
-/// managed marketplace, plugins, MCP servers, and feature flags. Unlike
+/// managed legacy marketplace entries, plugins, MCP servers, and feature flags. Unlike
 /// [`rewrite_codex_config`], this rewrites the file even when the result is
 /// empty (so an overlay containing only nodus content is actually cleared),
 /// but returns `None` when the file is absent or already free of our entries.
@@ -2547,17 +2521,15 @@ fn clean_codex_overlay(
 
 /// Merge the managed Codex entries into the config at `path`, preserving any
 /// user-authored content. Writes `desired_servers`, the `feature_requirements`
-/// flags, and (when `registration` is set) the native-plugin marketplace and
-/// plugin enablement. `previously_managed` is the set of MCP server names nodus
-/// may remove; the managed marketplace is always cleaned out before re-adding.
+/// flags, and cleans legacy Nodus marketplace/plugin entries. `previously_managed`
+/// is the set of MCP server names nodus may remove.
 /// Returns `None` when nothing managed remains to write.
 #[allow(clippy::too_many_arguments)]
 fn rewrite_codex_config(
     path: &Path,
-    project_root: &Path,
+    _project_root: &Path,
     desired_servers: BTreeMap<String, TomlValue>,
     feature_requirements: CodexFeatureRequirements,
-    registration: Option<&CodexMarketplaceRegistration>,
     previously_managed: &HashSet<String>,
     legacy_marketplace: &str,
     merge_existing_mcp: bool,
@@ -2565,8 +2537,7 @@ fn rewrite_codex_config(
     let needs_config_for_outputs = !desired_servers.is_empty()
         || !previously_managed.is_empty()
         || feature_requirements.hooks
-        || feature_requirements.plugin_hooks
-        || registration.is_some();
+        || feature_requirements.plugin_hooks;
 
     let needs_marketplace_cleanup = if needs_config_for_outputs {
         false
@@ -2609,19 +2580,6 @@ fn rewrite_codex_config(
             .insert("plugin_hooks".into(), TomlValue::Boolean(true));
     } else {
         config.features.remove("plugin_hooks");
-    }
-
-    if let Some(registration) = registration {
-        let source = absolute_codex_marketplace_source(project_root)?;
-        config.marketplaces.insert(
-            registration.marketplace.clone(),
-            codex_local_marketplace_config(source),
-        );
-        for plugin in &registration.enabled_plugins {
-            config
-                .plugins
-                .insert(plugin.clone(), codex_enabled_plugin_config());
-        }
     }
 
     if config.mcp_servers.is_empty()
@@ -2676,48 +2634,6 @@ fn codex_project_config_has_marketplace_entries(
         || config.plugins.keys().any(|key| key.ends_with(&suffix)))
 }
 
-fn codex_plugin_marketplace_registration(
-    project_root: &Path,
-    packages: &[(ResolvedPackage, PathBuf)],
-    selected_adapters: Adapters,
-) -> Result<Option<CodexMarketplaceRegistration>> {
-    if !selected_adapters.contains(Adapter::Codex)
-        || preferred_surface(Adapter::Codex) != PreferredSurface::PackagePluginWorkspaceMarketplace
-    {
-        return Ok(None);
-    }
-
-    let Some((marketplace, enabled_plugins)) = native_package_plugin_keys(
-        project_root,
-        packages,
-        Adapter::Codex,
-        &ManagedPackageIdentities::from_resolved_packages(
-            packages.iter().map(|(package, _)| package),
-        ),
-    )?
-    else {
-        return Ok(None);
-    };
-
-    Ok(Some(CodexMarketplaceRegistration {
-        marketplace,
-        enabled_plugins,
-    }))
-}
-
-fn absolute_codex_marketplace_source(project_root: &Path) -> Result<String> {
-    let source = super::native_marketplace_root(project_root, Adapter::Codex);
-    let absolute = if source.is_absolute() {
-        source
-    } else {
-        env::current_dir()
-            .context("failed to resolve current directory for Codex marketplace source")?
-            .join(source)
-    };
-    let simplified = dunce::simplified(&absolute);
-    Ok(display_path(simplified))
-}
-
 fn default_codex_user_config_path(project_root: &Path) -> PathBuf {
     if let Some(codex_home) = env::var_os("CODEX_HOME") {
         return PathBuf::from(codex_home).join("config.toml");
@@ -2747,19 +2663,6 @@ fn default_codex_user_config_path(project_root: &Path) -> PathBuf {
 
     #[cfg(not(test))]
     project_root.join(".codex-user/config.toml")
-}
-
-fn codex_local_marketplace_config(source: String) -> TomlValue {
-    let mut table = toml::map::Map::new();
-    table.insert("source_type".into(), TomlValue::String("local".into()));
-    table.insert("source".into(), TomlValue::String(source));
-    TomlValue::Table(table)
-}
-
-fn codex_enabled_plugin_config() -> TomlValue {
-    let mut table = toml::map::Map::new();
-    table.insert("enabled".into(), TomlValue::Boolean(true));
-    TomlValue::Table(table)
 }
 
 fn read_project_codex_config(path: &Path) -> Result<ProjectCodexConfig> {
@@ -3536,9 +3439,10 @@ fn display_relative(project_root: &Path, path: &Path) -> String {
         return display_path(relative);
     }
     // Paths outside the workspace are almost always under the global Nodus home
-    // (native plugin snapshots live in `~/.nodus/...`). Render those as a
-    // portable `${NODUS_HOME}/...` token so the lockfile stays reusable across
-    // developers instead of embedding one machine's home directory.
+    // (for example, OpenCode virtual plugin installs under `~/.nodus/...`).
+    // Render those as a portable `${NODUS_HOME}/...` token so the lockfile stays
+    // reusable across developers instead of embedding one machine's home
+    // directory.
     let home = super::global_nodus_home(project_root);
     if let Some(portable) = super::encode_nodus_home_relative(&home, path) {
         return portable;

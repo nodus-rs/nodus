@@ -1,8 +1,8 @@
 # Virtual Plugin Marketplaces
 
-Some adapters have a native marketplace protocol. Claude can load a local
-marketplace manifest that points at generated package plugin roots under
-`.nodus/packages/<alias>/`.
+Some adapters have a native marketplace protocol. Claude and Codex can load a
+workspace-local marketplace manifest that points at generated package plugin
+roots under `.nodus/packages/<managed-package-id>/`.
 
 Other adapters expose a plugin loader but no marketplace. For those adapters,
 Nodus uses a virtual marketplace:
@@ -19,45 +19,43 @@ Virtual marketplaces do not fetch remote plugins, install npm packages, or add
 another package manager. The package source remains the `nodus.toml`
 dependency graph.
 
-## Codex global snapshots
+## Codex workspace snapshots
 
-Codex has a plugin marketplace file format, and current Codex reads
-`marketplaces` / `plugins` from user config. Nodus therefore treats Codex as a
-native global snapshot marketplace rather than a project-local virtual
-marketplace.
+Codex has a plugin marketplace file format and can discover workspace plugin
+marketplaces. Nodus therefore treats Codex as a native workspace marketplace
+rather than a project-local virtual marketplace or a user-config registration.
 
 When the Codex adapter is selected, full packages with Codex-supported runtime
-content are copied to pinned snapshot roots that share the Nodus home with the
-Claude package plugins:
+content are copied to pinned snapshot roots under the workspace `.nodus`
+directory:
 
 ```text
-~/.nodus/packages/<managed-package-id>/codex-plugin/
+.nodus/packages/<managed-package-id>/codex-plugin/
 ```
 
 The marketplace manifest is emitted at:
 
 ```text
-~/.nodus/.agents/plugins/marketplace.json
+.nodus/.agents/plugins/marketplace.json
 ```
 
 with each plugin referenced root-relative as
 `./packages/<managed-package-id>/codex-plugin`.
 
-> The Codex marketplace is re-rooted at `~/.nodus` (mirroring Claude's
-> `~/.nodus/.claude-plugin/marketplace.json`). This supersedes the earlier
-> `~/.nodus/marketplaces/codex/plugins/<id>` layout so that every adapter's
-> payload for a package lives under one `packages/<id>/` directory. Codex
-> resolves a plugin's `source.path` relative to the registered marketplace
-> root, so the path stays a clean root-relative reference with no parent
-> traversal.
+> The Codex marketplace is rooted at the workspace `.nodus` directory, mirroring
+> Claude's `.nodus/.claude-plugin/marketplace.json`. This supersedes the older
+> global snapshots under `~/.nodus/marketplaces/codex/` and the intermediate
+> `~/.nodus/packages/<id>/codex-plugin` user-config registration path. Codex
+> resolves a plugin's `source.path` relative to the workspace marketplace root,
+> so the path stays a clean root-relative reference with no parent traversal.
 
-Nodus registers the Nodus home as a local marketplace named `nodus` in
-`$CODEX_HOME/config.toml` or `~/.codex/config.toml`, and enables the selected
-`<plugin>@nodus` entries there. Dependency skills, synthetic command skills,
-plugin hooks, and plugin MCP config live in the snapshot; Codex agents remain
-direct project files under `.codex/agents` until plugin metadata supports
-agents. Project `.codex/config.toml` remains only for project-scoped feature
-flags and root-level hooks.
+Nodus does not write `[marketplaces]` or `[plugins]` entries to
+`$CODEX_HOME/config.toml` or `~/.codex/config.toml` for workspace plugin
+enablement. Dependency skills, synthetic command skills, plugin hooks, and
+plugin MCP config live in the workspace snapshot; Codex agents remain direct
+project files under `.codex/agents` until plugin metadata supports agents.
+Project `.codex/config.toml` remains only for project-scoped MCP servers,
+feature flags, and root-level hooks.
 
 ## OpenCode v1
 

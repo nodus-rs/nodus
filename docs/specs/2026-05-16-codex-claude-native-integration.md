@@ -103,10 +103,10 @@ changes.
 ### Codex
 
 Nodus emits Codex runtime files directly under `.codex/` and copies full
-dependency package payloads under `.nodus/packages/<alias>/codex-plugin/` as a
-virtual marketplace install root. It does not emit
-`.agents/plugins/marketplace.json` for project syncs and does not add
-`[marketplaces]` or `[plugins]` entries to `.codex/config.toml`.
+dependency package payloads under `.nodus/packages/<managed-package-id>/codex-plugin/`
+as workspace native plugin roots. It emits
+`.nodus/.agents/plugins/marketplace.json` for project syncs and does not add
+`[marketplaces]` or `[plugins]` entries to Codex user config.
 
 Codex commands do not have a native Nodus command artifact. They are bridged as
 synthetic skills named with the reserved `__cmd_` prefix.
@@ -116,9 +116,10 @@ Codex root hooks land in:
 - `.codex/hooks.json`
 - `.codex/hooks/nodus-hook-*.sh`
 
-Dependency hooks and activation context also land in the project hook files.
-Project `.codex/config.toml` is used for MCP config and enabling
-`[features].hooks` when hook output requires it.
+Dependency hooks and activation context land in the generated plugin
+`hooks/hooks.json` files. Project `.codex/config.toml` is used for MCP config
+and enabling `[features].hooks` / `[features].plugin_hooks` when hook output
+requires it.
 
 ### Claude
 

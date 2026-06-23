@@ -113,15 +113,11 @@ fn write_codex_marketplace(path: &Path, contents: &str) {
 }
 
 fn generated_claude_marketplace_path(path: &Path) -> PathBuf {
-    path.join(".nodus-global/.claude-plugin/marketplace.json")
+    path.join(".nodus/.claude-plugin/marketplace.json")
 }
 
 fn generated_codex_marketplace_path(path: &Path) -> PathBuf {
-    path.join(".nodus-global/.agents/plugins/marketplace.json")
-}
-
-fn generated_codex_marketplace_root(path: &Path) -> PathBuf {
-    path.join(".nodus-global")
+    path.join(".nodus/.agents/plugins/marketplace.json")
 }
 
 fn generated_codex_user_config_path(path: &Path) -> PathBuf {
@@ -132,6 +128,10 @@ fn generated_global_packages_root(path: &Path) -> PathBuf {
     path.join(".nodus-global/packages")
 }
 
+fn generated_workspace_packages_root(path: &Path) -> PathBuf {
+    path.join(".nodus/packages")
+}
+
 fn global_native_plugin_root(
     project_root: &Path,
     package: &ResolvedPackage,
@@ -139,10 +139,10 @@ fn global_native_plugin_root(
 ) -> PathBuf {
     let identities = ManagedPackageIdentities::from_resolved_packages([package]);
     match adapter {
-        Adapter::Claude => generated_global_packages_root(project_root)
+        Adapter::Claude => generated_workspace_packages_root(project_root)
             .join(identities.managed_package_id(package))
             .join("claude-plugin"),
-        Adapter::Codex => generated_global_packages_root(project_root)
+        Adapter::Codex => generated_workspace_packages_root(project_root)
             .join(identities.managed_package_id(package))
             .join("codex-plugin"),
         Adapter::OpenCode => generated_global_packages_root(project_root)
@@ -168,17 +168,8 @@ fn read_codex_project_config(path: &Path) -> toml::Value {
     toml::from_str(&fs::read_to_string(path.join(".codex/config.toml")).unwrap()).unwrap()
 }
 
-fn read_codex_user_config(path: &Path) -> toml::Value {
-    toml::from_str(&fs::read_to_string(generated_codex_user_config_path(path)).unwrap()).unwrap()
-}
-
 fn generated_codex_user_overlay_path(path: &Path, profile: &str) -> PathBuf {
     path.join(format!(".codex-user/{profile}.config.toml"))
-}
-
-fn read_codex_user_overlay(path: &Path, profile: &str) -> toml::Value {
-    toml::from_str(&fs::read_to_string(generated_codex_user_overlay_path(path, profile)).unwrap())
-        .unwrap()
 }
 
 /// Assert the base `$CODEX_HOME/config.toml` carries no nodus-managed
@@ -193,39 +184,6 @@ fn assert_codex_user_base_has_no_managed_marketplace(path: &Path) {
         assert!(
             !marketplaces.contains_key("nodus"),
             "base Codex user config should not register the nodus marketplace; config was {config:?}"
-        );
-    }
-}
-
-fn assert_codex_user_config_registers_plugins(project_root: &Path, plugin_keys: &[&str]) {
-    let config = read_codex_user_config(project_root);
-    assert_codex_config_registers_plugins(project_root, &config, plugin_keys);
-}
-
-fn assert_codex_config_registers_plugins(
-    project_root: &Path,
-    config: &toml::Value,
-    plugin_keys: &[&str],
-) {
-    assert_eq!(
-        config["marketplaces"]["nodus"]["source_type"].as_str(),
-        Some("local")
-    );
-    assert_eq!(
-        config["marketplaces"]["nodus"]["source"].as_str(),
-        Some(display_path(&generated_codex_marketplace_root(project_root)).as_str())
-    );
-    for plugin_key in plugin_keys {
-        let enabled = config
-            .get("plugins")
-            .and_then(toml::Value::as_table)
-            .and_then(|plugins| plugins.get(*plugin_key))
-            .and_then(|plugin| plugin.get("enabled"))
-            .and_then(toml::Value::as_bool);
-        assert_eq!(
-            enabled,
-            Some(true),
-            "expected Codex user config to enable `{plugin_key}`; config was {config:?}"
         );
     }
 }
@@ -405,7 +363,7 @@ fn plugin_hook_script_path(
     _package_alias: &str,
     name_fragment: &str,
 ) -> PathBuf {
-    let scripts_root = generated_global_packages_root(project_root);
+    let scripts_root = generated_workspace_packages_root(project_root);
     let matches = WalkDir::new(&scripts_root)
         .into_iter()
         .filter_map(Result::ok)
@@ -437,7 +395,7 @@ fn global_plugin_file_exists(
     adapter_plugin_dir: &str,
     path_fragment: &str,
 ) -> bool {
-    WalkDir::new(generated_global_packages_root(project_root))
+    WalkDir::new(generated_workspace_packages_root(project_root))
         .into_iter()
         .filter_map(Result::ok)
         .any(|entry| {
@@ -1209,7 +1167,7 @@ shared = { path = "vendor/shared" }
         .unwrap();
     let plugin_root = global_native_plugin_root(temp.path(), shared, Adapter::Claude);
     let plugin_root_relative = display_path(plugin_root.strip_prefix(temp.path()).unwrap());
-    assert_not_owned(&lockfile, temp.path(), &plugin_root_relative);
+    assert_owned(&lockfile, temp.path(), &plugin_root_relative);
 }
 
 #[test]
@@ -1509,7 +1467,7 @@ version = "0.6.1"
         dependency_managed_package_id(&resolution),
         "playbook-ios+0.6.1"
     );
-    let package_dirs = fs::read_dir(generated_global_packages_root(version_project.path()))
+    let package_dirs = fs::read_dir(generated_workspace_packages_root(version_project.path()))
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect::<Vec<_>>();
@@ -2054,20 +2012,20 @@ fn sync_generates_claude_workspace_marketplace_files() {
     assert!(
         settings["extraKnownMarketplaces"][expected_marketplace_name]["source"]["path"]
             .as_str()
-            .is_some_and(|source| source.ends_with(".nodus-global"))
+            .is_some_and(|source| source.ends_with(".nodus"))
     );
     assert!(settings.get("enabledPlugins").is_none());
 
     let lockfile = Lockfile::read(&repo.path().join(LOCKFILE_NAME)).unwrap();
-    assert_not_owned(
+    assert_owned(
         &lockfile,
         repo.path(),
-        ".nodus-global/.claude-plugin/marketplace.json",
+        ".nodus/.claude-plugin/marketplace.json",
     );
-    assert_not_owned(
+    assert_owned(
         &lockfile,
         repo.path(),
-        ".nodus-global/.agents/plugins/marketplace.json",
+        ".nodus/.agents/plugins/marketplace.json",
     );
 }
 
@@ -2105,16 +2063,13 @@ model = "gpt-5"
     let user_config: toml::Value =
         toml::from_str(&fs::read_to_string(&codex_config).unwrap()).unwrap();
     assert_eq!(user_config["model"].as_str(), Some("gpt-5"));
-    assert_codex_config_registers_plugins(
-        repo.path(),
-        &user_config,
-        &["Axiom@nodus", "Firebase@nodus"],
-    );
+    assert!(user_config.get("marketplaces").is_none());
+    assert!(user_config.get("plugins").is_none());
     assert!(generated_codex_marketplace_path(repo.path()).exists());
 }
 
 #[test]
-fn sync_creates_codex_user_config_for_workspace_plugins() {
+fn sync_does_not_create_codex_user_config_for_workspace_plugins() {
     let repo = create_workspace_dependency();
     let cache = cache_dir();
     let codex_home = TempDir::new().unwrap();
@@ -2160,7 +2115,7 @@ fn sync_creates_codex_user_config_for_workspace_plugins() {
     .unwrap();
 
     let output = buffer.contents();
-    assert!(codex_config.exists());
+    assert!(!codex_config.exists());
     assert!(
         !output.contains("failed"),
         "second sync should keep Codex user config idempotent, got {output}"
@@ -2237,7 +2192,7 @@ version = "1.2.3"
     assert!(marketplace_source.ends_with("/claude-plugin"));
     assert!(
         marketplace_source.starts_with("./packages/"),
-        "Claude global marketplace should point at shared payloads with a relative source: {marketplace_source}"
+        "Claude workspace marketplace should point at shared payloads with a relative source: {marketplace_source}"
     );
     let plugin_key = format!(
         "shared-tools@{}",
@@ -2251,7 +2206,7 @@ version = "1.2.3"
     assert!(
         settings["extraKnownMarketplaces"][marketplace_name]["source"]["path"]
             .as_str()
-            .is_some_and(|source| source.ends_with(".nodus-global"))
+            .is_some_and(|source| source.ends_with(".nodus"))
     );
     assert_eq!(
         settings["enabledPlugins"]
@@ -2262,7 +2217,7 @@ version = "1.2.3"
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     let plugin_root_relative = display_path(plugin_root.strip_prefix(temp.path()).unwrap());
-    assert_not_owned(&lockfile, temp.path(), &plugin_root_relative);
+    assert_owned(&lockfile, temp.path(), &plugin_root_relative);
 }
 
 #[test]
@@ -2326,7 +2281,7 @@ shared = { path = "vendor/shared" }
     assert!(marketplace_source.ends_with("/claude-plugin"));
     assert!(
         marketplace_source.starts_with("./packages/"),
-        "Claude global marketplace should point at shared payloads with a relative source: {marketplace_source}"
+        "Claude workspace marketplace should point at shared payloads with a relative source: {marketplace_source}"
     );
 }
 
@@ -2449,7 +2404,7 @@ args = ["figma-developer-mcp"]
     assert!(plugin_root.join(".mcp.json").exists());
     assert!(generated_codex_marketplace_path(temp.path()).exists());
     assert!(!temp.path().join(".codex/config.toml").exists());
-    assert_codex_user_config_registers_plugins(temp.path(), &["shared-tools@nodus"]);
+    assert_codex_user_base_has_no_managed_marketplace(temp.path());
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert_owned(&lockfile, temp.path(), &display_path(&plugin_root));
@@ -2482,11 +2437,11 @@ name = "Shared Tools"
 
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
 
-    // The nodus marketplace + plugin enablement is registered in the profile
-    // overlay, not the base config the active profile inherits from.
-    let overlay = read_codex_user_overlay(temp.path(), "work");
-    assert_codex_config_registers_plugins(temp.path(), &overlay, &["shared-tools@nodus"]);
+    // Workspace plugins are discovered through the repo-local marketplace, so
+    // a profile with no MCP/hook config does not need a user overlay.
+    assert!(!generated_codex_user_overlay_path(temp.path(), "work").exists());
     assert_codex_user_base_has_no_managed_marketplace(temp.path());
+    assert!(generated_codex_marketplace_path(temp.path()).exists());
 
     // The lockfile records the profile so a later change forces a re-render.
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
@@ -2494,7 +2449,7 @@ name = "Shared Tools"
 }
 
 #[test]
-fn sync_moves_codex_registration_back_to_base_when_profile_removed() {
+fn sync_cleans_abandoned_codex_profile_overlay_when_profile_removed() {
     let temp = TempDir::new().unwrap();
     let cache = cache_dir();
     let with_profile = r#"
@@ -2517,10 +2472,20 @@ name = "Shared Tools"
     write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
 
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
-    assert!(generated_codex_user_overlay_path(temp.path(), "work").exists());
+    let overlay_path = generated_codex_user_overlay_path(temp.path(), "work");
+    write_file(
+        &overlay_path,
+        r#"[plugins."shared-tools@nodus"]
+enabled = true
 
-    // Drop the profile and re-sync: the registration returns to the base config
-    // and the abandoned overlay is cleaned of the nodus marketplace.
+[marketplaces.nodus]
+source_type = "local"
+source = "/old/nodus"
+"#,
+    );
+
+    // Drop the profile and re-sync: plugin discovery stays workspace-local, and
+    // the abandoned overlay is cleaned of the old nodus marketplace.
     write_manifest(
         temp.path(),
         r#"
@@ -2533,8 +2498,6 @@ shared = { path = "vendor/shared" }
     );
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
 
-    assert_codex_user_config_registers_plugins(temp.path(), &["shared-tools@nodus"]);
-    let overlay_path = generated_codex_user_overlay_path(temp.path(), "work");
     if overlay_path.exists() {
         let overlay: toml::Value =
             toml::from_str(&fs::read_to_string(&overlay_path).unwrap()).unwrap();
@@ -2545,6 +2508,8 @@ shared = { path = "vendor/shared" }
             );
         }
     }
+    assert_codex_user_base_has_no_managed_marketplace(temp.path());
+    assert!(generated_codex_marketplace_path(temp.path()).exists());
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert_eq!(lockfile.codex_profile, None);
@@ -2866,23 +2831,13 @@ custom = "kept"
     )
     .unwrap();
 
+    assert_eq!(fs::read_to_string(&codex_config).unwrap(), original);
     let user_config: toml::Value =
         toml::from_str(&fs::read_to_string(&codex_config).unwrap()).unwrap();
     assert_eq!(user_config["model"].as_str(), Some("gpt-5"));
     assert_eq!(
         user_config["plugins"]["manual@other"]["enabled"].as_bool(),
         Some(false)
-    );
-    assert!(
-        user_config
-            .get("marketplaces")
-            .and_then(toml::Value::as_table)
-            .is_none_or(|marketplaces| !marketplaces.contains_key("yoki-ios"))
-    );
-    assert_codex_config_registers_plugins(
-        temp.path(),
-        &user_config,
-        &["grapha@nodus", "playbook-ios@nodus"],
     );
     assert!(generated_codex_marketplace_path(temp.path()).exists());
     let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
@@ -2894,18 +2849,6 @@ custom = "kept"
             .unwrap();
         assert!(global_native_plugin_root(temp.path(), package, Adapter::Codex).exists());
     }
-    assert!(
-        !temp
-            .path()
-            .join(".nodus/packages/grapha/codex-plugin")
-            .exists()
-    );
-    assert!(
-        !temp
-            .path()
-            .join(".nodus/packages/playbook_ios/codex-plugin")
-            .exists()
-    );
     let project_config = assert_no_codex_managed_marketplace_config(temp.path(), "yoki-ios");
     assert_eq!(project_config["model"].as_str(), Some("gpt-5"));
     assert_eq!(
@@ -2930,7 +2873,11 @@ custom = "kept"
         }),
         "codex user config {codex_config_relative} should not appear in any package's ownership view",
     );
-    assert_not_owned(&lockfile, temp.path(), ".agents/plugins/marketplace.json");
+    assert_owned(
+        &lockfile,
+        temp.path(),
+        ".nodus/.agents/plugins/marketplace.json",
+    );
     assert_owned(&lockfile, temp.path(), ".codex/config.toml");
 }
 
@@ -2975,8 +2922,10 @@ shared = { path = "vendor/shared" }
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     let claude_plugin_root_relative =
         display_path(claude_plugin_root.strip_prefix(temp.path()).unwrap());
-    assert_not_owned(&lockfile, temp.path(), &claude_plugin_root_relative);
-    assert_owned(&lockfile, temp.path(), &display_path(&codex_plugin_root));
+    let codex_plugin_root_relative =
+        display_path(codex_plugin_root.strip_prefix(temp.path()).unwrap());
+    assert_owned(&lockfile, temp.path(), &claude_plugin_root_relative);
+    assert_owned(&lockfile, temp.path(), &codex_plugin_root_relative);
     assert_not_owned(&lockfile, temp.path(), ".claude/skills/review");
     assert_not_owned(&lockfile, temp.path(), ".codex/skills/review");
 }
@@ -4121,7 +4070,7 @@ path = "vendor/hook-plugin"
     )
     .unwrap();
     assert!(wrapper_script.contains("CLAUDE_PLUGIN_ROOT"));
-    assert!(wrapper_script.contains(".nodus-global/packages/"));
+    assert!(wrapper_script.contains(".nodus/packages/"));
     assert!(wrapper_script.contains("/claude-plugin"));
     assert!(wrapper_script.contains("${CLAUDE_PLUGIN_ROOT}/scripts/format-code.sh"));
 
@@ -4799,7 +4748,7 @@ fn add_dependency_accepts_codex_marketplace_wrapper_and_syncs_plugin_contents() 
         Some("http://127.0.0.1:3845/mcp")
     );
     assert!(!temp.path().join(".codex/config.toml").exists());
-    assert_codex_user_config_registers_plugins(temp.path(), &["axiom@nodus"]);
+    assert_codex_user_base_has_no_managed_marketplace(temp.path());
 }
 
 #[test]
@@ -5993,7 +5942,7 @@ shared = { path = "vendor/shared", components = ["skills"] }
     );
     let plugin_root = global_native_plugin_root(temp.path(), dependency, Adapter::Claude);
     let plugin_root_relative = display_path(plugin_root.strip_prefix(temp.path()).unwrap());
-    assert_not_owned(&lockfile, temp.path(), &plugin_root_relative);
+    assert_owned(&lockfile, temp.path(), &plugin_root_relative);
     assert_not_owned(&lockfile, temp.path(), ".claude/agents/shared.md");
 }
 
@@ -6187,7 +6136,7 @@ shared = { path = "vendor/shared" }
     assert!(agents_gitignore.contains(&format!("commands/{managed_command_file}")));
     assert!(
         !temp.path().join(".codex/.gitignore").exists(),
-        "Codex dependency skills now live in the global snapshot marketplace"
+        "Codex dependency skills now live in the workspace plugin marketplace"
     );
     assert!(runtime_skill_exists(
         temp.path(),
@@ -6244,7 +6193,7 @@ shared = { path = "vendor/shared", components = ["commands"] }
             ))
             .exists()
     );
-    assert_eq!(summary.managed_file_count, 2);
+    assert_eq!(summary.managed_file_count, 3);
 
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     let shared = lockfile
@@ -6376,6 +6325,12 @@ fn sync_can_adopt_unmanaged_runtime_command_output() {
 shared = { path = "vendor/shared" }
 "#,
     );
+    write_manifest(
+        &temp.path().join("vendor/shared"),
+        r#"
+version = "1.0.0"
+"#,
+    );
     write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
 
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &Adapter::ALL).unwrap();
@@ -6410,7 +6365,7 @@ shared = { path = "vendor/shared" }
     );
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     let plugin_root_relative = display_path(plugin_root.strip_prefix(temp.path()).unwrap());
-    assert_not_owned(&lockfile, temp.path(), &plugin_root_relative);
+    assert_owned(&lockfile, temp.path(), &plugin_root_relative);
 }
 
 #[test]
@@ -6422,6 +6377,12 @@ fn sync_overwrites_owned_native_plugin_command_output_without_prompt() {
         r#"
 [dependencies]
 shared = { path = "vendor/shared" }
+"#,
+    );
+    write_manifest(
+        &temp.path().join("vendor/shared"),
+        r#"
+version = "1.0.0"
 "#,
     );
     write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
@@ -6899,7 +6860,7 @@ X-Figma-Region = "us-east-1"
     let plugin_root = global_native_plugin_root(temp.path(), firebase, Adapter::Codex);
     assert!(plugin_root.join(".mcp.json").exists());
     assert_owned(&lockfile, temp.path(), &display_path(&plugin_root));
-    assert_codex_user_config_registers_plugins(temp.path(), &["firebase@nodus"]);
+    assert_codex_user_base_has_no_managed_marketplace(temp.path());
     let config: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(plugin_root.join(".mcp.json")).unwrap()).unwrap();
     assert_eq!(
@@ -6962,7 +6923,7 @@ args = ["-y", "firebase-tools", "mcp", "--dir", "."]
     assert_not_owned(&lockfile, temp.path(), ".codex/config.toml");
     assert!(!temp.path().join(".codex/config.toml").exists());
     assert_owned(&lockfile, temp.path(), &display_path(&plugin_root));
-    assert_codex_user_config_registers_plugins(temp.path(), &["firebase@nodus"]);
+    assert_codex_user_base_has_no_managed_marketplace(temp.path());
     let codex_config: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(plugin_root.join(".mcp.json")).unwrap()).unwrap();
     assert_eq!(
@@ -9895,7 +9856,7 @@ shared = { path = "vendor/shared" }
         .unwrap();
     let plugin_root = global_native_plugin_root(temp.path(), shared, Adapter::Claude);
     let plugin_root_relative = display_path(plugin_root.strip_prefix(temp.path()).unwrap());
-    assert_not_owned(&lockfile, temp.path(), &plugin_root_relative);
+    assert_owned(&lockfile, temp.path(), &plugin_root_relative);
     assert_owned(&lockfile, temp.path(), ".github/skills/iframe-ad");
     assert_owned(&lockfile, temp.path(), ".opencode/skills/iframe-ad");
     // No per-package owned entry should mention the raw skill id `iframe-ad`
@@ -11034,7 +10995,7 @@ shared = { path = "vendor/shared", enabled = false }
 
     sync_all(temp.path(), cache.path());
 
-    assert!(managed_skill_path.exists());
+    assert!(!managed_skill_path.exists());
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
     assert!(
         !lockfile
@@ -11937,7 +11898,10 @@ shared = { path = "vendor/shared" }
 
     assert_eq!(first_skill_id, second_skill_id);
     assert!(second_skill_dir.exists());
-    assert!(first_skill_dir.exists());
+    assert!(
+        !first_skill_dir.exists(),
+        "old workspace plugin root should be pruned after package digest changes"
+    );
 }
 
 #[test]
@@ -12111,7 +12075,7 @@ shared = { path = "vendor/shared" }
     assert!(check.findings.iter().any(|finding| {
         let message = finding.message.replace('\\', "/");
         finding.kind == DoctorFindingKind::SafeAutoFix
-            && message.contains(".nodus-global/packages/")
+            && message.contains(".nodus/packages/")
             && message.contains("codex-plugin")
     }));
     assert!(!plugin_root.exists());
@@ -12373,7 +12337,7 @@ target = "learnings"
 }
 
 #[test]
-fn doctor_missing_lockfile_rewrites_global_workspace_marketplace() {
+fn doctor_missing_lockfile_blocks_conflicting_workspace_marketplace_repair() {
     let repo = create_workspace_dependency();
     let cache = cache_dir();
 
@@ -12392,11 +12356,17 @@ fn doctor_missing_lockfile_rewrites_global_workspace_marketplace() {
     )
     .unwrap();
 
-    assert_eq!(summary.status, DoctorStatus::Fixed);
-    assert!(repo.path().join(LOCKFILE_NAME).exists());
-    assert_ne!(
+    assert_eq!(summary.status, DoctorStatus::Blocked);
+    assert!(!repo.path().join(LOCKFILE_NAME).exists());
+    assert_eq!(
         fs::read_to_string(generated_claude_marketplace_path(repo.path())).unwrap(),
         "user-authored marketplace\n"
+    );
+    assert!(
+        summary
+            .findings
+            .iter()
+            .any(|finding| finding.kind == DoctorFindingKind::RiskyFix)
     );
 }
 
@@ -13879,11 +13849,10 @@ fn slice5_attribute_file_to_package_is_alphabetically_deterministic() {
     }
 }
 
-/// Workspace marketplace JSON now lives in the shared global Nodus home, so it
-/// must not be attributed to the project lockfile's root package. The project
-/// install digest should still match the project-owned files on disk.
+/// Workspace marketplace JSON is project-local, so the root package owns it and
+/// the project install digest includes its bytes.
 #[test]
-fn slice5_workspace_mode_install_digest_ignores_global_marketplace_files() {
+fn slice5_workspace_mode_install_digest_includes_workspace_marketplace_files() {
     let repo = TempDir::new().unwrap();
     let cache = cache_dir();
     write_manifest(
@@ -13926,8 +13895,8 @@ authentication = "ON_INSTALL"
         root_package
             .owned_files
             .iter()
-            .all(|f| !f.contains("marketplace.json")),
-        "expected root package owned_files to omit global marketplace JSON; \
+            .any(|f| f == ".nodus/.claude-plugin/marketplace.json"),
+        "expected root package owned_files to include workspace marketplace JSON; \
          got: {:?}",
         root_package.owned_files
     );
