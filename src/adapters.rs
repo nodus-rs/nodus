@@ -935,13 +935,13 @@ pub(crate) fn managed_runtime_skill_id(
     skill_id: &str,
 ) -> String {
     let local_names;
-    let names =
-        if preferred_surface(adapter) == PreferredSurface::PackagePluginConfiguredMarketplace {
-            local_names = ManagedArtifactNames::from_resolved_packages([package]);
-            &local_names
-        } else {
-            names
-        };
+    let names = if preferred_surface(adapter) == PreferredSurface::PackagePluginWorkspaceMarketplace
+    {
+        local_names = ManagedArtifactNames::from_resolved_packages([package]);
+        &local_names
+    } else {
+        names
+    };
     managed_skill_id(names, package, skill_id)
 }
 
@@ -1039,13 +1039,14 @@ pub(crate) fn expand_nodus_home_relative(home: &Path, value: &str) -> Option<Pat
 }
 
 pub(crate) fn native_marketplace_root(project_root: &Path, adapter: Adapter) -> PathBuf {
+    let global_home = global_nodus_home(project_root);
     match adapter {
-        Adapter::Claude => project_root.join(".nodus"),
-        Adapter::Codex => project_root.to_path_buf(),
+        // Codex re-roots its global snapshot marketplace at the Nodus home,
+        // mirroring Claude, so package payloads live under `packages/<id>/codex-plugin`
+        // instead of a separate `marketplaces/codex/plugins/<id>` tree.
+        Adapter::Claude | Adapter::Codex => global_home,
         Adapter::Agents | Adapter::Copilot | Adapter::Cursor | Adapter::OpenCode => {
-            global_nodus_home(project_root)
-                .join("marketplaces")
-                .join(adapter.as_str())
+            global_home.join("marketplaces").join(adapter.as_str())
         }
     }
 }
@@ -1152,12 +1153,11 @@ pub(crate) fn native_package_plugin_root(
     }
 
     match adapter {
-        Adapter::Claude => native_marketplace_root(project_root, adapter)
+        Adapter::Claude => global_nodus_home(project_root)
             .join("packages")
             .join(package_identities.managed_package_id(package))
             .join("claude-plugin"),
-        Adapter::Codex => project_root
-            .join(".nodus")
+        Adapter::Codex => global_nodus_home(project_root)
             .join("packages")
             .join(package_identities.managed_package_id(package))
             .join("codex-plugin"),
@@ -1192,7 +1192,7 @@ pub(crate) fn managed_runtime_root(
         return project_root.to_path_buf();
     }
 
-    if preferred_surface(adapter) == PreferredSurface::PackagePluginConfiguredMarketplace
+    if preferred_surface(adapter) == PreferredSurface::PackagePluginWorkspaceMarketplace
         && matches!(package.source, PackageSource::Root)
     {
         return runtime_root(project_root, adapter);
@@ -1209,13 +1209,13 @@ pub fn managed_skill_root(
     skill_id: &str,
 ) -> PathBuf {
     let local_names;
-    let names =
-        if preferred_surface(adapter) == PreferredSurface::PackagePluginConfiguredMarketplace {
-            local_names = ManagedArtifactNames::from_resolved_packages([package]);
-            &local_names
-        } else {
-            names
-        };
+    let names = if preferred_surface(adapter) == PreferredSurface::PackagePluginWorkspaceMarketplace
+    {
+        local_names = ManagedArtifactNames::from_resolved_packages([package]);
+        &local_names
+    } else {
+        names
+    };
     managed_runtime_root(project_root, adapter, package)
         .join("skills")
         .join(managed_skill_id(names, package, skill_id))
@@ -1236,7 +1236,7 @@ pub fn managed_artifact_path(
     let codex_agent_override = matches!((adapter, kind), (Adapter::Codex, ArtifactKind::Agent));
     let local_names;
     let names = if !codex_agent_override
-        && preferred_surface(adapter) == PreferredSurface::PackagePluginConfiguredMarketplace
+        && preferred_surface(adapter) == PreferredSurface::PackagePluginWorkspaceMarketplace
     {
         local_names = ManagedArtifactNames::from_resolved_packages([package]);
         &local_names
@@ -1497,24 +1497,30 @@ mod codex_marketplace_layout_tests {
     use super::*;
 
     #[test]
-    fn codex_marketplace_uses_repo_root_and_nodus_payloads() {
+    fn codex_marketplace_re_roots_at_nodus_home_like_claude() {
         let project_root = Path::new("/workspace/project");
+        let home = global_nodus_home(project_root);
+
+        // Codex shares the Claude marketplace root (the Nodus home) rather than a
+        // dedicated `marketplaces/codex` subtree.
         assert_eq!(
             native_marketplace_root(project_root, Adapter::Codex),
-            project_root
+            native_marketplace_root(project_root, Adapter::Claude),
         );
+        assert_eq!(native_marketplace_root(project_root, Adapter::Codex), home);
 
+        // The manifest lives at `<home>/.agents/plugins/marketplace.json`.
         assert_eq!(
             native_marketplace_path(project_root, Adapter::Codex),
-            Some(project_root.join(".agents/plugins/marketplace.json")),
+            Some(home.join(".agents/plugins/marketplace.json")),
         );
 
-        // Payloads remain under `.nodus`, but Codex resolves the marketplace
-        // entry relative to the repository root.
-        let plugin_root = project_root.join(".nodus/packages/foo+main/codex-plugin");
+        // Payloads are referenced root-relative under `packages/<id>/codex-plugin`,
+        // so no `../` escape from the marketplace root is needed.
+        let plugin_root = home.join("packages/foo+main/codex-plugin");
         assert_eq!(
             native_marketplace_plugin_source_path(project_root, Adapter::Codex, &plugin_root),
-            "./.nodus/packages/foo+main/codex-plugin",
+            "./packages/foo+main/codex-plugin",
         );
     }
 }

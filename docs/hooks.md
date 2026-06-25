@@ -41,7 +41,7 @@ The Codex adapter uses the same root/dependency split:
 - **Root manifest hooks** land in workspace `.codex/hooks.json` with scripts
   under `.codex/hooks/`.
 - **Dependency package hooks** land inside the generated Codex plugin snapshot
-  at `.nodus/packages/<managed-package-id>/codex-plugin/hooks/hooks.json`,
+  at `~/.nodus/marketplaces/codex/plugins/<managed-package-id>/hooks/hooks.json`,
   with scripts under `hooks/scripts/`. When a plugin has hook output, Nodus
   adds `"hooks": "./hooks/hooks.json"` to `.codex-plugin/plugin.json`.
 
@@ -84,32 +84,27 @@ but are not a replacement for command hooks that need to run arbitrary logic.
 Adapters without supported session-start context injection skip activation and
 emit a sync warning.
 
-## Codex configured local marketplace
+## Codex global snapshot marketplace
 
 When the Codex adapter is enabled, dependency package content is rendered as
-pinned plugin snapshots under `.nodus/packages`, with a repo-scoped Codex
-marketplace source manifest:
+pinned plugin snapshots below the global Nodus marketplace root:
 
 ```text
-.agents/
-  plugins/marketplace.json
-.nodus/
-  packages/<managed-package-id>/codex-plugin/
+~/.nodus/marketplaces/codex/
+  .agents/plugins/marketplace.json
+  plugins/<managed-package-id>/
 ```
 
-Current Codex CLI sessions do not auto-enable plugins from the repo-local
-marketplace file. Nodus writes the active Codex user config
-(`$CODEX_HOME/config.toml`, or `$CODEX_HOME/<profile>.config.toml` for a Codex
-profile) with the local marketplace and enabled plugin keys, then mirrors the
-selected plugin snapshots into `$CODEX_HOME/plugins/cache/<marketplace>/...`.
-Codex loads enabled plugins from that configured cache.
+Nodus writes user-level Codex config in `$CODEX_HOME/config.toml` or
+`~/.codex/config.toml` to register a single local marketplace named `nodus`
+and enable the selected `<plugin>@nodus` entries. Current Codex requires this
+user-level registration for marketplace and plugin discovery.
 
 Dependency skills, synthetic command skills, plugin hooks, and plugin MCP
 config live inside those snapshots rather than being duplicated into project
 `.codex/skills`. Codex agents stay project-local under `.codex/agents` until
 Codex plugin metadata supports declaring agents. Project `.codex/config.toml`
-is still used for project-scoped feature flags and root-level hooks; Codex
-project-local config cannot select profile-scoped plugin enablement.
+is still used for project-scoped feature flags and root-level hooks.
 
 ## Event catalog
 

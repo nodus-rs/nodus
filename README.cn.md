@@ -109,13 +109,12 @@ nodus doctor
 - 为选定或检测到的 adapter 写入受管理运行时文件
 
 如果包里发布了 `mcp_servers`，Nodus 现在也会把对应的 MCP 配置一起写入仓库里的受管理
-runtime 输出。目前包括 Claude / Codex workspace plugin 根目录里的 `.mcp.json`、Codex 的
-`.codex/config.toml`，以及 OpenCode 的 `opencode.json`。
+runtime 输出。目前包括传统项目级 `.mcp.json`、Codex 的 `.codex/config.toml`，以及
+OpenCode 的 `opencode.json`。
 
 同步之后可以运行 `nodus info .` 查看 `native-integration` 区块。它会列出 Nodus 写出的
 Claude / Codex marketplace、plugin key、plugin 根目录、hook 位置、Codex
-`features.hooks` / `features.plugin_hooks` 状态、Codex workspace marketplace 注册状态，以及
-Claude `enabledPlugins` 状态。
+`features.hooks` / `features.plugin_hooks` 状态，以及 Claude `enabledPlugins` 状态。
 
 如果这个包本身是一个会暴露多个子包的 wrapper，`nodus add` 现在默认只记录 wrapper
 本身，不会自动启用全部子包。你可以后续手动编辑 `nodus.toml` 里的 `members`，或者在

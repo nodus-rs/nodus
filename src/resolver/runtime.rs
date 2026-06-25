@@ -279,7 +279,6 @@ struct SyncExecutionPlan {
     runtime_root: PathBuf,
     manifest_write: Option<PlannedFileWrite>,
     removals: Vec<PathBuf>,
-    external_removals: Vec<PathBuf>,
     managed_writes: Vec<ManagedFile>,
     external_writes: Vec<ManagedFile>,
     lockfile_write: Option<PlannedFileWrite>,

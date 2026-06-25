@@ -191,14 +191,15 @@ pub(crate) fn install_digest_from_disk(
 /// True when an `owned_*` lockfile entry points into the global Nodus home
 /// rather than the workspace.
 ///
-/// Legacy native marketplace snapshots and non-workspace virtual plugin installs
-/// can be recorded as `${NODUS_HOME}/...` tokens — or, in pre-token lockfiles,
-/// an absolute path under the home. They live outside the workspace and are
-/// shared across repos, so the write side (`install_digests_by_package`) never
-/// attributes them to a package: it only buckets project-root-relative output
-/// files. The disk recompute must skip them too; otherwise it would hash files
-/// the recorded digest never covered and `nodus sync --frozen` would report
-/// perpetual "disk drift" for packages with such global outputs.
+/// Native marketplace plugin snapshots (e.g. the codex
+/// `${NODUS_HOME}/packages/<pkg>/codex-plugin` subtree) are recorded as
+/// `${NODUS_HOME}/...` tokens — or, in pre-token lockfiles, an absolute path
+/// under the home. They live outside the workspace and are shared across repos,
+/// so the write side (`install_digests_by_package`) never attributes them to a
+/// package: it only buckets project-root-relative output files. The disk
+/// recompute must skip them too; otherwise it would hash files the recorded
+/// digest never covered and `nodus sync --frozen` would report perpetual
+/// "disk drift" for any package that publishes a native plugin.
 fn is_global_home_entry(entry: &str, project_root: &Path) -> bool {
     if entry.starts_with(crate::adapters::NODUS_HOME_TOKEN) {
         return true;
@@ -305,10 +306,10 @@ mod tests {
 
     /// Regression test for the `nodus sync --frozen` "install_digest mismatch
     /// (disk drift)" bug. A package whose managed output is a global
-    /// `${NODUS_HOME}` marketplace subtree must hash to the same value the write
-    /// side records. The write side (`install_digests_by_package`) only
-    /// attributes project-root-relative output files, so the shared global
-    /// snapshot does not contribute; the
+    /// `${NODUS_HOME}` marketplace subtree (native codex plugin snapshot) must
+    /// hash to the same value the write side records. The write side
+    /// (`install_digests_by_package`) only attributes project-root-relative
+    /// output files, so the shared global snapshot does not contribute; the
     /// disk recompute must skip it too. Before the fix the disk side walked the
     /// global subtree and produced a digest that could never equal the recorded
     /// (subtree-free) one, so `--frozen` failed even right after a clean sync.

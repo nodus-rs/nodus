@@ -1,8 +1,8 @@
 # Virtual Plugin Marketplaces
 
-Some adapters have a native marketplace protocol. Claude and Codex can load a
-workspace-local marketplace manifest that points at generated package plugin
-roots under `.nodus/packages/<managed-package-id>/`.
+Some adapters have a native marketplace protocol. Claude can load a local
+marketplace manifest that points at generated package plugin roots under
+`.nodus/packages/<alias>/`.
 
 Other adapters expose a plugin loader but no marketplace. For those adapters,
 Nodus uses a virtual marketplace:
@@ -19,49 +19,45 @@ Virtual marketplaces do not fetch remote plugins, install npm packages, or add
 another package manager. The package source remains the `nodus.toml`
 dependency graph.
 
-## Codex configured local snapshots
+## Codex global snapshots
 
-Codex has a plugin marketplace file format, but current CLI plugin loading is
-driven by the merged active Codex user/profile config and the user plugin cache.
-The repo-local marketplace JSON is a source manifest; it is not sufficient by
-itself to enable plugins. Nodus therefore treats Codex as a configured local
-marketplace with an explicit cache mirror rather than an auto-discovered
-workspace marketplace.
+Codex has a plugin marketplace file format, and current Codex reads
+`marketplaces` / `plugins` from user config. Nodus therefore treats Codex as a
+native global snapshot marketplace rather than a project-local virtual
+marketplace.
 
 When the Codex adapter is selected, full packages with Codex-supported runtime
-content are copied to pinned snapshot roots under the workspace `.nodus`
-directory:
+content are copied to pinned snapshot roots that share the Nodus home with the
+Claude package plugins:
 
 ```text
-.nodus/packages/<managed-package-id>/codex-plugin/
+~/.nodus/packages/<managed-package-id>/codex-plugin/
 ```
 
-The local marketplace source manifest is emitted at:
+The marketplace manifest is emitted at:
 
 ```text
-.agents/plugins/marketplace.json
+~/.nodus/.agents/plugins/marketplace.json
 ```
 
-with each plugin referenced repository-root-relative as
-`./.nodus/packages/<managed-package-id>/codex-plugin`.
+with each plugin referenced root-relative as
+`./packages/<managed-package-id>/codex-plugin`.
 
-Nodus also writes `[marketplaces]` and `[plugins]` entries to the active Codex
-config (`$CODEX_HOME/config.toml`, or `$CODEX_HOME/<profile>.config.toml` when a
-profile is selected) and mirrors the selected snapshot into
-`$CODEX_HOME/plugins/cache/<marketplace>/<plugin>/<version>`. Codex resolves
-enabled plugin keys from config and then loads capabilities from the cache, so
-both the active config and cache mirror are part of the runtime contract.
+> The Codex marketplace is re-rooted at `~/.nodus` (mirroring Claude's
+> `~/.nodus/.claude-plugin/marketplace.json`). This supersedes the earlier
+> `~/.nodus/marketplaces/codex/plugins/<id>` layout so that every adapter's
+> payload for a package lives under one `packages/<id>/` directory. Codex
+> resolves a plugin's `source.path` relative to the registered marketplace
+> root, so the path stays a clean root-relative reference with no parent
+> traversal.
 
-> The local marketplace source is rooted at the repository. This supersedes the
-> older global snapshots under `~/.nodus/marketplaces/codex/` and the
-> intermediate `~/.nodus/packages/<id>/codex-plugin` registration path. Project
-> `.codex/config.toml` remains only for project-scoped feature flags and
-> root-level hooks; Codex project-local config rejects profile and provider
-> selection keys.
-
-Dependency skills, synthetic command skills, plugin hooks, and plugin MCP config
-live in the package snapshot; Codex agents remain direct project files under
-`.codex/agents` until plugin metadata supports agents.
+Nodus registers the Nodus home as a local marketplace named `nodus` in
+`$CODEX_HOME/config.toml` or `~/.codex/config.toml`, and enables the selected
+`<plugin>@nodus` entries there. Dependency skills, synthetic command skills,
+plugin hooks, and plugin MCP config live in the snapshot; Codex agents remain
+direct project files under `.codex/agents` until plugin metadata supports
+agents. Project `.codex/config.toml` remains only for project-scoped feature
+flags and root-level hooks.
 
 ## OpenCode v1
 
