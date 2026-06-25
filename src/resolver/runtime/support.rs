@@ -50,6 +50,7 @@ pub(super) fn build_sync_execution_plan(
     ));
     removals.sort();
     removals.dedup();
+    let external_removals = planned_external_cache_removals(&external_files)?;
     let lockfile_write = if sync_mode.checks_lockfile() {
         None
     } else {
@@ -60,6 +61,7 @@ pub(super) fn build_sync_execution_plan(
         runtime_root: runtime_root.to_path_buf(),
         manifest_write,
         removals,
+        external_removals,
         managed_writes: planned_files.to_vec(),
         external_writes: external_files,
         lockfile_write,
@@ -78,6 +80,9 @@ pub(super) fn execute_sync_plan(
             reporter.preview(&planned_write_preview_change(write))?;
         }
         for path in &plan.removals {
+            reporter.preview(&PreviewChange::Remove(path.clone()))?;
+        }
+        for path in &plan.external_removals {
             reporter.preview(&PreviewChange::Remove(path.clone()))?;
         }
         if !plan.managed_writes.is_empty() {
@@ -114,6 +119,11 @@ pub(super) fn execute_sync_plan(
             reporter.status("Removing", path.display())?;
             remove_path_and_empty_parents(path, &plan.runtime_root)?;
         }
+        for path in &plan.external_removals {
+            reporter.status("Removing", path.display())?;
+            let stop_root = path.parent().unwrap_or(plan.runtime_root.as_path());
+            remove_path_and_empty_parents(path, stop_root)?;
+        }
         reporter.status("Writing", "managed runtime outputs")?;
         write_managed_files(&plan.managed_writes)?;
         if !plan.external_writes.is_empty() {
@@ -131,6 +141,79 @@ pub(super) fn execute_sync_plan(
     }
 
     Ok(())
+}
+
+fn planned_external_cache_removals(external_files: &[ManagedFile]) -> Result<Vec<PathBuf>> {
+    let mut plugin_dirs = HashSet::new();
+    let mut current_version_dirs = HashSet::new();
+
+    for file in external_files {
+        if let Some((plugin_dir, version_dir)) = codex_plugin_cache_dirs(&file.path) {
+            plugin_dirs.insert(plugin_dir);
+            current_version_dirs.insert(version_dir);
+        }
+    }
+
+    let mut removals = HashSet::new();
+    for version_dir in &current_version_dirs {
+        if version_dir.exists() {
+            removals.insert(version_dir.clone());
+        }
+    }
+
+    for plugin_dir in plugin_dirs {
+        let entries = match fs::read_dir(&plugin_dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to read {}", plugin_dir.display()));
+            }
+        };
+        for entry in entries {
+            let entry =
+                entry.with_context(|| format!("failed to inspect {}", plugin_dir.display()))?;
+            let path = entry.path();
+            if current_version_dirs.contains(&path) {
+                continue;
+            }
+            let file_type = entry
+                .file_type()
+                .with_context(|| format!("failed to inspect {}", path.display()))?;
+            if file_type.is_dir() {
+                removals.insert(path);
+            }
+        }
+    }
+
+    let mut removals = removals.into_iter().collect::<Vec<_>>();
+    removals.sort();
+    Ok(removals)
+}
+
+fn codex_plugin_cache_dirs(path: &Path) -> Option<(PathBuf, PathBuf)> {
+    let components = path.components().collect::<Vec<_>>();
+    if components.len() < 6 {
+        return None;
+    }
+
+    for index in 0..components.len().saturating_sub(5) {
+        if components[index].as_os_str() != "plugins"
+            || components[index + 1].as_os_str() != "cache"
+        {
+            continue;
+        }
+
+        let mut plugin_dir = PathBuf::new();
+        for component in &components[..=index + 3] {
+            plugin_dir.push(component.as_os_str());
+        }
+        let mut version_dir = plugin_dir.clone();
+        version_dir.push(components[index + 4].as_os_str());
+        return Some((plugin_dir, version_dir));
+    }
+
+    None
 }
 
 fn planned_manifest_write(

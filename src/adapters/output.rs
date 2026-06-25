@@ -787,6 +787,17 @@ pub(crate) fn build_output_plan_with_options(
     for file in codex_config_targets.user_files {
         merge_file(&mut plan.external_files, file)?;
     }
+    let codex_installed_plugin_files = codex_installed_plugin_files(
+        project_root,
+        packages,
+        selected_adapters,
+        &plan.files,
+        &package_identities,
+        options.codex_user_config.as_deref(),
+    )?;
+    for file in codex_installed_plugin_files {
+        merge_file(&mut plan.external_files, file)?;
+    }
     if selected_adapters.contains(Adapter::OpenCode)
         && let Some(file) = opencode_mcp_config_file(
             project_root,
@@ -1000,6 +1011,7 @@ fn native_package_marketplace_files(
     }
 
     if selected_adapters.contains(Adapter::Codex) {
+        let marketplace_name = codex_marketplace_name(project_root, packages);
         let plugins = packages
             .iter()
             .filter_map(|(package, _)| {
@@ -1016,10 +1028,7 @@ fn native_package_marketplace_files(
                 path: super::native_marketplace_path(project_root, Adapter::Codex)
                     .expect("codex marketplace path"),
                 contents: json_bytes(JsonMap::from_iter([
-                    (
-                        "name".to_string(),
-                        JsonValue::String(MANAGED_MARKETPLACE_NAME.to_string()),
-                    ),
+                    ("name".to_string(), JsonValue::String(marketplace_name)),
                     ("plugins".to_string(), JsonValue::Array(plugins)),
                 ]))?,
             });
@@ -1044,7 +1053,8 @@ fn workspace_native_marketplace_files(
     }
 
     let mut files = Vec::new();
-    let marketplace_name = MANAGED_MARKETPLACE_NAME.to_string();
+    let claude_marketplace_name = MANAGED_MARKETPLACE_NAME.to_string();
+    let codex_marketplace_name = codex_workspace_marketplace_name(root);
 
     if selected_adapters.contains(Adapter::Claude)
         && preferred_surface(Adapter::Claude) == PreferredSurface::PackagePluginWorkspaceMarketplace
@@ -1088,7 +1098,7 @@ fn workspace_native_marketplace_files(
             contents: json_bytes(JsonMap::from_iter([
                 (
                     "name".to_string(),
-                    JsonValue::String(marketplace_name.clone()),
+                    JsonValue::String(claude_marketplace_name.clone()),
                 ),
                 (
                     "owner".to_string(),
@@ -1161,7 +1171,10 @@ fn workspace_native_marketplace_files(
                 path: super::native_marketplace_path(project_root, Adapter::Codex)
                     .expect("codex marketplace path"),
                 contents: json_bytes(JsonMap::from_iter([
-                    ("name".to_string(), JsonValue::String(marketplace_name)),
+                    (
+                        "name".to_string(),
+                        JsonValue::String(codex_marketplace_name),
+                    ),
                     ("plugins".to_string(), JsonValue::Array(plugins)),
                 ]))?,
             });
@@ -1279,7 +1292,7 @@ fn native_package_plugin_name(package: &ResolvedPackage) -> String {
 }
 
 fn native_package_plugin_keys(
-    _project_root: &Path,
+    project_root: &Path,
     packages: &[(ResolvedPackage, PathBuf)],
     adapter: Adapter,
     package_identities: &ManagedPackageIdentities,
@@ -1308,10 +1321,10 @@ fn native_package_plugin_keys(
             return Ok(None);
         }
 
-        let marketplace = MANAGED_MARKETPLACE_NAME.to_string();
         return match adapter {
-            Adapter::Claude => Ok(Some((marketplace, Vec::new()))),
+            Adapter::Claude => Ok(Some((MANAGED_MARKETPLACE_NAME.to_string(), Vec::new()))),
             Adapter::Codex => {
+                let marketplace = codex_marketplace_name(project_root, packages);
                 let plugin_keys = enabled_members
                     .iter()
                     .filter(|member| {
@@ -1345,12 +1358,102 @@ fn native_package_plugin_keys(
         return Ok(None);
     }
 
-    let marketplace = MANAGED_MARKETPLACE_NAME.to_string();
+    let marketplace = match adapter {
+        Adapter::Codex => codex_marketplace_name(project_root, packages),
+        _ => MANAGED_MARKETPLACE_NAME.to_string(),
+    };
     let keys = plugins
         .into_iter()
         .map(|plugin| format!("{plugin}@{marketplace}"))
         .collect::<Vec<_>>();
     Ok(Some((marketplace, keys)))
+}
+
+fn codex_installed_plugin_files(
+    project_root: &Path,
+    packages: &[(ResolvedPackage, PathBuf)],
+    selected_adapters: Adapters,
+    planned_files: &BTreeMap<PathBuf, Vec<u8>>,
+    package_identities: &ManagedPackageIdentities,
+    codex_user_config: Option<&Path>,
+) -> Result<Vec<ManagedFile>> {
+    if !selected_adapters.contains(Adapter::Codex) {
+        return Ok(Vec::new());
+    }
+    let Some((marketplace, _)) =
+        native_package_plugin_keys(project_root, packages, Adapter::Codex, package_identities)?
+    else {
+        return Ok(Vec::new());
+    };
+
+    let codex_home = codex_home_from_user_config(project_root, codex_user_config);
+    let mut files = Vec::new();
+    for (package, _) in packages {
+        if matches!(package.source, PackageSource::Root)
+            || !package.emits_runtime_outputs()
+            || !native_package_plugin_has_content(Adapter::Codex, package)
+        {
+            continue;
+        }
+
+        let source_root = super::native_package_plugin_root(
+            project_root,
+            Adapter::Codex,
+            package,
+            package_identities,
+        );
+        let plugin_name = package_identities.marketplace_plugin_name(package);
+        let target_root = codex_plugin_cache_root(
+            &codex_home,
+            &marketplace,
+            &plugin_name,
+            &codex_plugin_cache_version(package),
+        );
+
+        for (path, contents) in planned_files {
+            let Some(relative) = strip_path_prefix(path, &source_root) else {
+                continue;
+            };
+            files.push(ManagedFile {
+                path: target_root.join(relative),
+                contents: contents.clone(),
+            });
+        }
+    }
+
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(files)
+}
+
+fn codex_home_from_user_config(project_root: &Path, codex_user_config: Option<&Path>) -> PathBuf {
+    codex_user_config
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| default_codex_user_config_path(project_root))
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn codex_plugin_cache_root(
+    codex_home: &Path,
+    marketplace: &str,
+    plugin_name: &str,
+    version: &str,
+) -> PathBuf {
+    codex_home
+        .join("plugins")
+        .join("cache")
+        .join(marketplace)
+        .join(plugin_name)
+        .join(version)
+}
+
+fn codex_plugin_cache_version(package: &ResolvedPackage) -> String {
+    let digest = package
+        .digest
+        .strip_prefix("blake3:")
+        .unwrap_or(package.digest.as_str());
+    format!("blake3-{digest}")
 }
 
 fn workspace_member_codex_plugin_name(
@@ -1386,6 +1489,14 @@ fn workspace_marketplace_owner_name(root: &LoadedManifest) -> String {
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| workspace_marketplace_root_basename(&root.root))
+}
+
+fn codex_marketplace_name(project_root: &Path, packages: &[(ResolvedPackage, PathBuf)]) -> String {
+    normalize_marketplace_name(&native_marketplace_owner_name(project_root, packages))
+}
+
+fn codex_workspace_marketplace_name(root: &LoadedManifest) -> String {
+    normalize_marketplace_name(&workspace_marketplace_owner_name(root))
 }
 
 fn workspace_marketplace_root_basename(root: &Path) -> String {
@@ -2275,6 +2386,39 @@ struct CodexConfigTargets {
     user_files: Vec<ManagedFile>,
 }
 
+struct CodexNativePluginConfig {
+    marketplace: String,
+    source: String,
+    plugin_keys: Vec<String>,
+}
+
+fn codex_native_plugin_config(
+    project_root: &Path,
+    packages: &[(ResolvedPackage, PathBuf)],
+    selected_adapters: Adapters,
+    codex_native_plugins_auto_enabled: bool,
+) -> Result<Option<CodexNativePluginConfig>> {
+    if !selected_adapters.contains(Adapter::Codex) || !codex_native_plugins_auto_enabled {
+        return Ok(None);
+    }
+    let package_identities = ManagedPackageIdentities::from_resolved_packages(
+        packages.iter().map(|(package, _)| package),
+    );
+    let Some((marketplace, plugin_keys)) =
+        native_package_plugin_keys(project_root, packages, Adapter::Codex, &package_identities)?
+    else {
+        return Ok(None);
+    };
+    if plugin_keys.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(CodexNativePluginConfig {
+        marketplace,
+        source: display_path(project_root),
+        plugin_keys,
+    }))
+}
+
 /// Compute the managed Codex MCP server entries (including the `nodus` server
 /// when any package contributes direct MCP servers). Returns an empty map when
 /// Codex emits all MCP servers through native plugins instead.
@@ -2383,10 +2527,19 @@ fn codex_config_files(
         selected_adapters,
         codex_native_plugins_auto_enabled,
     );
-    let legacy_marketplace = legacy_project_marketplace_name(project_root, packages);
+    let codex_plugin_config = codex_native_plugin_config(
+        project_root,
+        packages,
+        selected_adapters,
+        codex_native_plugins_auto_enabled,
+    )?;
+    let legacy_marketplace = codex_marketplace_name(project_root, packages);
 
     let project_path = project_root.join(".codex/config.toml");
     let project_managed = previously_managed_mcp_servers(existing_lockfile, ".codex/config.toml");
+    let user_base_path = codex_user_config
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| default_codex_user_config_path(project_root));
 
     let mut user_files = Vec::new();
 
@@ -2394,8 +2547,8 @@ fn codex_config_files(
     match codex_profile {
         None => {
             // Without a profile, servers and feature flags live in the project
-            // config. Plugin marketplaces are now discovered from workspace
-            // files instead of user config.
+            // config. Plugin enablement must live in the Codex user config so
+            // current Codex can load the matching cache entries.
             project = rewrite_codex_config(
                 &project_path,
                 project_root,
@@ -2403,8 +2556,28 @@ fn codex_config_files(
                 feature_requirements,
                 &project_managed,
                 &legacy_marketplace,
+                None,
+                &[],
                 merge_existing_mcp,
             )?;
+            if let Some(file) = rewrite_codex_config(
+                &user_base_path,
+                project_root,
+                BTreeMap::new(),
+                CodexFeatureRequirements::NONE,
+                &HashSet::new(),
+                &legacy_marketplace,
+                codex_plugin_config
+                    .as_ref()
+                    .map(|config| (config.marketplace.as_str(), config.source.as_str())),
+                codex_plugin_config
+                    .as_ref()
+                    .map(|config| config.plugin_keys.as_slice())
+                    .unwrap_or(&[]),
+                merge_existing_mcp,
+            )? {
+                user_files.push(file);
+            }
         }
         Some(profile) => {
             // Profile active: the base configs keep nothing nodus-managed; the
@@ -2416,11 +2589,10 @@ fn codex_config_files(
                 CodexFeatureRequirements::NONE,
                 &project_managed,
                 &legacy_marketplace,
+                None,
+                &[],
                 merge_existing_mcp,
             )?;
-            let user_base_path = codex_user_config
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| default_codex_user_config_path(project_root));
             if let Some(file) = rewrite_codex_config(
                 &user_base_path,
                 project_root,
@@ -2428,6 +2600,8 @@ fn codex_config_files(
                 CodexFeatureRequirements::NONE,
                 &HashSet::new(),
                 &legacy_marketplace,
+                None,
+                &[],
                 merge_existing_mcp,
             )? {
                 user_files.push(file);
@@ -2446,6 +2620,13 @@ fn codex_config_files(
                 feature_requirements,
                 &overlay_managed,
                 &legacy_marketplace,
+                codex_plugin_config
+                    .as_ref()
+                    .map(|config| (config.marketplace.as_str(), config.source.as_str())),
+                codex_plugin_config
+                    .as_ref()
+                    .map(|config| config.plugin_keys.as_slice())
+                    .unwrap_or(&[]),
                 merge_existing_mcp,
             )? {
                 user_files.push(file);
@@ -2532,12 +2713,16 @@ fn rewrite_codex_config(
     feature_requirements: CodexFeatureRequirements,
     previously_managed: &HashSet<String>,
     legacy_marketplace: &str,
+    desired_marketplace: Option<(&str, &str)>,
+    desired_plugins: &[String],
     merge_existing_mcp: bool,
 ) -> Result<Option<ManagedFile>> {
     let needs_config_for_outputs = !desired_servers.is_empty()
         || !previously_managed.is_empty()
         || feature_requirements.hooks
-        || feature_requirements.plugin_hooks;
+        || feature_requirements.plugin_hooks
+        || desired_marketplace.is_some()
+        || !desired_plugins.is_empty();
 
     let needs_marketplace_cleanup = if needs_config_for_outputs {
         false
@@ -2561,6 +2746,9 @@ fn rewrite_codex_config(
     if legacy_marketplace != MANAGED_MARKETPLACE_NAME {
         remove_codex_marketplace_config(&mut config, legacy_marketplace);
     }
+    if let Some((marketplace, _)) = desired_marketplace {
+        remove_codex_marketplace_config(&mut config, marketplace);
+    }
 
     config.mcp_servers.retain(|server_name, _| {
         !previously_managed.contains(server_name) && !desired_servers.contains_key(server_name)
@@ -2581,6 +2769,32 @@ fn rewrite_codex_config(
     } else {
         config.features.remove("plugin_hooks");
     }
+    if let Some((marketplace, source)) = desired_marketplace {
+        config.marketplaces.insert(
+            marketplace.to_string(),
+            TomlValue::Table(
+                [
+                    (
+                        "source_type".to_string(),
+                        TomlValue::String("local".to_string()),
+                    ),
+                    ("source".to_string(), TomlValue::String(source.to_string())),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+        );
+    }
+    for plugin_key in desired_plugins {
+        config.plugins.insert(
+            plugin_key.clone(),
+            TomlValue::Table(
+                [("enabled".to_string(), TomlValue::Boolean(true))]
+                    .into_iter()
+                    .collect(),
+            ),
+        );
+    }
 
     if config.mcp_servers.is_empty()
         && config.features.is_empty()
@@ -2600,13 +2814,6 @@ fn rewrite_codex_config(
         path: path.to_path_buf(),
         contents,
     }))
-}
-
-fn legacy_project_marketplace_name(
-    project_root: &Path,
-    packages: &[(ResolvedPackage, PathBuf)],
-) -> String {
-    normalize_marketplace_name(&native_marketplace_owner_name(project_root, packages))
 }
 
 fn remove_codex_marketplace_config(config: &mut ProjectCodexConfig, marketplace: &str) {

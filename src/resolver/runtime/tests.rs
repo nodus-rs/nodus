@@ -172,6 +172,34 @@ fn generated_codex_user_overlay_path(path: &Path, profile: &str) -> PathBuf {
     path.join(format!(".codex-user/{profile}.config.toml"))
 }
 
+fn codex_cache_plugin_root(codex_home: &Path, marketplace: &str, plugin: &str) -> PathBuf {
+    codex_home
+        .join("plugins")
+        .join("cache")
+        .join(marketplace)
+        .join(plugin)
+}
+
+fn assert_codex_cache_contains_skill(
+    codex_home: &Path,
+    marketplace: &str,
+    plugin: &str,
+    skill: &str,
+) {
+    let root = codex_cache_plugin_root(codex_home, marketplace, plugin);
+    let suffix = PathBuf::from("skills").join(skill).join("SKILL.md");
+    assert!(
+        WalkDir::new(&root).into_iter().any(|entry| {
+            entry
+                .ok()
+                .is_some_and(|entry| entry.path().ends_with(&suffix))
+        }),
+        "expected Codex cache for {plugin}@{marketplace} to contain {} under {}",
+        suffix.display(),
+        root.display()
+    );
+}
+
 /// Assert the base `$CODEX_HOME/config.toml` carries no nodus-managed
 /// marketplace registration (it is either absent or cleaned).
 fn assert_codex_user_base_has_no_managed_marketplace(path: &Path) {
@@ -2026,7 +2054,7 @@ fn sync_generates_claude_workspace_marketplace_files() {
 }
 
 #[test]
-fn sync_leaves_workspace_codex_user_config_untouched() {
+fn sync_preserves_workspace_codex_user_config_and_enables_plugins() {
     let repo = create_workspace_dependency();
     let cache = cache_dir();
     let codex_home = TempDir::new().unwrap();
@@ -2059,13 +2087,26 @@ model = "gpt-5"
     let user_config: toml::Value =
         toml::from_str(&fs::read_to_string(&codex_config).unwrap()).unwrap();
     assert_eq!(user_config["model"].as_str(), Some("gpt-5"));
-    assert!(user_config.get("marketplaces").is_none());
-    assert!(user_config.get("plugins").is_none());
     assert!(generated_codex_marketplace_path(repo.path()).exists());
+    let marketplace: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(generated_codex_marketplace_path(repo.path())).unwrap(),
+    )
+    .unwrap();
+    let marketplace_name = marketplace["name"].as_str().unwrap();
+    assert_eq!(
+        user_config["marketplaces"][marketplace_name]["source"].as_str(),
+        Some(display_path(repo.path()).as_str())
+    );
+    let axiom_key = format!("Axiom@{marketplace_name}");
+    assert_eq!(
+        user_config["plugins"][axiom_key.as_str()]["enabled"].as_bool(),
+        Some(true)
+    );
+    assert_codex_cache_contains_skill(codex_home.path(), marketplace_name, "Axiom", "review");
 }
 
 #[test]
-fn sync_does_not_create_codex_user_config_for_workspace_plugins() {
+fn sync_creates_codex_user_config_for_workspace_plugins_idempotently() {
     let repo = create_workspace_dependency();
     let cache = cache_dir();
     let codex_home = TempDir::new().unwrap();
@@ -2111,7 +2152,19 @@ fn sync_does_not_create_codex_user_config_for_workspace_plugins() {
     .unwrap();
 
     let output = buffer.contents();
-    assert!(!codex_config.exists());
+    assert!(codex_config.exists());
+    let user_config: toml::Value =
+        toml::from_str(&fs::read_to_string(&codex_config).unwrap()).unwrap();
+    let marketplace: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(generated_codex_marketplace_path(repo.path())).unwrap(),
+    )
+    .unwrap();
+    let marketplace_name = marketplace["name"].as_str().unwrap();
+    let axiom_key = format!("Axiom@{marketplace_name}");
+    assert_eq!(
+        user_config["plugins"][axiom_key.as_str()]["enabled"].as_bool(),
+        Some(true)
+    );
     assert!(
         !output.contains("failed"),
         "second sync should keep Codex user config idempotent, got {output}"
@@ -2433,11 +2486,43 @@ name = "Shared Tools"
 
     sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex]).unwrap();
 
-    // Workspace plugins are discovered through the repo-local marketplace, so
-    // a profile with no MCP/hook config does not need a user overlay.
-    assert!(!generated_codex_user_overlay_path(temp.path(), "work").exists());
+    // Current Codex loads plugin skills from the active profile config plus
+    // the user plugin cache; the repo-local marketplace alone is inert.
+    let overlay_path = generated_codex_user_overlay_path(temp.path(), "work");
+    assert!(overlay_path.exists());
+    let overlay: toml::Value = toml::from_str(&fs::read_to_string(&overlay_path).unwrap()).unwrap();
+    let marketplace: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(generated_codex_marketplace_path(temp.path())).unwrap(),
+    )
+    .unwrap();
+    let marketplace_name = marketplace["name"].as_str().unwrap();
+    let plugin_key = format!("shared-tools@{marketplace_name}");
+    assert_eq!(
+        overlay["plugins"][plugin_key.as_str()]["enabled"].as_bool(),
+        Some(true)
+    );
     assert_codex_user_base_has_no_managed_marketplace(temp.path());
+    let base_config_path = generated_codex_user_config_path(temp.path());
+    if base_config_path.exists() {
+        let base_config: toml::Value =
+            toml::from_str(&fs::read_to_string(&base_config_path).unwrap()).unwrap();
+        if let Some(marketplaces) = base_config
+            .get("marketplaces")
+            .and_then(toml::Value::as_table)
+        {
+            assert!(
+                !marketplaces.contains_key(marketplace_name),
+                "base Codex user config should not register profile marketplace `{marketplace_name}`"
+            );
+        }
+    }
     assert!(generated_codex_marketplace_path(temp.path()).exists());
+    assert_codex_cache_contains_skill(
+        &temp.path().join(".codex-user"),
+        marketplace_name,
+        "shared-tools",
+        "review",
+    );
 
     // The lockfile records the profile so a later change forces a re-render.
     let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
@@ -2827,13 +2912,39 @@ custom = "kept"
     )
     .unwrap();
 
-    assert_eq!(fs::read_to_string(&codex_config).unwrap(), original);
     let user_config: toml::Value =
         toml::from_str(&fs::read_to_string(&codex_config).unwrap()).unwrap();
     assert_eq!(user_config["model"].as_str(), Some("gpt-5"));
     assert_eq!(
         user_config["plugins"]["manual@other"]["enabled"].as_bool(),
         Some(false)
+    );
+    assert_eq!(
+        user_config["plugins"]["grapha@yoki-ios"]["enabled"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        user_config["plugins"]["playbook-ios@yoki-ios"]["enabled"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        user_config["marketplaces"]["yoki-ios"]["source"].as_str(),
+        Some(display_path(temp.path()).as_str())
+    );
+    assert_eq!(
+        user_config["marketplaces"]["yoki-ios"]["source_type"].as_str(),
+        Some("local")
+    );
+    assert!(user_config["marketplaces"]["yoki-ios"].get("ref").is_none());
+    assert!(
+        user_config["marketplaces"]["yoki-ios"]
+            .get("sparse_paths")
+            .is_none()
+    );
+    assert!(
+        user_config["marketplaces"]["yoki-ios"]
+            .get("custom")
+            .is_none()
     );
     assert!(generated_codex_marketplace_path(temp.path()).exists());
     let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
@@ -2845,6 +2956,8 @@ custom = "kept"
             .unwrap();
         assert!(global_native_plugin_root(temp.path(), package, Adapter::Codex).exists());
     }
+    assert_codex_cache_contains_skill(codex_home.path(), "yoki-ios", "grapha", "grapha-search");
+    assert_codex_cache_contains_skill(codex_home.path(), "yoki-ios", "playbook-ios", "ios-testing");
     let project_config = assert_no_codex_managed_marketplace_config(temp.path(), "yoki-ios");
     assert_eq!(project_config["model"].as_str(), Some("gpt-5"));
     assert_eq!(
@@ -3072,7 +3185,8 @@ fn sync_writes_codex_marketplace_for_workspace_members_with_codex_metadata() {
         &fs::read_to_string(generated_codex_marketplace_path(repo.path())).unwrap(),
     )
     .unwrap();
-    assert_eq!(codex["name"].as_str(), Some("nodus"));
+    assert_ne!(codex["name"].as_str(), Some("nodus"));
+    assert!(codex["name"].as_str().is_some_and(|name| !name.is_empty()));
     assert_eq!(codex["plugins"].as_array().unwrap().len(), 1);
 }
 

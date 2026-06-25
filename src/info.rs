@@ -474,7 +474,14 @@ fn package_info_from_loaded(
         manifest.manifest.hooks.clone()
     };
     let native_integration = (role == PackageRole::Root)
-        .then(|| build_native_integration_info(&manifest.root, &adapters, &mut warnings))
+        .then(|| {
+            build_native_integration_info(
+                &manifest.root,
+                &adapters,
+                manifest.manifest.codex_profile(),
+                &mut warnings,
+            )
+        })
         .flatten();
     let virtual_plugins = if role == PackageRole::Root || selected_components.is_none() {
         build_virtual_plugin_info(&alias, &manifest, role, &mut warnings)
@@ -960,6 +967,7 @@ fn virtual_plugin_install_status(project_root: &Path, install_root: &Path) -> Vi
 fn build_native_integration_info(
     project_root: &Path,
     manifest_adapters: &[Adapter],
+    codex_profile: Option<&str>,
     warnings: &mut Vec<String>,
 ) -> Option<PackageNativeIntegration> {
     let mut marketplaces = Vec::new();
@@ -978,6 +986,10 @@ fn build_native_integration_info(
     let codex_workspace_marketplace = marketplaces
         .iter()
         .any(|marketplace| marketplace.adapter == Adapter::Codex && marketplace.exists);
+    let codex_workspace_marketplace_name = marketplaces
+        .iter()
+        .find(|marketplace| marketplace.adapter == Adapter::Codex && marketplace.exists)
+        .and_then(|marketplace| marketplace.name.clone());
     let codex_workspace_plugins = plugins
         .iter()
         .filter(|plugin| plugin.adapter == Adapter::Codex)
@@ -989,7 +1001,9 @@ fn build_native_integration_info(
             .iter()
             .any(|plugin| plugin.adapter == Adapter::Codex && plugin.hooks.is_some()),
         codex_workspace_marketplace,
+        codex_workspace_marketplace_name.as_deref(),
         codex_workspace_plugins,
+        codex_profile,
         warnings,
     );
     let claude = inspect_claude_native_state(project_root, warnings);
@@ -1184,15 +1198,19 @@ fn inspect_codex_native_state(
     project_root: &Path,
     plugin_hooks_required: bool,
     workspace_marketplace: bool,
+    workspace_marketplace_name: Option<&str>,
     workspace_plugins: Vec<String>,
+    codex_profile: Option<&str>,
     warnings: &mut Vec<String>,
 ) -> CodexNativeState {
     let path = project_root.join(".codex").join("config.toml");
-    let user_config_path = codex_user_config_path(project_root);
+    let user_config_path = codex_active_user_config_path(project_root, codex_profile);
     let marketplace_path = crate::adapters::native_marketplace_path(project_root, Adapter::Codex)
         .expect("codex marketplace path");
+    let managed_marketplace =
+        workspace_marketplace_name.unwrap_or(crate::adapters::MANAGED_MARKETPLACE_NAME);
     let (marketplace_registered, mut enabled_plugins) =
-        inspect_codex_user_config(&user_config_path, warnings);
+        inspect_codex_user_config(&user_config_path, managed_marketplace, warnings);
     if workspace_marketplace {
         enabled_plugins.extend(workspace_plugins);
     }
@@ -1260,7 +1278,11 @@ fn inspect_codex_native_state(
     }
 }
 
-fn inspect_codex_user_config(path: &Path, warnings: &mut Vec<String>) -> (bool, Vec<String>) {
+fn inspect_codex_user_config(
+    path: &Path,
+    managed_marketplace: &str,
+    warnings: &mut Vec<String>,
+) -> (bool, Vec<String>) {
     if !path.exists() {
         return (false, Vec::new());
     }
@@ -1280,14 +1302,12 @@ fn inspect_codex_user_config(path: &Path, warnings: &mut Vec<String>) -> (bool, 
     let marketplace_registered = document
         .get("marketplaces")
         .and_then(toml_edit::Item::as_table)
-        .is_some_and(|marketplaces| {
-            marketplaces.contains_key(crate::adapters::MANAGED_MARKETPLACE_NAME)
-        });
+        .is_some_and(|marketplaces| marketplaces.contains_key(managed_marketplace));
     let enabled_plugins = document
         .get("plugins")
         .and_then(toml_edit::Item::as_table)
         .map(|plugins| {
-            let suffix = format!("@{}", crate::adapters::MANAGED_MARKETPLACE_NAME);
+            let suffix = format!("@{managed_marketplace}");
             plugins
                 .iter()
                 .filter_map(|(key, value)| {
@@ -1337,6 +1357,17 @@ fn codex_user_config_path(project_root: &Path) -> PathBuf {
 
     #[cfg(not(test))]
     project_root.join(".codex-user/config.toml")
+}
+
+fn codex_active_user_config_path(project_root: &Path, codex_profile: Option<&str>) -> PathBuf {
+    let base = codex_user_config_path(project_root);
+    let Some(profile) = codex_profile else {
+        return base;
+    };
+    base.parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(format!("{profile}.config.toml"))
 }
 
 fn inspect_claude_native_state(
@@ -2475,6 +2506,12 @@ always_context = ["prompts/context.md"]
         )
         .unwrap();
 
+        let codex_marketplace_path =
+            crate::adapters::native_marketplace_path(project.path(), Adapter::Codex).unwrap();
+        let codex_marketplace: JsonValue =
+            serde_json::from_str(&fs::read_to_string(codex_marketplace_path).unwrap()).unwrap();
+        let codex_marketplace_name = codex_marketplace["name"].as_str().unwrap();
+        let codex_plugin_key = format!("shared-tools@{codex_marketplace_name}");
         let output = capture_info_output(project.path(), cache.path(), ".", None, None);
 
         assert!(output.contains("native-integration:"));
@@ -2487,7 +2524,7 @@ always_context = ["prompts/context.md"]
         );
         assert!(output.contains("plugin_hooks=true plugin_hooks_required=true"));
         assert!(output.contains("registration=workspace-marketplace"));
-        assert!(output.contains("enabled=[shared-tools@nodus]"));
+        assert!(output.contains(&format!("enabled=[{codex_plugin_key}]")));
 
         let info =
             describe_package_json_in_dir(project.path(), cache.path(), ".", None, None).unwrap();
@@ -2497,7 +2534,7 @@ always_context = ["prompts/context.md"]
         assert_eq!(native.codex.plugin_hooks, Some(true));
         assert!(native.codex.plugin_hooks_required);
         assert_eq!(native.codex.registration, "workspace-marketplace");
-        assert_eq!(native.codex.enabled_plugins, vec!["shared-tools@nodus"]);
+        assert_eq!(native.codex.enabled_plugins, vec![codex_plugin_key]);
         assert!(
             native
                 .claude
