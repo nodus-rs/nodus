@@ -264,13 +264,15 @@ fn planned_lockfile_write(path: &Path, lockfile: &Lockfile) -> Result<PlannedFil
 /// home and are no longer recorded as package-owned, so the owned-vs-desired
 /// diff cannot prune them. A re-sync removes them here.
 ///
-/// The only current entry is the pre-workspace Codex global snapshot marketplace
-/// tree (`<home>/marketplaces/codex`). Current Codex output is project-local
-/// under `.agents/plugins/marketplace.json` plus
-/// `.nodus/packages/<id>/codex-plugin`, so the old tree is dead once the new
-/// layout is written. The manifest under that tree was never package-owned, so
-/// without this it would orphan on migration. Gated on the directory existing so
-/// dry-run previews and logs stay quiet for stores that never used the old layout.
+/// The only current entry is the pre-configured-local Codex global snapshot
+/// marketplace tree (`<home>/marketplaces/codex`). Current Codex output keeps a
+/// repo-local marketplace source under `.agents/plugins/marketplace.json`, a
+/// package snapshot under `.nodus/packages/<id>/codex-plugin`, and an active
+/// Codex config/cache mirror for runtime loading. The old global Nodus tree is
+/// dead once the new layout is written. The manifest under that tree was never
+/// package-owned, so without this it would orphan on migration. Gated on the
+/// directory existing so dry-run previews and logs stay quiet for stores that
+/// never used the old layout.
 fn legacy_global_removals(project_root: &Path, adapters: &[Adapter]) -> Vec<PathBuf> {
     let mut removals = Vec::new();
     if adapters.contains(&Adapter::Codex) {

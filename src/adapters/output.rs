@@ -258,7 +258,7 @@ pub(crate) fn build_output_plan_with_options(
         .iter()
         .any(|(package, _)| package.manifest.manifest.activation_enabled());
     let codex_prefers_native_plugins =
-        preferred_surface(Adapter::Codex) == PreferredSurface::PackagePluginWorkspaceMarketplace;
+        preferred_surface(Adapter::Codex) == PreferredSurface::PackagePluginConfiguredMarketplace;
     let codex_plugin_hook_packages: BTreeSet<String> =
         if selected_adapters.contains(Adapter::Codex) && codex_prefers_native_plugins {
             packages
@@ -828,7 +828,7 @@ pub(crate) fn build_output_plan_with_options(
     )?;
     let has_claude_native_plugin_enablement = selected_adapters.contains(Adapter::Claude)
         && preferred_surface(Adapter::Claude)
-            == PreferredSurface::PackagePluginWorkspaceMarketplace
+            == PreferredSurface::PackagePluginConfiguredMarketplace
         && native_package_plugin_keys(
             project_root,
             packages,
@@ -974,7 +974,8 @@ fn native_package_marketplace_files(
 
     let mut files = Vec::new();
     if selected_adapters.contains(Adapter::Claude)
-        && preferred_surface(Adapter::Claude) == PreferredSurface::PackagePluginWorkspaceMarketplace
+        && preferred_surface(Adapter::Claude)
+            == PreferredSurface::PackagePluginConfiguredMarketplace
     {
         let plugins = packages
             .iter()
@@ -1054,10 +1055,11 @@ fn workspace_native_marketplace_files(
 
     let mut files = Vec::new();
     let claude_marketplace_name = MANAGED_MARKETPLACE_NAME.to_string();
-    let codex_marketplace_name = codex_workspace_marketplace_name(root);
+    let codex_marketplace_name = codex_local_marketplace_name(root);
 
     if selected_adapters.contains(Adapter::Claude)
-        && preferred_surface(Adapter::Claude) == PreferredSurface::PackagePluginWorkspaceMarketplace
+        && preferred_surface(Adapter::Claude)
+            == PreferredSurface::PackagePluginConfiguredMarketplace
     {
         let owner_name = workspace_marketplace_owner_name(root);
         let plugins = members
@@ -1495,7 +1497,7 @@ fn codex_marketplace_name(project_root: &Path, packages: &[(ResolvedPackage, Pat
     normalize_marketplace_name(&native_marketplace_owner_name(project_root, packages))
 }
 
-fn codex_workspace_marketplace_name(root: &LoadedManifest) -> String {
+fn codex_local_marketplace_name(root: &LoadedManifest) -> String {
     normalize_marketplace_name(&workspace_marketplace_owner_name(root))
 }
 
@@ -1523,7 +1525,8 @@ fn emit_native_package_plugins(
     }
 
     if selected_adapters.contains(Adapter::Claude)
-        && preferred_surface(Adapter::Claude) == PreferredSurface::PackagePluginWorkspaceMarketplace
+        && preferred_surface(Adapter::Claude)
+            == PreferredSurface::PackagePluginConfiguredMarketplace
         && native_package_plugin_has_content(Adapter::Claude, package)
     {
         let plugin_root = super::native_package_plugin_root(
@@ -1566,7 +1569,7 @@ fn emit_native_package_plugins(
 
     if selected_adapters.contains(Adapter::Codex)
         && (preferred_surface(Adapter::Codex)
-            == PreferredSurface::PackagePluginWorkspaceMarketplace
+            == PreferredSurface::PackagePluginConfiguredMarketplace
             || !matches!(package.source, PackageSource::Root))
         && native_package_plugin_has_content(Adapter::Codex, package)
     {
@@ -1657,7 +1660,7 @@ fn package_emits_claude_plugin_hooks(package: &ResolvedPackage) -> bool {
     if !package.emits_runtime_outputs() {
         return false;
     }
-    if preferred_surface(Adapter::Claude) != PreferredSurface::PackagePluginWorkspaceMarketplace {
+    if preferred_surface(Adapter::Claude) != PreferredSurface::PackagePluginConfiguredMarketplace {
         return false;
     }
     native_package_plugin_has_content(Adapter::Claude, package)
@@ -1672,7 +1675,7 @@ fn package_emits_codex_plugin_hooks(package: &ResolvedPackage) -> bool {
     if !package.emits_runtime_outputs() {
         return false;
     }
-    if preferred_surface(Adapter::Codex) != PreferredSurface::PackagePluginWorkspaceMarketplace {
+    if preferred_surface(Adapter::Codex) != PreferredSurface::PackagePluginConfiguredMarketplace {
         return false;
     }
     native_package_plugin_has_content(Adapter::Codex, package)
@@ -2361,7 +2364,7 @@ fn mcp_servers_are_emitted_by_native_plugin(
     selected_adapters: Adapters,
 ) -> bool {
     selected_adapters.contains(adapter)
-        && preferred_surface(adapter) == PreferredSurface::PackagePluginWorkspaceMarketplace
+        && preferred_surface(adapter) == PreferredSurface::PackagePluginConfiguredMarketplace
         && package.emits_runtime_outputs()
         && native_package_plugin_has_content(adapter, package)
         && package_has_mcp_servers(package)
@@ -3462,7 +3465,8 @@ fn hook_files(
         Vec::new()
     };
     let claude_plugin_enablement = if selected_adapters.contains(Adapter::Claude)
-        && preferred_surface(Adapter::Claude) == PreferredSurface::PackagePluginWorkspaceMarketplace
+        && preferred_surface(Adapter::Claude)
+            == PreferredSurface::PackagePluginConfiguredMarketplace
     {
         native_package_plugin_keys(project_root, packages, Adapter::Claude, package_identities)?
     } else {

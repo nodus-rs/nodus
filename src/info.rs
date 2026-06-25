@@ -983,26 +983,20 @@ fn build_native_integration_info(
     }
 
     let hooks = inspect_native_hook_locations(project_root, &plugins);
-    let codex_workspace_marketplace = marketplaces
+    let codex_local_marketplace = marketplaces
         .iter()
         .any(|marketplace| marketplace.adapter == Adapter::Codex && marketplace.exists);
-    let codex_workspace_marketplace_name = marketplaces
+    let codex_local_marketplace_name = marketplaces
         .iter()
         .find(|marketplace| marketplace.adapter == Adapter::Codex && marketplace.exists)
         .and_then(|marketplace| marketplace.name.clone());
-    let codex_workspace_plugins = plugins
-        .iter()
-        .filter(|plugin| plugin.adapter == Adapter::Codex)
-        .map(|plugin| plugin.key.clone())
-        .collect::<Vec<_>>();
     let codex = inspect_codex_native_state(
         project_root,
         plugins
             .iter()
             .any(|plugin| plugin.adapter == Adapter::Codex && plugin.hooks.is_some()),
-        codex_workspace_marketplace,
-        codex_workspace_marketplace_name.as_deref(),
-        codex_workspace_plugins,
+        codex_local_marketplace,
+        codex_local_marketplace_name.as_deref(),
         codex_profile,
         warnings,
     );
@@ -1197,9 +1191,8 @@ fn inspect_native_hook_locations(
 fn inspect_codex_native_state(
     project_root: &Path,
     plugin_hooks_required: bool,
-    workspace_marketplace: bool,
-    workspace_marketplace_name: Option<&str>,
-    workspace_plugins: Vec<String>,
+    local_marketplace: bool,
+    local_marketplace_name: Option<&str>,
     codex_profile: Option<&str>,
     warnings: &mut Vec<String>,
 ) -> CodexNativeState {
@@ -1208,12 +1201,9 @@ fn inspect_codex_native_state(
     let marketplace_path = crate::adapters::native_marketplace_path(project_root, Adapter::Codex)
         .expect("codex marketplace path");
     let managed_marketplace =
-        workspace_marketplace_name.unwrap_or(crate::adapters::MANAGED_MARKETPLACE_NAME);
+        local_marketplace_name.unwrap_or(crate::adapters::MANAGED_MARKETPLACE_NAME);
     let (marketplace_registered, mut enabled_plugins) =
         inspect_codex_user_config(&user_config_path, managed_marketplace, warnings);
-    if workspace_marketplace {
-        enabled_plugins.extend(workspace_plugins);
-    }
     let (hooks, plugin_hooks) = if path.exists() {
         match fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))
@@ -1244,10 +1234,12 @@ fn inspect_codex_native_state(
     enabled_plugins.sort();
     enabled_plugins.dedup();
 
-    let registration = if workspace_marketplace {
-        "workspace-marketplace"
-    } else if marketplace_registered || !enabled_plugins.is_empty() {
-        "legacy-user-config-marketplace"
+    let registration = if marketplace_registered {
+        "configured-local-marketplace"
+    } else if !enabled_plugins.is_empty() {
+        "configured-plugins"
+    } else if local_marketplace {
+        "local-marketplace-source-only"
     } else {
         "project-runtime"
     };
@@ -2523,7 +2515,7 @@ always_context = ["prompts/context.md"]
             output.contains(".nodus/packages/shared-tools+") && output.contains("/codex-plugin")
         );
         assert!(output.contains("plugin_hooks=true plugin_hooks_required=true"));
-        assert!(output.contains("registration=workspace-marketplace"));
+        assert!(output.contains("registration=configured-local-marketplace"));
         assert!(output.contains(&format!("enabled=[{codex_plugin_key}]")));
 
         let info =
@@ -2533,7 +2525,7 @@ always_context = ["prompts/context.md"]
         assert_eq!(native.codex.hooks, None);
         assert_eq!(native.codex.plugin_hooks, Some(true));
         assert!(native.codex.plugin_hooks_required);
-        assert_eq!(native.codex.registration, "workspace-marketplace");
+        assert_eq!(native.codex.registration, "configured-local-marketplace");
         assert_eq!(native.codex.enabled_plugins, vec![codex_plugin_key]);
         assert!(
             native
@@ -2542,6 +2534,51 @@ always_context = ["prompts/context.md"]
                 .iter()
                 .any(|plugin| plugin.starts_with("shared-tools@"))
         );
+    }
+
+    #[test]
+    fn info_does_not_report_codex_source_marketplace_plugins_as_enabled() {
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        write_file(
+            &project.path().join("nodus.toml"),
+            r#"
+[adapters]
+enabled = ["codex"]
+
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+        );
+        write_file(
+            &project.path().join("vendor/shared/nodus.toml"),
+            r#"
+name = "Shared Tools"
+"#,
+        );
+        write_skill(&project.path().join("vendor/shared"), "Review");
+
+        crate::resolver::sync_in_dir_with_adapters(
+            project.path(),
+            cache.path(),
+            false,
+            false,
+            false,
+            &[Adapter::Codex],
+            false,
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        let codex_user_config = codex_user_config_path(project.path());
+        assert!(codex_user_config.exists());
+        fs::remove_file(codex_user_config).unwrap();
+
+        let info =
+            describe_package_json_in_dir(project.path(), cache.path(), ".", None, None).unwrap();
+        let native = info.native_integration.unwrap();
+        assert_eq!(native.codex.registration, "local-marketplace-source-only");
+        assert!(native.codex.enabled_plugins.is_empty());
     }
 
     #[test]

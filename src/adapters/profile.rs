@@ -20,7 +20,7 @@ pub(crate) struct VirtualPluginSurface {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PreferredSurface {
     DirectManagedOutput,
-    PackagePluginWorkspaceMarketplace,
+    PackagePluginConfiguredMarketplace,
 }
 
 struct HookSupport {
@@ -163,7 +163,7 @@ const AGENTS_PROFILE: AdapterProfile = AdapterProfile {
 const CLAUDE_PROFILE: AdapterProfile = AdapterProfile {
     adapter: Adapter::Claude,
     runtime_root: ".claude",
-    preferred_surface: PreferredSurface::PackagePluginWorkspaceMarketplace,
+    preferred_surface: PreferredSurface::PackagePluginConfiguredMarketplace,
     virtual_plugin_surface: None,
     artifacts: ALL_SKILL_ARTIFACTS,
     hooks: HookSupport {
@@ -176,7 +176,7 @@ const CLAUDE_PROFILE: AdapterProfile = AdapterProfile {
 const CODEX_PROFILE: AdapterProfile = AdapterProfile {
     adapter: Adapter::Codex,
     runtime_root: ".codex",
-    preferred_surface: PreferredSurface::PackagePluginWorkspaceMarketplace,
+    preferred_surface: PreferredSurface::PackagePluginConfiguredMarketplace,
     virtual_plugin_surface: Some(VirtualPluginSurface {
         install_root_name: "codex-plugin",
         loader_dir: ".codex/plugins",
@@ -325,11 +325,11 @@ mod tests {
     fn adapter_preferred_surfaces_match_runtime_boundaries() {
         assert_eq!(
             preferred_surface(Adapter::Claude),
-            PreferredSurface::PackagePluginWorkspaceMarketplace
+            PreferredSurface::PackagePluginConfiguredMarketplace
         );
         assert_eq!(
             preferred_surface(Adapter::Codex),
-            PreferredSurface::PackagePluginWorkspaceMarketplace
+            PreferredSurface::PackagePluginConfiguredMarketplace
         );
 
         for adapter in [

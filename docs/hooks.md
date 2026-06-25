@@ -84,11 +84,11 @@ but are not a replacement for command hooks that need to run arbitrary logic.
 Adapters without supported session-start context injection skip activation and
 emit a sync warning.
 
-## Codex workspace marketplace
+## Codex configured local marketplace
 
 When the Codex adapter is enabled, dependency package content is rendered as
 pinned plugin snapshots under `.nodus/packages`, with a repo-scoped Codex
-marketplace manifest at the documented workspace path:
+marketplace source manifest:
 
 ```text
 .agents/
@@ -97,16 +97,19 @@ marketplace manifest at the documented workspace path:
   packages/<managed-package-id>/codex-plugin/
 ```
 
-Nodus does not write user-level Codex config in `$CODEX_HOME/config.toml` or
-`~/.codex/config.toml` to register workspace plugins. Codex discovers the
-repo-local marketplace manifest, and Nodus keeps plugin sources relative to the
-repository root.
+Current Codex CLI sessions do not auto-enable plugins from the repo-local
+marketplace file. Nodus writes the active Codex user config
+(`$CODEX_HOME/config.toml`, or `$CODEX_HOME/<profile>.config.toml` for a Codex
+profile) with the local marketplace and enabled plugin keys, then mirrors the
+selected plugin snapshots into `$CODEX_HOME/plugins/cache/<marketplace>/...`.
+Codex loads enabled plugins from that configured cache.
 
 Dependency skills, synthetic command skills, plugin hooks, and plugin MCP
 config live inside those snapshots rather than being duplicated into project
 `.codex/skills`. Codex agents stay project-local under `.codex/agents` until
 Codex plugin metadata supports declaring agents. Project `.codex/config.toml`
-is still used for project-scoped feature flags and root-level hooks.
+is still used for project-scoped feature flags and root-level hooks; Codex
+project-local config cannot select profile-scoped plugin enablement.
 
 ## Event catalog
 

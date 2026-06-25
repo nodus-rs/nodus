@@ -41,10 +41,9 @@ changes.
 
 - Nodus has six adapters today: `agents`, `claude`, `codex`, `copilot`,
   `cursor`, and `opencode`.
-- Claude currently prefers `PackagePluginWorkspaceMarketplace` in
+- Claude and Codex currently prefer `PackagePluginConfiguredMarketplace` in
   `AdapterProfile`, so dependency packages are normally emitted as local native
-  plugins rather than direct runtime folders. Codex uses direct project runtime
-  files plus a virtual package payload root.
+  plugins rather than direct runtime folders.
 - Nodus already emits Claude dependency hooks and activation context inside
   generated Claude plugins.
 - Codex hooks and activation context are emitted through project

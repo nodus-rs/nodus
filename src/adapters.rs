@@ -935,13 +935,13 @@ pub(crate) fn managed_runtime_skill_id(
     skill_id: &str,
 ) -> String {
     let local_names;
-    let names = if preferred_surface(adapter) == PreferredSurface::PackagePluginWorkspaceMarketplace
-    {
-        local_names = ManagedArtifactNames::from_resolved_packages([package]);
-        &local_names
-    } else {
-        names
-    };
+    let names =
+        if preferred_surface(adapter) == PreferredSurface::PackagePluginConfiguredMarketplace {
+            local_names = ManagedArtifactNames::from_resolved_packages([package]);
+            &local_names
+        } else {
+            names
+        };
     managed_skill_id(names, package, skill_id)
 }
 
@@ -1192,7 +1192,7 @@ pub(crate) fn managed_runtime_root(
         return project_root.to_path_buf();
     }
 
-    if preferred_surface(adapter) == PreferredSurface::PackagePluginWorkspaceMarketplace
+    if preferred_surface(adapter) == PreferredSurface::PackagePluginConfiguredMarketplace
         && matches!(package.source, PackageSource::Root)
     {
         return runtime_root(project_root, adapter);
@@ -1209,13 +1209,13 @@ pub fn managed_skill_root(
     skill_id: &str,
 ) -> PathBuf {
     let local_names;
-    let names = if preferred_surface(adapter) == PreferredSurface::PackagePluginWorkspaceMarketplace
-    {
-        local_names = ManagedArtifactNames::from_resolved_packages([package]);
-        &local_names
-    } else {
-        names
-    };
+    let names =
+        if preferred_surface(adapter) == PreferredSurface::PackagePluginConfiguredMarketplace {
+            local_names = ManagedArtifactNames::from_resolved_packages([package]);
+            &local_names
+        } else {
+            names
+        };
     managed_runtime_root(project_root, adapter, package)
         .join("skills")
         .join(managed_skill_id(names, package, skill_id))
@@ -1236,7 +1236,7 @@ pub fn managed_artifact_path(
     let codex_agent_override = matches!((adapter, kind), (Adapter::Codex, ArtifactKind::Agent));
     let local_names;
     let names = if !codex_agent_override
-        && preferred_surface(adapter) == PreferredSurface::PackagePluginWorkspaceMarketplace
+        && preferred_surface(adapter) == PreferredSurface::PackagePluginConfiguredMarketplace
     {
         local_names = ManagedArtifactNames::from_resolved_packages([package]);
         &local_names

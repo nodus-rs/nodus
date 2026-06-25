@@ -5034,7 +5034,7 @@ command = "fuli integration claude hook session-end"
         "dependency hooks should not appear in workspace settings: {workspace_hook_entries_for_dep:?}",
     );
 
-    // The plugin is enabled in the workspace marketplace.
+    // The plugin is enabled in the Claude workspace marketplace.
     let enabled_plugins = settings["enabledPlugins"]
         .as_object()
         .expect("enabledPlugins object");
@@ -6242,7 +6242,7 @@ shared = { path = "vendor/shared" }
     assert!(agents_gitignore.contains(&format!("commands/{managed_command_file}")));
     assert!(
         !temp.path().join(".codex/.gitignore").exists(),
-        "Codex dependency skills now live in the workspace plugin marketplace"
+        "Codex dependency skills now live in the configured local plugin cache"
     );
     assert!(runtime_skill_exists(
         temp.path(),
